@@ -1,0 +1,10 @@
+{
+  "published_at": "2026-05-30",
+  "changes": [
+    "Crop des fenêtres PiP à la souris, directement sur les bords (en plus du déplacement et du redimensionnement).",
+    "Mini-aperçu du schéma des box dans la liste d'instances (hook listPreview), rafraîchi en direct pendant l'édition.",
+    "Rappel de mémoires/presets exposé via Ember+ (control.recall)."
+  ],
+  "fixes": [],
+  "known_bugs": []
+}
