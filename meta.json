@@ -1,10 +1,11 @@
 {
-  "published_at": "2026-05-30",
-  "changes": [
-    "Crop des fenêtres PiP à la souris, directement sur les bords (en plus du déplacement et du redimensionnement).",
-    "Mini-aperçu du schéma des box dans la liste d'instances (hook listPreview), rafraîchi en direct pendant l'édition.",
-    "Rappel de mémoires/presets exposé via Ember+ (control.recall)."
-  ],
-  "fixes": [],
-  "known_bugs": []
+  "version": "0.3.1",
+  "date": "2026-05-31",
+  "changes": {
+    "Nouveautés": [
+      "Ring buffer vidéo/audio configurable depuis Réglages → MXL (shm_video_ring / shm_audio_ring)."
+    ],
+    "Corrections": [],
+    "Bugs connus": []
+  }
 }
