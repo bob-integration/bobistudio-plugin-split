@@ -1,3 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 BOBI SAS, France
+# Auteur : Cyril Mazouer, pour le compte de BOBI SAS
+# Distribué sous licence GNU GPL v3 (ou ultérieure) ; voir le fichier LICENSE.
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DVE / SuperSource plugin : 4 PiP boxes composités sur 1 fond → 1 sortie.
 #   5 entrées : slots 0..3 = boxes, slot 4 = fond. Câblage à chaud par slot.
@@ -43,15 +48,27 @@ _INIT_SLOT_SHM = [CONFIG.get("input_0"), CONFIG.get("input_1"),
 
 # ─── yuv420p/422p/444p format (selon CONFIG[chroma], défaut 4:2:2) ──
 CHROMA = str(CONFIG.get("chroma") or "422")
+# Profondeur shm 8/10/12 bits. Le blend alpha est invariant à l'échelle (que des poids) :
+# seuls le dtype (uint8/uint16), les constantes de couleur (×_SCALE) et les tailles changent.
+BIT_DEPTH = int(CONFIG.get("bit_depth") or 8)
+_DEEP  = BIT_DEPTH >= 10
+_BPS   = 2 if _DEEP else 1
+_NP_DT = np.uint16 if _DEEP else np.uint8
+_SCALE = 1 << (BIT_DEPTH - 8)
+_MAXV  = (1 << BIT_DEPTH) - 1
+_NEUTRAL = 1 << (BIT_DEPTH - 1)
+_BLACK_B = (16 << (BIT_DEPTH - 8)).to_bytes(_BPS, "little")
+_NEUT_B  = _NEUTRAL.to_bytes(_BPS, "little")
 _CW = {{"420": 2, "422": 2, "444": 1}}.get(CHROMA, 2)   # diviseur largeur chroma
 _CH = {{"420": 2, "422": 1, "444": 1}}.get(CHROMA, 1)   # diviseur hauteur chroma
-PIX_FMT = {{"420": "yuv420p", "422": "yuv422p", "444": "yuv444p"}}.get(CHROMA, "yuv422p")
+PIX_FMT = ({{"420": "yuv420p", "422": "yuv422p", "444": "yuv444p"}}.get(CHROMA, "yuv422p")
+           + (("12le" if BIT_DEPTH >= 12 else "10le") if _DEEP else ""))
 UV_W = WIDTH // _CW
 UV_H = HEIGHT // _CH
 V_HEADER_SIZE = 64
 V_RING_SIZE   = CONFIG.get("shm_video_ring", 10)
-Y_SIZE        = WIDTH * HEIGHT
-UV_SIZE       = UV_W * UV_H
+Y_SIZE        = WIDTH * HEIGHT * _BPS
+UV_SIZE       = UV_W * UV_H * _BPS
 V_FRAME_SIZE  = Y_SIZE + 2 * UV_SIZE
 V_TOTAL_SIZE  = V_HEADER_SIZE + V_RING_SIZE * V_FRAME_SIZE
 
@@ -65,10 +82,10 @@ def _hex_to_yuv(h):
         r = int(h[0:2], 16); g = int(h[2:4], 16); b = int(h[4:6], 16)
     except Exception:
         r = g = b = 255
-    y = int(0.299 * r + 0.587 * g + 0.114 * b)
-    u = int(-0.169 * r - 0.331 * g + 0.5 * b + 128)
-    v = int(0.5 * r - 0.419 * g - 0.081 * b + 128)
-    return max(0, min(255, y)), max(0, min(255, u)), max(0, min(255, v))
+    y = int((0.299 * r + 0.587 * g + 0.114 * b) * _SCALE)
+    u = int((-0.169 * r - 0.331 * g + 0.5 * b + 128) * _SCALE)
+    v = int((0.5 * r - 0.419 * g - 0.081 * b + 128) * _SCALE)
+    return max(0, min(_MAXV, y)), max(0, min(_MAXV, u)), max(0, min(_MAXV, v))
 
 
 def _norm_box(b):
@@ -363,9 +380,9 @@ def composite_box_yuv(bgd_yuv, src_yuv, alpha, cx, cy, size, crop, border=None):
     src_x_off = out_x0 - x0; src_y_off = out_y0 - y0
     vis_w = out_x1 - out_x0; vis_h = out_y1 - out_y0
 
-    src_y = np.frombuffer(src_yuv[:Y_SIZE], dtype=np.uint8).reshape(HEIGHT, WIDTH)
-    src_u = np.frombuffer(src_yuv[Y_SIZE:Y_SIZE+UV_SIZE], dtype=np.uint8).reshape(UV_H, UV_W)
-    src_v = np.frombuffer(src_yuv[Y_SIZE+UV_SIZE:], dtype=np.uint8).reshape(UV_H, UV_W)
+    src_y = np.frombuffer(src_yuv[:Y_SIZE], dtype=_NP_DT).reshape(HEIGHT, WIDTH)
+    src_u = np.frombuffer(src_yuv[Y_SIZE:Y_SIZE+UV_SIZE], dtype=_NP_DT).reshape(UV_H, UV_W)
+    src_v = np.frombuffer(src_yuv[Y_SIZE+UV_SIZE:], dtype=_NP_DT).reshape(UV_H, UV_W)
 
     # Nearest-neighbor sample maps from the cropped source region to the full dst box.
     ix = (sxr0 + (np.arange(dst_w) + 0.5) / dst_w * (sxr1 - sxr0)).astype(np.int32)
@@ -382,19 +399,19 @@ def composite_box_yuv(bgd_yuv, src_yuv, alpha, cx, cy, size, crop, border=None):
     k_u = k_u_full[src_y_off//_CH:(src_y_off+vis_h)//_CH, src_x_off//_CW:(src_x_off+vis_w)//_CW]
     k_v = k_v_full[src_y_off//_CH:(src_y_off+vis_h)//_CH, src_x_off//_CW:(src_x_off+vis_w)//_CW]
 
-    bgd_y = np.frombuffer(bgd_yuv[:Y_SIZE], dtype=np.uint8).reshape(HEIGHT, WIDTH).copy()
-    bgd_u = np.frombuffer(bgd_yuv[Y_SIZE:Y_SIZE+UV_SIZE], dtype=np.uint8).reshape(UV_H, UV_W).copy()
-    bgd_v = np.frombuffer(bgd_yuv[Y_SIZE+UV_SIZE:], dtype=np.uint8).reshape(UV_H, UV_W).copy()
+    bgd_y = np.frombuffer(bgd_yuv[:Y_SIZE], dtype=_NP_DT).reshape(HEIGHT, WIDTH).copy()
+    bgd_u = np.frombuffer(bgd_yuv[Y_SIZE:Y_SIZE+UV_SIZE], dtype=_NP_DT).reshape(UV_H, UV_W).copy()
+    bgd_v = np.frombuffer(bgd_yuv[Y_SIZE+UV_SIZE:], dtype=_NP_DT).reshape(UV_H, UV_W).copy()
 
     reg_y = bgd_y[out_y0:out_y1, out_x0:out_x1].astype(np.float32)
     bgd_y[out_y0:out_y1, out_x0:out_x1] = (reg_y * (1.0 - alpha) +
-                                           k_y.astype(np.float32) * alpha).astype(np.uint8)
+                                           k_y.astype(np.float32) * alpha).astype(_NP_DT)
     reg_u = bgd_u[out_y0//_CH:out_y1//_CH, out_x0//_CW:out_x1//_CW].astype(np.float32)
     bgd_u[out_y0//_CH:out_y1//_CH, out_x0//_CW:out_x1//_CW] = (reg_u * (1.0 - alpha) +
-                                           k_u.astype(np.float32) * alpha).astype(np.uint8)
+                                           k_u.astype(np.float32) * alpha).astype(_NP_DT)
     reg_v = bgd_v[out_y0//_CH:out_y1//_CH, out_x0//_CW:out_x1//_CW].astype(np.float32)
     bgd_v[out_y0//_CH:out_y1//_CH, out_x0//_CW:out_x1//_CW] = (reg_v * (1.0 - alpha) +
-                                           k_v.astype(np.float32) * alpha).astype(np.uint8)
+                                           k_v.astype(np.float32) * alpha).astype(_NP_DT)
 
     # Bordure pleine (opaque) le long du rect visible de la box, vers l'intérieur.
     bw = 0
@@ -460,7 +477,7 @@ frame_index = 0
 start = time.time()
 next_t = start
 interval = 1.0 / FPS
-empty_frame = b"\x10" * Y_SIZE + b"\x80" * (2 * UV_SIZE)   # black yuv
+empty_frame = _BLACK_B * (WIDTH * HEIGHT) + _NEUT_B * (2 * UV_W * UV_H)   # black yuv
 
 while True:
     if bus_error.is_set():
