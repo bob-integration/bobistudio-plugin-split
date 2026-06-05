@@ -1,8 +1,11 @@
 {
-  "version": "0.3.2",
-  "date": "2026-06-02",
+  "version": "0.4.0",
+  "date": "2026-06-05",
   "changes": {
     "Nouveautés": [
+      "Exécution sous Docker (runtime compute générique : image bobi-compute, agent-in-container + réseau macvlan, /dev/shm bind-monté). Le type devient docker-only — créé via Réglages → Déploiement → Nœuds sur un nœud compute (plus de vaisseau LXC)."
+    ],
+    "Nouveautés (0.3.2)": [
       "Profondeur de bits du pipeline shm configurable 8/10/12 bits — pilotée par Réglages → MXL « Profondeur du pipeline shm » (force8 par défaut : 8 bits, comportement inchangé ; suivi du format : frames 10/12 bits stockées sur 16 bits, ×2 mémoire)."
     ],
     "Corrections": [],

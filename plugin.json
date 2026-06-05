@@ -1,13 +1,14 @@
 {
   "license": "GPL-3.0-or-later",
   "type": "dve",
+  "runtime": "docker",
   "atem_role": "dve",
   "label": "DVE",
   "badge": {
     "label": "DVE",
     "class": "mode-dve"
   },
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "SuperSource : 4 PiP (position/taille/crop) composités sur 1 fond → 1 sortie. Géométrie + mémoires/transitions pilotées en live. (v0.2.0 : marqueur `variant` exposé sur :8080 pour tester le multi-versions.)",
   "nav": {
     "section": "traitements",
