@@ -39,6 +39,12 @@ SHM_OUT  = CONFIG.get("shm_out") or (HOSTNAME + "_dve")
 WIDTH    = int(CONFIG.get("width") or 1280);  WIDTH  -= WIDTH % 2
 HEIGHT   = int(CONFIG.get("height") or 720);  HEIGHT -= HEIGHT % 2
 FPS      = int(round(float(CONFIG.get("fps") or 25))) or 25
+# Genlock broadcast : cadence verrouillée sur l'entrée de RÉFÉRENCE = le FOND (slot 4) → 1 sortie
+# par trame de fond (verrou 1:1). Les boxes (0-3) sont alignées par media-timestamp dans une fenêtre
+# d'ALIGN_BUDGET trames ; hors budget → présentées en retard + flag. Skew exposé. off → free-run.
+_gl = CONFIG.get("genlock", True)
+GENLOCK = _gl if isinstance(_gl, bool) else str(_gl).strip().lower() in ("1", "true", "yes", "on")
+ALIGN_BUDGET = max(0, int(CONFIG.get("align_budget", 1)))
 N_BOXES  = 4
 N_INPUTS = 5                       # slots 0..3 = boxes, 4 = fond
 INITIAL_BOX_CONFIG = CONFIG.get("box_config") or []
@@ -134,7 +140,8 @@ state = {{
 }}
 
 metrics_lock = threading.Lock()
-metrics = {{"fps": 0.0, "frame_index": 0, "inputs_latency_ms": {{}}, "plugin_version": PLUGIN_VERSION, "variant": "v2"}}
+metrics = {{"fps": 0.0, "frame_index": 0, "inputs_latency_ms": {{}}, "inputs_skew_ms": {{}},
+           "inputs_late": [], "plugin_version": PLUGIN_VERSION, "variant": "v2"}}
 
 bus_error = threading.Event()
 def _handle_sigbus(signum, frame):
@@ -328,6 +335,14 @@ def ensure_input(idx):
         return None
 
 
+def _in_header(idx):
+    """(frame_index, write_ts_ns) du producteur de l'entrée `idx`, ou (0, 0)."""
+    shm = ensure_input(idx)
+    if shm is None: return 0, 0
+    try: return struct.unpack_from("QQ", shm, 0)
+    except Exception: return 0, 0
+
+
 def lire_frame_yuv(shm):
     if shm is None: return None, None
     try:
@@ -477,6 +492,9 @@ frame_index = 0
 start = time.time()
 next_t = start
 interval = 1.0 / FPS
+half_ns = (interval / 2.0) * 1e9
+last_ref_idx = 0
+last_black = start
 empty_frame = _BLACK_B * (WIDTH * HEIGHT) + _NEUT_B * (2 * UV_W * UV_H)   # black yuv
 
 while True:
@@ -494,9 +512,34 @@ while True:
         out_f, out = _ouvrir_sortie(SHM_OUT)
         continue
 
-    now = time.time()
-    wait = next_t - now
-    if wait > 0: time.sleep(wait)
+    # Cadence : genlock verrou sur le FOND (slot 4, réf) + alignement des boxes, ou free-run hérité.
+    T = None
+    if GENLOCK:
+        ri, rw = _in_header(4)
+        if ri == 0:
+            # pas de fond câblé → noir continu cadencé (signal vivant)
+            now = time.time()
+            if now - last_black >= interval:
+                _ecrire_sortie(out, empty_frame, frame_index); frame_index += 1; last_black = now
+            time.sleep(0.002); continue
+        if ri == last_ref_idx:
+            time.sleep(0.002); continue           # pas de nouvelle trame de fond → patiente
+        last_ref_idx = ri; last_black = time.time()
+        T = rw
+        if ALIGN_BUDGET > 0:
+            budget_deadline = time.time() + ALIGN_BUDGET * interval
+            while time.time() < budget_deadline:
+                behind = False
+                for c in range(N_BOXES):           # boxes 0..3
+                    _, cw = _in_header(c)
+                    if cw and cw < T - half_ns:
+                        behind = True; break
+                if not behind: break
+                time.sleep(0.002)
+    else:
+        now = time.time()
+        wait = next_t - now
+        if wait > 0: time.sleep(wait)
 
     # Snapshot state ; resolve transition progress / commit.
     with state_lock:
@@ -538,12 +581,21 @@ while True:
 
     with state_lock:
         slot_to_shm = list(state["inputs"])
+    skew_in = {{}}; late_in = []
     for slot_idx, ts_in in ts_in_per_slot.items():
         shm_name = slot_to_shm[slot_idx] if slot_idx < len(slot_to_shm) else ""
         if not shm_name: continue
         if shm_name not in lat_in:
             lat_in[shm_name] = RollingMs()
         lat_in[shm_name].push((ts_out - ts_in) / 1e6)
+        if T is not None:
+            skew_in[shm_name] = round((ts_in - T) / 1e6, 2)
+            if ts_in < T - half_ns:
+                late_in.append(shm_name)
+    if T is not None:
+        with metrics_lock:
+            metrics["inputs_skew_ms"] = skew_in
+            metrics["inputs_late"] = late_in
 
     frame_index += 1
     next_t = start + frame_index * interval

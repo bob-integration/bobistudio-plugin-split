@@ -1,8 +1,9 @@
 {
-  "version": "0.4.0",
-  "date": "2026-06-05",
+  "version": "0.5.0",
+  "date": "2026-06-07",
   "changes": {
     "Nouveautés": [
+      "Genlock broadcast multi-entrées : cadence VERROUILLÉE sur l'entrée de RÉFÉRENCE = le FOND (slot 4) → 1 sortie par trame de fond (verrou 1:1, plus de free-run horloge mur). Les boxes (slots 0-3) sont ALIGNÉES par media-timestamp dans une fenêtre d'« align_budget » trames (défaut 1) ; hors budget → box présentée en retard (sans bloquer le fond) + flag. Skew par entrée (ms) + flag exposés en métriques :8080 (inputs_skew_ms / inputs_late). Sans fond câblé → noir continu cadencé. Réglages : deploy_defaults.genlock (défaut on, repli free-run), align_budget.",
       "Exécution sous Docker (runtime compute générique : image bobi-compute, agent-in-container + réseau macvlan, /dev/shm bind-monté). Le type devient docker-only — créé via Réglages → Déploiement → Nœuds sur un nœud compute (plus de vaisseau LXC)."
     ],
     "Nouveautés (0.3.2)": [
