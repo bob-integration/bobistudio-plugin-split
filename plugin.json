@@ -6,8 +6,11 @@
   "label": "Split",
   "badge": {
     "label": "Split",
-    "class": "mode-split"
+    "class": "mode-split",
+    "oklch": "0.80 0.06 200"
   },
+  "reference_slot": 4,
+  "skaarhoj": {"mode": "split", "desc_i18n": "settings.js.skh_desc_split"},
   "version": "0.5.0",
   "description": "SuperSource : 4 PiP (position/taille/crop) composités sur 1 fond → 1 sortie. Géométrie + mémoires/transitions pilotées en live. (v0.2.0 : marqueur `variant` exposé sur :8080 pour tester le multi-versions.)",
   "nav": {
