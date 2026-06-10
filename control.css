@@ -1,26 +1,26 @@
-/* UI de contrôle embarquée du DVE / SuperSource (montée dans le shell Traitements).
+/* UI de contrôle embarquée du Split / SuperSource (montée dans le shell Traitements).
    Styles de l'ÉDITEUR uniquement (sidebar/liste = shell). */
-.dve-canvas-wrap { position:relative; width:100%; max-width:640px; margin-bottom:14px; }
-#dve_canvas { width:100%; aspect-ratio:16/9; background:#111; border:1px solid var(--border);
+.split-canvas-wrap { position:relative; width:100%; max-width:640px; margin-bottom:14px; }
+#split_canvas { width:100%; aspect-ratio:16/9; background:#111; border:1px solid var(--border);
     border-radius:4px; touch-action:none; cursor:default; }
-.dve-boxes { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }
-.dve-box-card { border:1px solid var(--border-soft); border-radius:6px; padding:8px; }
-.dve-box-card.on { border-color: var(--accent, var(--status-running-fg)); }
-.dve-box-card h4 { margin:0 0 6px; font-size:0.9em; display:flex; align-items:center; gap:6px; }
-.dve-row { display:flex; gap:6px; align-items:center; margin:3px 0; font-size:0.82em; }
-.dve-row label { width:3.2em; color:var(--text-muted); }
-.dve-row input[type=number] { width:5em; }
-.dve-row select { flex:1; min-width:0; }
-.dve-crop { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; margin-top:4px; }
-.dve-crop label { display:flex; flex-direction:column; font-size:0.74em; color:var(--text-muted); }
-.dve-memories { margin-top:16px; border-top:1px solid var(--border-soft); padding-top:12px; }
-.dve-mem-list { list-style:none; padding:0; margin:8px 0;
+.split-boxes { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }
+.split-box-card { border:1px solid var(--border-soft); border-radius:6px; padding:8px; }
+.split-box-card.on { border-color: var(--accent, var(--status-running-fg)); }
+.split-box-card h4 { margin:0 0 6px; font-size:0.9em; display:flex; align-items:center; gap:6px; }
+.split-row { display:flex; gap:6px; align-items:center; margin:3px 0; font-size:0.82em; }
+.split-row label { width:3.2em; color:var(--text-muted); }
+.split-row input[type=number] { width:5em; }
+.split-row select { flex:1; min-width:0; }
+.split-crop { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; margin-top:4px; }
+.split-crop label { display:flex; flex-direction:column; font-size:0.74em; color:var(--text-muted); }
+.split-memories { margin-top:16px; border-top:1px solid var(--border-soft); padding-top:12px; }
+.split-mem-list { list-style:none; padding:0; margin:8px 0;
     display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; }
-.dve-mem-card { border:1px solid var(--border-soft); border-radius:6px; padding:6px; font-size:0.82em; }
-.dve-mem-card b { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.dve-mem-card canvas { width:100%; aspect-ratio:16/9; background:#111; border-radius:3px;
+.split-mem-card { border:1px solid var(--border-soft); border-radius:6px; padding:6px; font-size:0.82em; }
+.split-mem-card b { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.split-mem-card canvas { width:100%; aspect-ratio:16/9; background:#111; border-radius:3px;
     border:1px solid var(--border); display:block; margin:4px 0; }
-.dve-mem-actions { display:flex; flex-wrap:wrap; gap:3px; align-items:center; }
-.dve-mem-actions .btn { padding:2px 6px; font-size:0.92em; }
-.dve-mem-actions select { font-size:0.92em; max-width:100%; }
-.dve-mem-bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.split-mem-actions { display:flex; flex-wrap:wrap; gap:3px; align-items:center; }
+.split-mem-actions .btn { padding:2px 6px; font-size:0.92em; }
+.split-mem-actions select { font-size:0.92em; max-width:100%; }
+.split-mem-bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }

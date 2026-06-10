@@ -3,12 +3,12 @@
 // Auteur : Cyril Mazouer, pour le compte de BOBI SAS
 // Distribué sous licence GNU GPL v3 (ou ultérieure) ; voir le fichier LICENSE.
 
-// DVE / SuperSource — UI de contrôle embarquée (plugin). Montée par le shell Traitements via
-// window.MXLPlugins.dve.mount(el, vmid, ctx). Un seul éditeur actif (le shell démonte le précédent).
+// Split / SuperSource — UI de contrôle embarquée (plugin). Montée par le shell Traitements via
+// window.MXLPlugins.split.mount(el, vmid, ctx). Un seul éditeur actif (le shell démonte le précédent).
 // Endpoints inchangés : /plugin/{state,box,input} (proxy :8082) + /dve/{persist,memories,...} (Flask).
 'use strict';
 window.MXLPlugins = window.MXLPlugins || {};
-window.MXLPlugins.dve = (function () {
+window.MXLPlugins.split = (function () {
     let EL = null, VMID = null, TOAST = () => {};
     let boxes = null, inputs = ['', '', '', '', ''], sources = [];
     let drag = null, boxPostTimer = null, persistTimer = null, pollTimer = null;
@@ -29,7 +29,7 @@ window.MXLPlugins.dve = (function () {
         } catch(e){ sources=[]; }
     }
     async function loadContainers(){
-        try { containers = (await (await fetch('/api/plugins/instances?type=dve')).json())
+        try { containers = (await (await fetch('/api/plugins/instances?type=split')).json())
             .map(c => ({vmid:c.vmid, hostname:c.hostname||('VMID '+c.vmid)})); }
         catch(e){ containers=[]; }
     }
@@ -52,7 +52,7 @@ window.MXLPlugins.dve = (function () {
         try {
             const r=await fetch(`/api/containers/${VMID}/plugin/state`); if(!r.ok) throw new Error('HTTP '+r.status);
             const st=await r.json();
-            if(rebuild || !$('#dve_canvas')){
+            if(rebuild || !$('#split_canvas')){
                 boxes=(st.boxes||[]).map(normBox); while(boxes.length<4) boxes.push(normBox({}));
                 inputs=(st.inputs||[]).slice(0,5); while(inputs.length<5) inputs.push('');
                 renderEditor(); loadMemories();
@@ -76,23 +76,23 @@ window.MXLPlugins.dve = (function () {
     function renderEditor(){
         let cards=''; for(let i=0;i<4;i++) cards+=boxCardHtml(i);
         EL.innerHTML=`
-            <div class="dve-canvas-wrap"><canvas id="dve_canvas"></canvas></div>
-            <div class="dve-row"><label>Fond</label>
-                <select onchange="__dve.postInput(4, this.value)">${srcOptions(inputs[4])}</select></div>
-            <div class="dve-boxes">${cards}</div>
-            <div class="dve-memories"><strong>Mémoires</strong>
-                <ul class="dve-mem-list" id="dve-mem-list"></ul>
-                <div class="dve-mem-bar">
-                    <input type="text" id="dve-mem-name" placeholder="Nom de la mémoire" style="width:12em">
-                    <button class="btn btn-green" onclick="__dve.saveMemory()">Enregistrer la disposition</button>
-                    <button class="btn btn-ghost" onclick="__dve.importClick()">Importer un fichier</button>
-                    <input type="file" id="dve-mem-import" accept="application/json,.json" style="display:none" onchange="__dve.onImportMemFile(this)">
+            <div class="split-canvas-wrap"><canvas id="split_canvas"></canvas></div>
+            <div class="split-row"><label>Fond</label>
+                <select onchange="__split.postInput(4, this.value)">${srcOptions(inputs[4])}</select></div>
+            <div class="split-boxes">${cards}</div>
+            <div class="split-memories"><strong>Mémoires</strong>
+                <ul class="split-mem-list" id="split-mem-list"></ul>
+                <div class="split-mem-bar">
+                    <input type="text" id="split-mem-name" placeholder="Nom de la mémoire" style="width:12em">
+                    <button class="btn btn-green" onclick="__split.saveMemory()">Enregistrer la disposition</button>
+                    <button class="btn btn-ghost" onclick="__split.importClick()">Importer un fichier</button>
+                    <input type="file" id="split-mem-import" accept="application/json,.json" style="display:none" onchange="__split.onImportMemFile(this)">
                     <label style="margin-left:12px">Transition&nbsp;
-                        <input type="range" id="dve-recall-dur" min="0" max="5000" step="100" value="1000"
-                               oninput="this.parentNode.querySelector('#dve-dur-val').textContent=(this.value/1000).toFixed(1)+'s'">
-                        <span id="dve-dur-val">1.0s</span></label>
+                        <input type="range" id="split-recall-dur" min="0" max="5000" step="100" value="1000"
+                               oninput="this.parentNode.querySelector('#split-dur-val').textContent=(this.value/1000).toFixed(1)+'s'">
+                        <span id="split-dur-val">1.0s</span></label>
                 </div></div>`;
-        const cv=$('#dve_canvas');
+        const cv=$('#split_canvas');
         cv.addEventListener('pointerdown', canvasDown);
         cv.addEventListener('pointermove', canvasMove);
         cv.addEventListener('pointerup', canvasUp);
@@ -102,31 +102,31 @@ window.MXLPlugins.dve = (function () {
 
     function boxCardHtml(i){
         const b=boxes[i];
-        return `<div class="dve-box-card${b.enabled?' on':''}" id="dve-card-${i}">
-            <h4><input type="checkbox" ${b.enabled?'checked':''} onchange="__dve.postBox(${i},{enabled:this.checked})"> Box ${i+1}</h4>
-            <div class="dve-row"><label>Source</label>
-                <select onchange="__dve.postInput(${i}, this.value)">${srcOptions(inputs[i])}</select></div>
-            <div class="dve-row"><label>X</label><input type="number" step="0.01" min="0" max="1" value="${b.x.toFixed(2)}" data-f="x" data-i="${i}" onchange="__dve.fieldChange(${i})">
-                <label>Y</label><input type="number" step="0.01" min="0" max="1" value="${b.y.toFixed(2)}" data-f="y" data-i="${i}" onchange="__dve.fieldChange(${i})"></div>
-            <div class="dve-row"><label>Taille</label><input type="number" step="0.01" min="0.05" max="1" value="${b.size.toFixed(2)}" data-f="size" data-i="${i}" onchange="__dve.fieldChange(${i})"></div>
-            <div class="dve-crop">
-                <label>Crop H<input type="number" step="0.01" min="0" max="0.9" value="${b.crop.t.toFixed(2)}" data-c="t" data-i="${i}" onchange="__dve.cropChange(${i})"></label>
-                <label>Crop B<input type="number" step="0.01" min="0" max="0.9" value="${b.crop.b.toFixed(2)}" data-c="b" data-i="${i}" onchange="__dve.cropChange(${i})"></label>
-                <label>Crop G<input type="number" step="0.01" min="0" max="0.9" value="${b.crop.l.toFixed(2)}" data-c="l" data-i="${i}" onchange="__dve.cropChange(${i})"></label>
-                <label>Crop D<input type="number" step="0.01" min="0" max="0.9" value="${b.crop.r.toFixed(2)}" data-c="r" data-i="${i}" onchange="__dve.cropChange(${i})"></label>
+        return `<div class="split-box-card${b.enabled?' on':''}" id="split-card-${i}">
+            <h4><input type="checkbox" ${b.enabled?'checked':''} onchange="__split.postBox(${i},{enabled:this.checked})"> Box ${i+1}</h4>
+            <div class="split-row"><label>Source</label>
+                <select onchange="__split.postInput(${i}, this.value)">${srcOptions(inputs[i])}</select></div>
+            <div class="split-row"><label>X</label><input type="number" step="0.01" min="0" max="1" value="${b.x.toFixed(2)}" data-f="x" data-i="${i}" onchange="__split.fieldChange(${i})">
+                <label>Y</label><input type="number" step="0.01" min="0" max="1" value="${b.y.toFixed(2)}" data-f="y" data-i="${i}" onchange="__split.fieldChange(${i})"></div>
+            <div class="split-row"><label>Taille</label><input type="number" step="0.01" min="0.05" max="1" value="${b.size.toFixed(2)}" data-f="size" data-i="${i}" onchange="__split.fieldChange(${i})"></div>
+            <div class="split-crop">
+                <label>Crop H<input type="number" step="0.01" min="0" max="0.9" value="${b.crop.t.toFixed(2)}" data-c="t" data-i="${i}" onchange="__split.cropChange(${i})"></label>
+                <label>Crop B<input type="number" step="0.01" min="0" max="0.9" value="${b.crop.b.toFixed(2)}" data-c="b" data-i="${i}" onchange="__split.cropChange(${i})"></label>
+                <label>Crop G<input type="number" step="0.01" min="0" max="0.9" value="${b.crop.l.toFixed(2)}" data-c="l" data-i="${i}" onchange="__split.cropChange(${i})"></label>
+                <label>Crop D<input type="number" step="0.01" min="0" max="0.9" value="${b.crop.r.toFixed(2)}" data-c="r" data-i="${i}" onchange="__split.cropChange(${i})"></label>
             </div>
-            <div class="dve-row"><label>Bordure</label>
-                <input type="number" step="1" min="0" max="40" value="${b.border.w}" data-b="w" data-i="${i}" onchange="__dve.borderChange(${i})" style="width:4em" title="Épaisseur en pixels (0 = aucune)">
-                <input type="color" value="${b.border.color}" data-b="color" data-i="${i}" onchange="__dve.borderChange(${i})" title="Couleur de la bordure"></div>
-            <div class="dve-row" style="gap:6px">
-                <button class="btn btn-ghost" style="flex:1" onclick="__dve.copierBox(${i})" title="Copier taille, position, crop et bordure">⧉ Copier</button>
-                <button class="btn btn-ghost" style="flex:1" onclick="__dve.collerBox(${i})" ${clipboard?'':'disabled'} title="Coller les réglages copiés">⪼ Coller</button>
+            <div class="split-row"><label>Bordure</label>
+                <input type="number" step="1" min="0" max="40" value="${b.border.w}" data-b="w" data-i="${i}" onchange="__split.borderChange(${i})" style="width:4em" title="Épaisseur en pixels (0 = aucune)">
+                <input type="color" value="${b.border.color}" data-b="color" data-i="${i}" onchange="__split.borderChange(${i})" title="Couleur de la bordure"></div>
+            <div class="split-row" style="gap:6px">
+                <button class="btn btn-ghost" style="flex:1" onclick="__split.copierBox(${i})" title="Copier taille, position, crop et bordure">⧉ Copier</button>
+                <button class="btn btn-ghost" style="flex:1" onclick="__split.collerBox(${i})" ${clipboard?'':'disabled'} title="Coller les réglages copiés">⪼ Coller</button>
             </div></div>`;
     }
 
     function syncFields(){
         for(let i=0;i<4;i++){
-            const card=$('#dve-card-'+i); if(!card) continue;
+            const card=$('#split-card-'+i); if(!card) continue;
             const b=boxes[i];
             card.classList.toggle('on', b.enabled);
             const cb=card.querySelector('input[type=checkbox]'); if(cb) cb.checked=b.enabled;
@@ -136,7 +136,7 @@ window.MXLPlugins.dve = (function () {
         }
     }
     function borderChange(i){
-        const card=$('#dve-card-'+i);
+        const card=$('#split-card-'+i);
         const w=parseInt(card.querySelector('input[data-b="w"]').value)||0;
         const color=card.querySelector('input[data-b="color"]').value||'#ffffff';
         boxes[i].border={w:Math.max(0,Math.min(40,w)), color};
@@ -146,26 +146,26 @@ window.MXLPlugins.dve = (function () {
         if(!boxes) return;
         const b=boxes[i];
         clipboard={x:b.x,y:b.y,size:b.size,crop:Object.assign({},b.crop),border:Object.assign({},b.border)};
-        updatePasteBtns(); flashBtn(`#dve-card-${i} button[onclick*="copierBox"]`, '✓ Copié');
+        updatePasteBtns(); flashBtn(`#split-card-${i} button[onclick*="copierBox"]`, '✓ Copié');
     }
     function collerBox(i){
         if(!boxes||!clipboard) return;
         const patch={x:clipboard.x,y:clipboard.y,size:clipboard.size,crop:Object.assign({},clipboard.crop),border:Object.assign({},clipboard.border)};
         Object.assign(boxes[i], normBox(Object.assign({}, boxes[i], patch)));
         postBox(i, patch); drawCanvas(); syncFields();
-        flashBtn(`#dve-card-${i} button[onclick*="collerBox"]`, '✓ Collé');
+        flashBtn(`#split-card-${i} button[onclick*="collerBox"]`, '✓ Collé');
     }
     function updatePasteBtns(){ EL && EL.querySelectorAll('button[onclick*="collerBox"]').forEach(b=>{ b.disabled=!clipboard; }); }
     function flashBtn(sel, txt){ const btn=$(sel); if(!btn) return; const t=btn.textContent; btn.textContent=txt; setTimeout(()=>{ btn.textContent=t; },1200); }
 
     function fieldChange(i){
-        const card=$('#dve-card-'+i), patch={};
+        const card=$('#split-card-'+i), patch={};
         card.querySelectorAll('input[data-f]').forEach(inp=>{ patch[inp.dataset.f]=parseFloat(inp.value); });
         Object.assign(boxes[i], normBox(Object.assign({}, boxes[i], patch)));
         drawCanvas(); postBox(i, patch);
     }
     function cropChange(i){
-        const card=$('#dve-card-'+i), crop={};
+        const card=$('#split-card-'+i), crop={};
         card.querySelectorAll('input[data-c]').forEach(inp=>{ crop[inp.dataset.c]=parseFloat(inp.value); });
         boxes[i].crop=Object.assign(boxes[i].crop, normBox({crop}).crop);
         drawCanvas(); postBox(i, {crop:boxes[i].crop});
@@ -179,7 +179,7 @@ window.MXLPlugins.dve = (function () {
         return {x0:cx-visW/2, y0:cy-visH/2, w:visW, h:visH};
     }
     function drawCanvas(){
-        const cv=$('#dve_canvas'); if(!cv||!boxes) return;
+        const cv=$('#split_canvas'); if(!cv||!boxes) return;
         const CW=cv.clientWidth, CH=Math.round(CW*9/16); cv.width=CW; cv.height=CH;
         const ctx=cv.getContext('2d'); ctx.clearRect(0,0,CW,CH);
         ctx.fillStyle=inputs[4]?'#1d3a5f':'#111'; ctx.fillRect(0,0,CW,CH);
@@ -195,7 +195,7 @@ window.MXLPlugins.dve = (function () {
         }
         redrawSidebar();   // garde l'aperçu de la sidebar en phase (édition live, pas de Deploy)
     }
-    function canvasPos(e){ const cv=$('#dve_canvas'), rect=cv.getBoundingClientRect(); return {px:e.clientX-rect.left, py:e.clientY-rect.top, CW:cv.width, CH:cv.height}; }
+    function canvasPos(e){ const cv=$('#split_canvas'), rect=cv.getBoundingClientRect(); return {px:e.clientX-rect.left, py:e.clientY-rect.top, CW:cv.width, CH:cv.height}; }
     // Détecte ce que vise le curseur sur la box i (la plus haute d'abord) :
     // coin bas-droit → resize ; arête → crop du côté (l/r/t/b) ; intérieur → move.
     const EDGE_PX = 7;
@@ -228,7 +228,7 @@ window.MXLPlugins.dve = (function () {
     function canvasMove(e){
         const {px,py,CW,CH}=canvasPos(e);
         if(!drag){   // pas de drag : indique l'action au survol via le curseur
-            const cv=$('#dve_canvas'); if(cv){ const h=hitTest(px,py,CW,CH); cv.style.cursor=h?CURSOR[h.mode]:'default'; }
+            const cv=$('#split_canvas'); if(cv){ const h=hitTest(px,py,CW,CH); cv.style.cursor=h?CURSOR[h.mode]:'default'; }
             return;
         }
         const b=boxes[drag.idx], fw=b.size*CW, fh=b.size*CH;
@@ -257,7 +257,7 @@ window.MXLPlugins.dve = (function () {
     }
     async function postBox(i, patch, skipPersist){
         if(VMID==null) return;
-        if('enabled' in patch){ boxes[i].enabled=patch.enabled; const c=$('#dve-card-'+i); if(c) c.classList.toggle('on', patch.enabled); }
+        if('enabled' in patch){ boxes[i].enabled=patch.enabled; const c=$('#split-card-'+i); if(c) c.classList.toggle('on', patch.enabled); }
         try { await fetch(`/api/containers/${VMID}/plugin/box`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(Object.assign({idx:i}, patch))}); } catch(e){}
         if(!skipPersist) schedulePersist();
     }
@@ -269,7 +269,7 @@ window.MXLPlugins.dve = (function () {
     }
     function schedulePersist(){
         if(persistTimer) clearTimeout(persistTimer);
-        persistTimer=setTimeout(()=>{ persistTimer=null; if(VMID!=null) fetch(`/api/containers/${VMID}/dve/persist`, {method:'POST'}).catch(()=>{}); }, 1500);
+        persistTimer=setTimeout(()=>{ persistTimer=null; if(VMID!=null) fetch(`/api/containers/${VMID}/split/persist`, {method:'POST'}).catch(()=>{}); }, 1500);
     }
 
     // ─── Mémoires ─────────────────────────────────────────
@@ -288,25 +288,25 @@ window.MXLPlugins.dve = (function () {
     function sendSelect(memId){
         const others=containers.filter(d=>d.vmid!==VMID);
         if(!others.length) return '';
-        return `<select onchange="if(this.value){__dve.envoyerMemoire(${memId}, this.value); this.value=''}">
+        return `<select onchange="if(this.value){__split.envoyerMemoire(${memId}, this.value); this.value=''}">
             <option value="">Envoyer vers…</option>
             ${others.map(d=>`<option value="${d.vmid}">${esc(d.hostname)} (#${d.vmid})</option>`).join('')}</select>`;
     }
     async function loadMemories(){
-        if(VMID==null) return; const ul=$('#dve-mem-list'); if(!ul) return;
+        if(VMID==null) return; const ul=$('#split-mem-list'); if(!ul) return;
         try {
-            const mems=await (await fetch(`/api/containers/${VMID}/dve/memories`)).json();
+            const mems=await (await fetch(`/api/containers/${VMID}/split/memories`)).json();
             memCache=mems;
             if(!mems.length){ ul.innerHTML='<li class="meta">Aucune mémoire.</li>'; return; }
             ul.innerHTML=mems.map(m=>{
                 const nOn=(m.config||[]).filter(b=>b&&b.enabled).length;
-                return `<li class="dve-mem-card"><b title="${esc(m.name)}">${esc(m.name)}</b>
+                return `<li class="split-mem-card"><b title="${esc(m.name)}">${esc(m.name)}</b>
                     <canvas data-mem-preview="${m.id}"></canvas>
                     <div class="meta" style="font-size:0.92em">${nOn} box active(s)</div>
-                    <div class="dve-mem-actions">
-                        <button class="btn btn-blue" onclick="__dve.recallMemory(${m.id})">▶ Rappeler</button>
-                        <button class="btn btn-ghost" onclick="__dve.exporterMemoire(${m.id})">Export</button>
-                        <button class="btn btn-red" onclick="__dve.deleteMemory(${m.id})" title="Supprimer">✕</button>
+                    <div class="split-mem-actions">
+                        <button class="btn btn-blue" onclick="__split.recallMemory(${m.id})">▶ Rappeler</button>
+                        <button class="btn btn-ghost" onclick="__split.exporterMemoire(${m.id})">Export</button>
+                        <button class="btn btn-red" onclick="__split.deleteMemory(${m.id})" title="Supprimer">✕</button>
                         ${sendSelect(m.id)}
                     </div></li>`;
             }).join('');
@@ -314,40 +314,40 @@ window.MXLPlugins.dve = (function () {
         } catch(e){ ul.innerHTML=''; }
     }
     async function saveMemory(){
-        const name=($('#dve-mem-name').value||'').trim();
+        const name=($('#split-mem-name').value||'').trim();
         if(!name){ TOAST('Donne un nom à la mémoire.', 'warning'); return; }
-        const r=await fetch(`/api/containers/${VMID}/dve/memories`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})});
-        if(r.ok){ $('#dve-mem-name').value=''; loadMemories(); } else TOAST('Erreur enregistrement mémoire', 'error');
+        const r=await fetch(`/api/containers/${VMID}/split/memories`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})});
+        if(r.ok){ $('#split-mem-name').value=''; loadMemories(); } else TOAST('Erreur enregistrement mémoire', 'error');
     }
     async function recallMemory(id){
-        const dur=parseInt($('#dve-recall-dur').value)||0;
-        await fetch(`/api/containers/${VMID}/dve/memories/${id}/recall`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({duration_ms:dur})});
+        const dur=parseInt($('#split-recall-dur').value)||0;
+        await fetch(`/api/containers/${VMID}/split/memories/${id}/recall`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({duration_ms:dur})});
         setTimeout(()=>fetchState({rebuild:false}), dur+200);
     }
-    async function deleteMemory(id){ await fetch(`/api/containers/${VMID}/dve/memories/${id}`, {method:'DELETE'}); loadMemories(); }
+    async function deleteMemory(id){ await fetch(`/api/containers/${VMID}/split/memories/${id}`, {method:'DELETE'}); loadMemories(); }
     function exporterMemoire(id){
         const m=memCache.find(x=>x.id===id); if(!m) return;
         const blob=new Blob([JSON.stringify({name:m.name, config:m.config}, null, 2)], {type:'application/json'});
         const url=URL.createObjectURL(blob), a=document.createElement('a');
-        a.href=url; a.download=`dve-memoire-${(m.name||'sans-nom').replace(/[^a-zA-Z0-9_-]/g,'_')}.json`; a.click(); URL.revokeObjectURL(url);
+        a.href=url; a.download=`split-memoire-${(m.name||'sans-nom').replace(/[^a-zA-Z0-9_-]/g,'_')}.json`; a.click(); URL.revokeObjectURL(url);
     }
-    function importClick(){ const i=$('#dve-mem-import'); if(i) i.click(); }
+    function importClick(){ const i=$('#split-mem-import'); if(i) i.click(); }
     async function onImportMemFile(input){
         const file=input.files[0]; if(!file) return; input.value='';
         let data; try { data=JSON.parse(await file.text()); } catch(e){ TOAST('Fichier invalide (JSON) : '+e.message, 'error'); return; }
         if(!Array.isArray(data.config)){ TOAST('Fichier invalide : champ "config" manquant.', 'error'); return; }
         const name=(data.name||file.name.replace(/\.json$/i,'')).trim()||'mémoire importée';
-        const r=await fetch(`/api/containers/${VMID}/dve/memories`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name, config:data.config})});
+        const r=await fetch(`/api/containers/${VMID}/split/memories`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name, config:data.config})});
         if(r.ok) loadMemories(); else TOAST('Erreur import (HTTP '+r.status+')', 'error');
     }
     async function envoyerMemoire(memId, targetVmid){
         const m=memCache.find(x=>x.id===parseInt(memId)); if(!m) return;
-        const r=await fetch(`/api/containers/${targetVmid}/dve/memories`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:m.name, config:m.config})});
+        const r=await fetch(`/api/containers/${targetVmid}/split/memories`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:m.name, config:m.config})});
         const tgt=containers.find(d=>d.vmid===parseInt(targetVmid));
         TOAST(r.ok ? `Mémoire « ${m.name} » copiée vers ${tgt?tgt.hostname:('#'+targetVmid)}.` : 'Erreur envoi (HTTP '+r.status+')', r.ok?'info':'error');
     }
 
-    function onResize(){ if(EL && $('#dve_canvas')) drawCanvas(); }
+    function onResize(){ if(EL && $('#split_canvas')) drawCanvas(); }
 
     // ─── Mini-aperçu autonome (sidebar Traitements, indépendant de l'éditeur monté) ──
     // Dessine le schéma des box d'une instance quelconque sur un canvas fourni.
@@ -376,7 +376,7 @@ window.MXLPlugins.dve = (function () {
         } catch(e){}
     }
     // Rafraîchit l'aperçu de l'instance ÉDITÉE dans la sidebar à partir des box locales
-    // (live, sans fetch) — la DVE n'a pas de bouton Deploy qui déclencherait un refresh.
+    // (live, sans fetch) — le Split n'a pas de bouton Deploy qui déclencherait un refresh.
     function redrawSidebar(){
         if(VMID==null) return;
         const cv=document.querySelector('.tp-inst-preview[data-vmid="'+VMID+'"]');
@@ -402,6 +402,6 @@ window.MXLPlugins.dve = (function () {
     const exp = {mount, unmount, listPreview, postInput, postBox, fieldChange, cropChange, borderChange,
         copierBox, collerBox, saveMemory, recallMemory, deleteMemory, exporterMemoire,
         importClick, onImportMemFile, envoyerMemoire};
-    window.__dve = exp;
+    window.__split = exp;
     return exp;
 })();

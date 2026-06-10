@@ -4,7 +4,7 @@
 # Distribué sous licence GNU GPL v3 (ou ultérieure) ; voir le fichier LICENSE.
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DVE / SuperSource plugin : 4 PiP boxes composités sur 1 fond → 1 sortie.
+# Split / SuperSource plugin : 4 PiP boxes composités sur 1 fond → 1 sortie.
 #   5 entrées : slots 0..3 = boxes, slot 4 = fond. Câblage à chaud par slot.
 #   Box : centre (x,y), taille (size, aspect préservé), crop (t/b/l/r).
 #   Rappel mémoire = transition temporisée (tween géométrie + crossfade alpha).
@@ -35,7 +35,7 @@ CONFIG         = {config}
 HOSTNAME       = "{hostname}"
 PLUGIN_VERSION = "{plugin_version}"
 
-SHM_OUT  = CONFIG.get("shm_out") or (HOSTNAME + "_dve")
+SHM_OUT  = CONFIG.get("shm_out") or (HOSTNAME + "_split")
 WIDTH    = int(CONFIG.get("width") or 1280);  WIDTH  -= WIDTH % 2
 HEIGHT   = int(CONFIG.get("height") or 720);  HEIGHT -= HEIGHT % 2
 FPS      = int(round(float(CONFIG.get("fps") or 25))) or 25

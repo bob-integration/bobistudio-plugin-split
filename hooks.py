@@ -4,7 +4,7 @@
 # Distribué sous licence GNU GPL v3 (ou ultérieure) ; voir le fichier LICENSE.
 
 def sync_state(state, params, ctx):
-    """Applique l'état live DVE (:8082/state) aux params persistés."""
+    """Applique l'état live Split (:8082/state) aux params persistés."""
     params = dict(params)
     params["box_config"] = state.get("boxes") or []
     inputs = state.get("inputs") or []
