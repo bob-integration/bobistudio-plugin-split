@@ -28,7 +28,8 @@ class RollingMs:
         if time.time_ns() - self.last_ns > 2_000_000_000: return None
         return round(sum(self.d) / len(self.d), 1)
 
-lat_in = {{}}  # {{shm_name: RollingMs}}
+lat_in  = {{}}  # {{shm_name: RollingMs}} — TRANSIT par entrée (ts_read − ts_in producteur) = arrivée
+own_lat = RollingMs()  # traitement PROPRE du nœud (ts_out − ts_cycle_start) → own_latency_ms
 
 # ─── Config injectée (contrat plugin) ───────────────────────
 CONFIG         = {config}
@@ -140,7 +141,7 @@ state = {{
 }}
 
 metrics_lock = threading.Lock()
-metrics = {{"fps": 0.0, "frame_index": 0, "inputs_latency_ms": {{}}, "inputs_skew_ms": {{}},
+metrics = {{"fps": 0.0, "frame_index": 0, "inputs_latency_ms": {{}}, "own_latency_ms": None, "inputs_skew_ms": {{}},
            "inputs_late": [], "plugin_version": PLUGIN_VERSION, "variant": "v2"}}
 
 bus_error = threading.Event()
@@ -554,6 +555,7 @@ while True:
                 tr = None
 
     ts_in_per_slot = {{}}
+    ts_cycle_start = time.time_ns()   # début du compositing (fond détecté + boxes alignées) → base transit/own
 
     # Background (slot 4, full frame).
     bg_frame, ts_bg = lire_frame_yuv(ensure_input(4))
@@ -587,11 +589,12 @@ while True:
         if not shm_name: continue
         if shm_name not in lat_in:
             lat_in[shm_name] = RollingMs()
-        lat_in[shm_name].push((ts_out - ts_in) / 1e6)
+        lat_in[shm_name].push((ts_cycle_start - ts_in) / 1e6)   # TRANSIT (arrivée) = âge à la lecture
         if T is not None:
             skew_in[shm_name] = round((ts_in - T) / 1e6, 2)
             if ts_in < T - half_ns:
                 late_in.append(shm_name)
+    own_lat.push((ts_out - ts_cycle_start) / 1e6)               # traitement PROPRE (compositing DVE)
     if T is not None:
         with metrics_lock:
             metrics["inputs_skew_ms"] = skew_in
@@ -606,3 +609,4 @@ while True:
             metrics["fps"] = round(frame_index / elapsed, 1)
             metrics["frame_index"] = frame_index
             metrics["inputs_latency_ms"] = {{k: v.avg() for k, v in lat_in.items()}}
+            metrics["own_latency_ms"] = own_lat.avg()
