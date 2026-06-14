@@ -1,7 +1,10 @@
 {
-  "version": "0.5.1",
-  "date": "2026-06-13",
+  "version": "0.5.2",
+  "date": "2026-06-14",
   "changes": {
+    "Corrections (0.5.2)": [
+      "fps en fenêtre glissante (delta de frame_index depuis le dernier report) au lieu d'une moyenne cumulée depuis le démarrage → débit réel instantané (uniformisé avec multiview/pyramide)."
+    ],
     "Nouveautés (0.5.1)": [
       "Latence page Câbles : inputs_latency_ms = TRANSIT (ts_cycle_start − ts_in producteur = âge à la lecture) au lieu de ts_out − ts_in. Nouveau own_latency_ms (:8080) = ts_out − ts_cycle_start = compositing DVE propre. Le skew d'alignement reste inchangé. Suivi de la latence étape par étape le long de la chaîne (arête = arrivée, nœud = traitement)."
     ],

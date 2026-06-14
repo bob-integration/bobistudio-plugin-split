@@ -11,7 +11,7 @@
   },
   "reference_slot": 4,
   "skaarhoj": {"mode": "split", "desc_i18n": "settings.js.skh_desc_split"},
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "SuperSource : 4 PiP (position/taille/crop) composités sur 1 fond → 1 sortie. Géométrie + mémoires/transitions pilotées en live. (v0.2.0 : marqueur `variant` exposé sur :8080 pour tester le multi-versions.)",
   "nav": {
     "section": "traitements",
