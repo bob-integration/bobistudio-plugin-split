@@ -13,10 +13,13 @@
 # Template str.format : SEULS {config} / {hostname} / {plugin_version} sont des
 # placeholders. TOUTE autre accolade littérale doit être doublée {{ }}.
 # ─────────────────────────────────────────────────────────────────────────────
-import mmap, struct, time, threading, json, os, signal
+import time, threading, json, signal
 from collections import deque
 import numpy as np
+import bobimxl   # migration MXL Phase 1 : 5 entrées Reader + 1 sortie Writer (planar, genlock fond)
 from http.server import HTTPServer, BaseHTTPRequestHandler
+
+inst = bobimxl.Instance()   # domaine MXL ($MXL_DOMAIN ou /dev/shm/mxl)
 
 class RollingMs:
     def __init__(self, n=30):
@@ -146,7 +149,7 @@ metrics = {{"fps": 0.0, "frame_index": 0, "inputs_latency_ms": {{}}, "own_latenc
 
 bus_error = threading.Event()
 def _handle_sigbus(signum, frame):
-    print("SIGBUS reçu — réouverture des mmap")
+    print("SIGBUS reçu — réouverture des flux MXL")
     bus_error.set()
 signal.signal(signal.SIGBUS, _handle_sigbus)
 
@@ -306,52 +309,54 @@ threading.Thread(
 input_handles = [None] * N_INPUTS
 
 def ensure_input(idx):
+    """Renvoie le bobimxl.Reader pour l'input idx, en (ré-)ouvrant si le nom de flux a changé.
+    Renvoie None si le slot n'est pas câblé ou le flux est indisponible."""
     with state_lock:
         wanted = state["inputs"][idx]
-    cur = input_handles[idx]
+    cur = input_handles[idx]   # (reader, name) ou None
     if not wanted:
         if cur is not None:
-            try: cur[1].close(); cur[0].close()
+            try: cur[0].close()
             except Exception: pass
             input_handles[idx] = None
         return None
-    if cur is not None and cur[2] == wanted:
-        return cur[1]
+    if cur is not None and cur[1] == wanted:
+        return cur[0]
     if cur is not None:
-        try: cur[1].close(); cur[0].close()
+        try: cur[0].close()
         except Exception: pass
         input_handles[idx] = None
-    path = f"/dev/shm/{{wanted}}"
     try:
-        if not os.path.exists(path): return None
-        if os.path.getsize(path) < V_TOTAL_SIZE: return None
-        f = open(path, "r+b")
-        shm = mmap.mmap(f.fileno(), V_TOTAL_SIZE, prot=mmap.PROT_READ)
-        _ = shm[0:16]
-        input_handles[idx] = (f, shm, wanted)
-        print(f"input #{{idx}} câblé sur {{path}}")
-        return shm
-    except Exception as e:
-        print(f"input #{{idx}} ({{wanted}}) indisponible : {{e}}")
+        r = bobimxl.Reader(inst, wanted)   # lève si le flux n'existe pas encore
+        input_handles[idx] = (r, wanted)
+        print(f"input #{{idx}} câblé sur flux MXL {{wanted}}")
+        return r
+    except Exception:
         return None
 
 
 def _in_header(idx):
-    """(frame_index, write_ts_ns) du producteur de l'entrée `idx`, ou (0, 0)."""
-    shm = ensure_input(idx)
-    if shm is None: return 0, 0
-    try: return struct.unpack_from("QQ", shm, 0)
+    """(frame_index, write_ts_ns) du producteur de l'entrée `idx`, ou (0, 0) si indispo.
+    Sert au verrou de cadence (réf = fond) et à l'alignement par media-timestamp (genlock).
+    En MXL : index = headIndex courant, ts = dernière écriture (TAI)."""
+    r = ensure_input(idx)
+    if r is None: return 0, 0
+    try:
+        h = r.head_index()
+        if h == bobimxl.MXL_UNDEFINED_INDEX: return 0, 0
+        return h, r.last_write_time()
     except Exception: return 0, 0
 
 
-def lire_frame_yuv(shm):
-    if shm is None: return None, None
+def lire_frame_yuv(r):
+    """Lit la frame la plus récente du Reader. Renvoie (bytes, ts_in_ns TAI) ou (None, None).
+    Garde format-fixe : un grain de taille ≠ canvas est ignoré (le composite suppose WxH/chroma/depth)."""
+    if r is None: return None, None
     try:
-        frame_index, ts_in = struct.unpack("QQ", shm[0:16])
-        if frame_index == 0: return None, None
-        slot = frame_index % V_RING_SIZE
-        offset = V_HEADER_SIZE + slot * V_FRAME_SIZE
-        return bytes(shm[offset:offset + V_FRAME_SIZE]), ts_in
+        got = r.get_latest()
+        if got is None: return None, None
+        if len(got[2]) != V_FRAME_SIZE: return None, None   # format ≠ canvas → ignoré
+        return bytes(got[2]), r.last_write_time()
     except Exception:
         return None, None
 
@@ -475,19 +480,18 @@ def _interp_box(fr, to, p):
 
 # ─── Output shm ─────────────────────────────────────────────
 def _ouvrir_sortie(name):
-    path = f"/dev/shm/{{name}}"
-    with open(path, "wb") as f:
-        f.write(b"\x00" * V_TOTAL_SIZE)
-    f = open(path, "r+b")
-    return f, mmap.mmap(f.fileno(), V_TOTAL_SIZE)
+    """Writer MXL de sortie (planar). Index explicite (frame_index, mode free)."""
+    return bobimxl.Writer(inst, name, WIDTH, HEIGHT, CHROMA, BIT_DEPTH, FPS, 1, index_mode="free")
 
-def _ecrire_sortie(shm, yuv, frame_index):
-    slot = frame_index % V_RING_SIZE
-    offset = V_HEADER_SIZE + slot * V_FRAME_SIZE
-    shm[offset:offset + V_FRAME_SIZE] = yuv
-    shm[0:16] = struct.pack("QQ", frame_index, time.time_ns())
+def _ecrire_sortie(w, yuv, frame_index):
+    try:
+        _i, gi, vw = w.open_grain(index=frame_index)
+        vw[:len(yuv)] = np.frombuffer(yuv, dtype=np.uint8)
+        w.commit(gi)
+    except Exception:
+        pass
 
-out_f, out = _ouvrir_sortie(SHM_OUT)
+out = _ouvrir_sortie(SHM_OUT)
 
 frame_index = 0
 start = time.time()
@@ -506,13 +510,13 @@ while True:
         for i in range(N_INPUTS):
             h = input_handles[i]
             if h is not None:
-                try: h[1].close(); h[0].close()
+                try: h[0].close()
                 except Exception: pass
                 input_handles[i] = None
-        try: out.close(); out_f.close()
+        try: out.close()
         except Exception: pass
         time.sleep(2)
-        out_f, out = _ouvrir_sortie(SHM_OUT)
+        out = _ouvrir_sortie(SHM_OUT)
         continue
 
     # Cadence : genlock verrou sur le FOND (slot 4, réf) + alignement des boxes, ou free-run hérité.
@@ -585,13 +589,14 @@ while True:
 
     with state_lock:
         slot_to_shm = list(state["inputs"])
+    _now_tai = bobimxl.now_tai()                                 # base TAI cohérente avec last_write_time
     skew_in = {{}}; late_in = []
     for slot_idx, ts_in in ts_in_per_slot.items():
         shm_name = slot_to_shm[slot_idx] if slot_idx < len(slot_to_shm) else ""
         if not shm_name: continue
         if shm_name not in lat_in:
             lat_in[shm_name] = RollingMs()
-        lat_in[shm_name].push((ts_cycle_start - ts_in) / 1e6)   # TRANSIT (arrivée) = âge à la lecture
+        lat_in[shm_name].push((_now_tai - ts_in) / 1e6)         # TRANSIT (arrivée) = âge à la lecture (TAI)
         if T is not None:
             skew_in[shm_name] = round((ts_in - T) / 1e6, 2)
             if ts_in < T - half_ns:
