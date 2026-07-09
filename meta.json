@@ -1,7 +1,10 @@
 {
-  "version": "0.6.0",
-  "date": "2026-06-22",
+  "version": "0.6.1",
+  "date": "2026-07-10",
   "changes": {
+    "Action shotbox/macros : rappel de mémoire (0.6.1)": [
+      "Nouveau catalogue d'actions (chantier 6) déclaré au manifeste : « Rappeler une mémoire » — les mémoires de l'instance (plugin_store orchestrateur) en liste nommée, transition en ms (0 = cut). Aucun changement de script."
+    ],
     "Nouveautés (0.6.0)": [
       "Migration MXL : entrées (4 box + fond) lues via bobimxl.Reader (hot-wire par slot, format-fixe canvas), sortie composite via bobimxl.Writer (planar, index frame_index). Genlock fond (slot 4) via head_index ; transit TAI (now_tai − last_write_time) ; résilience SIGBUS (réouverture des Reader/Writer). Suppression de tout l'I/O mmap/ring legacy — split rejoint le bus MXL (interopère avec les autres plugins migrés)."
     ],
