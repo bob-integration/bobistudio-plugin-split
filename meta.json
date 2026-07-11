@@ -1,7 +1,12 @@
 {
-  "version": "0.6.1",
-  "date": "2026-07-10",
+  "version": "0.7.0",
+  "date": "2026-07-11",
   "changes": {
+    "Mode tranche MXL (0.7.0)": [
+      "slice_mode=true (défaut off = chemin historique octet-identique) : composition BANDE PAR BANDE sur le bus MXL slices — fond + 4 boxes suivent chacun LEUR grain via get_slice (réveil au commit partiel du producteur), sortie publiée progressivement (flowDef slice_height, commit validSlices=1..N) → l'aval démarre sur la 1ʳᵉ bande sans attendre la trame. slice_lines = granularité cible (36 → slice_height adapté à la hauteur via le même algo que delay/pyramide). Budget d'attente PAR COUCHE + backoff des entrées mortes (2 timeouts sur le même grain → dormante) + repli grain complet précédent : la sortie n'est jamais bloquée par une source. Éligibilité : sortie progressive (scan=p) + hauteur divisible ; sources whole-frame/entrelacées → dégénéré propre. Métriques :8080 : slice_mode + compteurs slice {layers, valid0, waits, fallbacks, dormant, backoff} ; own_latency_ms EXCLUT les attentes get_slice.",
+      "cadence=\"flow\" (exige le mode tranche éligible) : pacing = grille TAI (motif multiview flow) — le verrou-entrée sur le fond disparaît, chaque couche CIBLE l'index d'epoch fi_out de sa source et la sortie est écrite à ce même index (alignement inter-étages du tissu) ; détection de génération périmée par la grille (tête figée > 250 grains → drop + GC + reopen).",
+      "Durcissement : GC entre close et réouverture dans le handler SIGBUS (piège des générations)."
+    ],
     "Action shotbox/macros : rappel de mémoire (0.6.1)": [
       "Nouveau catalogue d'actions (chantier 6) déclaré au manifeste : « Rappeler une mémoire » — les mémoires de l'instance (plugin_store orchestrateur) en liste nommée, transition en ms (0 = cut). Aucun changement de script."
     ],
