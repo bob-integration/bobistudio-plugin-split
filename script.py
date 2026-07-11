@@ -568,6 +568,11 @@ def _ecrire_sortie(w, yuv, frame_index):
 _sl_backoff = {{}}
 _sl_lasthead = {{}}   # slot → dernière tête vue (détection génération périmée, cadence flow)
 _sl_dbg = None        # [couches, valid0, attentes, replis, dormantes] de la dernière trame
+# Cumulatifs depuis le boot (suffixe _total sur :8080) — accumulés PAR ÉVÉNEMENT dans
+# _sl_ensure (robuste à une exception mi-trame). Leçon du banc mixer : un compteur cumulatif
+# AMBIGU se lit mal → le cumul est explicitement suffixé _total, l'état courant (dormant,
+# backoff) reste INSTANTANÉ.
+_sl_tot = {{"waits": 0, "fallbacks": 0, "waited_ms": 0.0}}
 
 
 def _plane_views(view):
@@ -751,11 +756,13 @@ def _sl_ensure(L, need_k, deadl):
     if need_k <= L["valid"]:
         return 0
     _sl_dbg[2] += 1
+    _sl_tot["waits"] += 1
     left = min(deadl - time.monotonic(), L["budget"] / 1e9)
     w0 = time.monotonic()
     g = L["rd"].get_slice(L["fi"], need_k, timeout_ns=max(1, int(left * 1e9))) if left > 0 else None
     dw = int((time.monotonic() - w0) * 1e9)
     L["budget"] -= dw
+    _sl_tot["waited_ms"] += dw / 1e6
     if g is not None:
         L["valid"] = max(need_k, int(g[1].validSlices or need_k))
     else:
@@ -765,6 +772,7 @@ def _sl_ensure(L, need_k, deadl):
         if gp is not None and len(gp[2]) == V_FRAME_SIZE:
             L["sy"], L["su"], L["sv"] = _plane_views(gp[2])
         _sl_dbg[3] += 1
+        _sl_tot["fallbacks"] += 1
         L["valid"] = L["total"]        # plus aucune attente pour les bandes suivantes
     return dw
 
@@ -1073,7 +1081,18 @@ while True:
             metrics["inputs_latency_ms"] = {{k: v.avg() for k, v in lat_in.items()}}
             metrics["own_latency_ms"] = own_lat.avg()
             if _sl_dbg:
-                # Observabilité mode tranche : compteurs de la dernière trame promus sur :8080.
+                # Observabilité mode tranche (sémantique commune multiview/mixer) :
+                # — DERNIÈRE trame (instantané) : layers (≡ tiles/inputs), valid0, waits,
+                #   fallbacks, dormant, backoff, waited_ms (attentes get_slice, exclues de
+                #   own_latency_ms), bands (bandes émises par trame) ;
+                # — cumulatifs depuis le boot, suffixés _total (leçon banc mixer : un
+                #   compteur cumulatif ambigu se lit mal) : les waits/replis intermittents
+                #   entre deux échantillonnages (1 s) restent visibles ici.
                 metrics["slice"] = {{"layers": _sl_dbg[0], "valid0": _sl_dbg[1],
                                     "waits": _sl_dbg[2], "fallbacks": _sl_dbg[3],
-                                    "dormant": _sl_dbg[4], "backoff": len(_sl_backoff)}}
+                                    "dormant": _sl_dbg[4], "backoff": len(_sl_backoff),
+                                    "bands": HEIGHT // SLICE_H,
+                                    "waited_ms": round(_sl_waited / 1e6, 2),
+                                    "waits_total": _sl_tot["waits"],
+                                    "fallbacks_total": _sl_tot["fallbacks"],
+                                    "waited_ms_total": round(_sl_tot["waited_ms"], 1)}}
