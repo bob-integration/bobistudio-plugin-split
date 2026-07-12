@@ -1,7 +1,10 @@
 {
-  "version": "0.7.1",
-  "date": "2026-07-11",
+  "version": "0.7.2",
+  "date": "2026-07-12",
   "changes": {
+    "Réglages mode tranche (0.7.2)": [
+      "Exposition des réglages du mode tranche dans le panneau ⚙ Réglages et la palette (config_schema, scope system) : slice_mode, slice_lines, cadence. Schéma/UI seulement — aucun changement de comportement du script."
+    ],
     "Compteurs slice recâblés (0.7.1)": [
       "Métriques :8080 metrics.slice alignées sur la sémantique commune multiview/mixer : instantanés de la DERNIÈRE trame {layers (≡ tiles/inputs), valid0, waits, fallbacks, dormant, backoff} + bands (bandes émises par trame) + waited_ms (attentes get_slice de la trame, exclues de own_latency_ms) ; NOUVEAUX cumulatifs depuis le boot, clairement suffixés _total {waits_total, fallbacks_total, waited_ms_total} — leçon du banc mixer : un compteur cumulatif ambigu se lit mal, et les waits/replis intermittents entre deux échantillonnages (1 s) restaient invisibles. Accumulation PAR ÉVÉNEMENT dans _sl_ensure (robuste à une exception mi-trame). Test dédié dans tests/test_split_slice.py (repo principal). Aucun changement de comportement du compose."
     ],
