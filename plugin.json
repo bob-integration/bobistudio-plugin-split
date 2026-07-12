@@ -14,7 +14,7 @@
     "mode": "split",
     "desc_i18n": "settings.js.skh_desc_split"
   },
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "SuperSource : 4 PiP (position/taille/crop) composités sur 1 fond → 1 sortie. Géométrie + mémoires/transitions pilotées en live. (v0.2.0 : marqueur `variant` exposé sur :8080 pour tester le multi-versions.)",
   "nav": {
     "section": "traitements",
@@ -149,6 +149,7 @@
   "config_schema": [
     {
       "key": "slice_mode",
+      "hidden": true,
       "type": "checkbox",
       "label": "Mode tranche (latence sous-image)",
       "help": "La vidéo est publiée bande par bande sur le bus MXL : l'aval démarre sur la première bande sans attendre l'image complète (latence sous-image). Entrelacé ou hauteur non divisible → repli image entière. Désactivé (défaut) = comportement historique. Le fond et chaque box suivent leur grain source.",
@@ -157,6 +158,7 @@
     },
     {
       "key": "slice_lines",
+      "hidden": true,
       "type": "number",
       "label": "Lignes par tranche",
       "help": "Hauteur des bandes (lignes). Doit être un diviseur de la hauteur d'image (36 pour 1080p) — sinon repli image entière.",
@@ -170,6 +172,7 @@
     },
     {
       "key": "cadence",
+      "hidden": true,
       "type": "select",
       "label": "Cadence de composition",
       "help": "flow : tissu en tranches — chaque couche cible l'index d'epoch de sa source et la sortie est écrite à ce même index (exige le mode tranche éligible, sinon repli pacing historique).",
