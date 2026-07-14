@@ -247,6 +247,16 @@ window.MXLPlugins.split = (function () {
     // Mêmes classes (.cc-knob / .cc-knob-dial / .cc-knob-value), même cadran SVG, mêmes
     // interactions. AJOUT : shape="angle" → cercle complet, repère à 12 h, pour la ROTATION
     // d'une box et la DIRECTION de la lumière (un angle n'est pas une jauge).
+    //
+    // ★ BOUTONS −/+ (0.11.1) : le champ chiffré n'est plus exclu du stepper GLOBAL
+    // (static/scripts.js : MutationObserver → enrobage `.num-stepper`). La 0.9.2 le retirait
+    // (`no-stepper`) parce que 56 px de champ + 2 boutons débordaient de la colonne du cadran :
+    // c'était contourner le problème, pas le régler. La colonne est ÉLARGIE (control.css) — la
+    // grille pleine largeur de la 0.9.3 en a la place — et le correcteur de couleur, lui, laisse
+    // bien ses champs recevoir le stepper : parité, comme partout ailleurs dans le produit.
+    // Le PAS est le même pour tout le monde (`step` du champ = `data-step` du cadran, dérivé de
+    // /state.caps) : bouton −/+, flèches clavier et molette avancent EXACTEMENT du même pas —
+    // une seule vérité. Le stepper émet `change` → le commit passe par le handler du rotatif.
     function knobSvg(p01, shape, val) {
         const r = 22, C = 2 * Math.PI * r;
         if (shape === 'angle') {
@@ -292,7 +302,7 @@ window.MXLPlugins.split = (function () {
        aria-valuemin="${p.min}" aria-valuemax="${p.max}" aria-valuenow="${v}"
        aria-valuetext="${mixed ? esc(T('mixed_short', 'valeurs multiples')) : esc(fmt(v, p.step, p.unit))}"
        title="${esc((T('knob_title', 'Glisser vertical, molette, flèches (Maj = pas fin). Double-clic = valeur par défaut.') + (multiTitle ? ' ' + multiTitle : '')))}">${knobSvg((v - p.min) / ((p.max - p.min) || 1), shape, v)}</div>
-  <input type="number" class="cc-knob-value no-stepper" min="${p.min}" max="${p.max}" step="${p.step}"
+  <input type="number" class="cc-knob-value" min="${p.min}" max="${p.max}" step="${p.step}"
          value="${mixed ? '' : v}" placeholder="${mixed ? '—' : ''}"
          title="${esc(multiTitle)}" aria-label="${esc(p.label)}"></div>`;
     }
@@ -387,11 +397,21 @@ window.MXLPlugins.split = (function () {
                 dial.innerHTML = knobSvg((c - min) / ((max - min) || 1), knob.dataset.shape, c);
                 dial.setAttribute('aria-valuenow', c);
             });
-            num.addEventListener('change', () => {         // commit
+            num.addEventListener('change', () => {         // commit (y compris depuis −/+)
                 const v = parseFloat(num.value); if (isNaN(v)) return;
                 const c = knobClamp(knob, v);
                 knobApply(knob, c); knobPost(knob, c);
             });
+            // VALEURS DIVERGENTES : le champ est VIDE (il n'affirme pas une valeur commune qui
+            // n'existe pas). Un −/+ partirait donc de 0 — et écraserait la sélection avec ±1 pas
+            // depuis zéro. On amorce le champ sur la valeur de la box de RÉFÉRENCE juste avant
+            // que le stepper ne calcule, exactement comme le fait le cadran quand on le saisit.
+            // Écoute en CAPTURE sur le rotatif : le stepper global est enrobé après coup (rAF),
+            // ses boutons n'existent pas encore au moment du bind.
+            knob.addEventListener('pointerdown', e => {
+                const btn = e.target && e.target.closest && e.target.closest('.num-btn');
+                if (btn && num.value === '') num.value = (+knob.dataset.ref || 0);
+            }, true);
         });
     }
 
@@ -851,6 +871,17 @@ ${!advanced ? '' : `<div id="split_adv">
         host.querySelectorAll('input[type=number], input[type=color], select[data-key]').forEach(inp => {
             if (inp.classList.contains('cc-knob-value')) return;   // géré par bindKnobs
             inp.onchange = () => onFieldChange(inp);
+            // Champs SIMPLES (X/Y, tailles, z, largeurs de bordure) : ils portent aussi les
+            // boutons −/+ (stepper global). Même précaution qu'aux rotatifs pour une sélection
+            // aux VALEURS DIVERGENTES (champ vide) : amorcer sur la valeur de référence, sinon
+            // le − /+ partirait de zéro. (Capture : les boutons sont enrobés après coup.)
+            const f = inp.closest('.field');
+            if (f && inp.type === 'number' && inp.dataset.ref !== undefined) {
+                f.addEventListener('pointerdown', e => {
+                    const btn = e.target && e.target.closest && e.target.closest('.num-btn');
+                    if (btn && inp.value === '') inp.value = (+inp.dataset.ref || 0);
+                }, true);
+            }
         });
         host.querySelectorAll('input[data-flag]').forEach(cb => {
             if (cb.dataset.indeterminate) cb.indeterminate = true;   // états divergents : ni coché ni décoché

@@ -24,7 +24,11 @@ Dans **Traitements → DVE** :
 - **Rotatifs** : les grandeurs continues (crop, rotation, opacité, adoucissement, coins, biseau,
   ombre, lumière, habillage) se règlent au **cadran** — même composant que le correcteur de
   couleur : glissé vertical, molette, flèches (Maj = pas fin), double-clic = valeur par défaut.
-  Le **champ chiffré sous le cadran reste éditable** (précision et accessibilité).
+  Le **champ chiffré sous le cadran reste éditable** (précision et accessibilité), et il porte les
+  **boutons −/+** du produit (appui maintenu = répétition), comme **tous** les champs numériques du
+  Split (position, tailles, z-ordre, largeurs de bordure, durées). Le **pas est unique** : bouton,
+  flèches du clavier et molette avancent exactement du même pas — celui déclaré par le moteur dans
+  `/state.caps` (un angle ne s'incrémente donc pas comme une opacité).
 - **Activer/désactiver** chaque box via son switch.
 - Le **budget de trame** du moteur est affiché en permanence dans la barre d'outils
   (% du budget, nombre de box en rotation) : au-delà de 100 %, le Split décroche — la rotation

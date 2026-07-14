@@ -83,6 +83,25 @@
 .cc-knob-value::-webkit-outer-spin-button,
 .cc-knob-value::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .cc-knob-value:focus { border-color: var(--accent); outline: none; }
+
+/* ── Boutons −/+ SUR LE CHAMP DU ROTATIF (0.11.1) — parité avec le correcteur de couleur ──
+   Le champ chiffré reçoit le stepper GLOBAL du produit (static/scripts.js, MutationObserver :
+   `− [champ] +`, appui maintenu = répétition). Il en était exclu (`no-stepper`) parce que
+   56 px de champ + 2 boutons débordaient de la colonne du cadran : on ÉLARGIT la colonne (la
+   grille pleine largeur de la 0.9.3 en a la place) au lieu de supprimer des boutons que
+   l'utilisateur attend et qui existent partout ailleurs.
+   Dans le stepper, le champ redevient FLUIDE (flex) : sa largeur fixe de 56 px ne vaut plus que
+   pour un champ nu. Les coins arrondis passent aux boutons (règle de base.css). */
+.cc-knob { min-width: 112px; }
+.cc-knob .num-stepper { width: 112px; }
+.cc-knob .num-stepper .cc-knob-value {
+    width: auto; flex: 1 1 auto; min-width: 0;
+    border-radius: 0; min-height: 26px;
+}
+/* Cible tactile : 28 px de large, hauteur alignée sur le champ (26 px) — comme les steppers
+   des autres pages. Couleurs/états : ceux de base.css (thèmes clair/sombre/contraste). */
+.cc-knob .num-stepper .num-btn { width: 28px; min-height: 26px; font-size: 1.05em; }
+
 /* Rotatif d'un réglage désactivé (ex. ombre éteinte) : inerte ET visiblement inerte — le
    « pourquoi » est porté par le title du groupe (jamais de contrôle muet). */
 .cc-knob-row.is-off { opacity: 0.4; pointer-events: none; }
