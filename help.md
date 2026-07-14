@@ -1,6 +1,6 @@
 # DVE / SuperSource
 
-Compose 4 incrustations (PiP) sur un fond — équivalent du SuperSource ATEM. 5 entrées (Fond + Box 1–4), 1 sortie. Compositing live, mémoires avec transitions interpolées.
+Compose 4 incrustations (PiP) sur un fond — un composeur multi-PiP. 5 entrées (Fond + Box 1–4), 1 sortie. Compositing live, mémoires avec transitions interpolées.
 
 ## Câblage
 
@@ -18,7 +18,13 @@ Dans **Traitements → DVE** :
 - **Flèches du clavier** : déplacement **pixel par pixel** de la sortie ; **Maj+flèche** = 10 px.
 - **Barre d'outils** (identique à l'éditeur de layout multiview) : **aligner** (gauche / centre /
   droite, haut / milieu / bas), **même taille** que la référence, **distribuer** (H/V),
-  **copier/coller les réglages** d'une box (hors position).
+  **copier/coller les réglages** d'une box (hors position), et **snap magnétique** (aimantation aux
+  bords et au centre du cadre, et aux autres box — guides pointillés pendant le glissé). Les
+  **flèches du clavier contournent le magnétisme** : c'est le geste du réglage au pixel près.
+- **Rotatifs** : les grandeurs continues (crop, rotation, opacité, adoucissement, coins, biseau,
+  ombre, lumière, habillage) se règlent au **cadran** — même composant que le correcteur de
+  couleur : glissé vertical, molette, flèches (Maj = pas fin), double-clic = valeur par défaut.
+  Le **champ chiffré sous le cadran reste éditable** (précision et accessibilité).
 - **Activer/désactiver** chaque box via son switch.
 - Le **budget de trame** du moteur est affiché en permanence dans la barre d'outils
   (% du budget, nombre de box en rotation) : au-delà de 100 %, le Split décroche — la rotation
@@ -32,13 +38,13 @@ Enregistrer une disposition (bouton « Enregistrer »), la rappeler avec une **t
 
 Actions par mémoire : **Rappeler**, **Exporter** (.json), **Envoyer vers** un autre DVE, **Supprimer**.
 
-## Pilotage ATEM
+## Pilotage depuis un pupitre
 
-Les boxes SuperSource sont pilotables depuis un pupitre ATEM. Configurer dans **Réglages → Pupitres ATEM** : affecter le DVE en SS0 ou SS1 du pupitre.
+Les boxes sont pilotables depuis un pupitre externe compatible. Configurer dans **Réglages → Pupitres** : affecter le Split à l'un des deux emplacements de composition du pupitre.
 
 ## Notes
 
-- Le modèle de box est identique au SuperSource ATEM (centre normalisé + échelle, ratio préservé)
+- Le modèle de box est un centre normalisé + une échelle, à ratio préservé par défaut
 - Importer une mémoire depuis un fichier `.json` exporté d'un autre DVE
 
 ---
@@ -50,7 +56,7 @@ composition emprunte le chemin historique (sortie **octet-identique** à 0.8.0, 
 
 ## Couche ART (habillage)
 
-L'habillage graphique du SuperSource : logo, cadre, décor de plateau posé **au-dessus** ou **en
+L'habillage graphique : logo, cadre, décor de plateau posé **au-dessus** ou **en
 dessous** des boxes, avec un **incrustateur** qui y perce des trous où se logent les caméras.
 
 - **Source = image importée** (PNG/JPEG). Ce n'est *pas* une 6ᵉ entrée vidéo, et c'est un
@@ -62,7 +68,7 @@ dessous** des boxes, avec un **incrustateur** qui y perce des trous où se logen
   (fond vert/bleu), ou `none`. Réglages : `clip` (seuil), `gain`, `invert`, `opacity`.
 - Un PNG à fond transparent + clé `alpha` est le cas le plus simple et le plus propre.
 
-## Bordure complète (modèle ATEM)
+## Bordure complète
 
 - `w` / `color` : le trait plat historique (inchangé).
 - `inner` / `outer` : largeurs **intérieure** et **extérieure** distinctes.
@@ -77,8 +83,8 @@ dessous** des boxes, avec un **incrustateur** qui y perce des trous où se logen
 `rotation` (la **tuile entière** bascule, cadre compris — pas seulement le contenu),
 `opacity`, `feather` (adoucissement des bords), `radius` (coins arrondis),
 `shadow` (ombre portée : `dx`/`dy`/`blur`/`opacity`/`color`), `mirror_h`/`mirror_v`,
-`aspect: free` + `size_x`/`size_y` (**ratio libre** — l'ATEM, lui, impose le ratio d'origine),
-`z` (**ordre de superposition libre** — l'ATEM fige 1→2→3→4).
+`aspect: free` + `size_x`/`size_y` (**ratio libre** — à ratio conservé, la box garde le format de
+sa source), `z` (**ordre de superposition libre** — au lieu de l'ordre figé 1→2→3→4).
 
 ## Transitions
 

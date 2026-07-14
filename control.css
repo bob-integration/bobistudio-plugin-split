@@ -1,24 +1,114 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright (C) 2026 BOBI SAS, France
 
-   UI de contrôle du Split / SuperSource (montée dans le shell Traitements).
-   Charte : DESIGN.md — tokens de thème uniquement (var(--bg-*), var(--border*), var(--text*),
-   var(--accent*), var(--space-N)), aucune couleur en dur hors surfaces de prévisualisation
-   canvas (--canvas-bg) et couleurs de signal des box (données, pas décor).
-   La barre d'outils reprend le vocabulaire du composer multiview / éditeur de PiP
-   (.tool-group / .tool-row / .tool-btn) : mêmes classes, mêmes pictos, mêmes tailles —
-   redéfinies ici pour que le Split reste autonome si la CSS multiview n'est pas chargée. */
+   UI de contrôle du Split (montée dans le shell Traitements).
 
-.split-ui { display: flex; flex-direction: column; gap: var(--space-3, 12px); }
+   RÉFÉRENCE D'UI DU PROJET : le CORRECTEUR DE COULEUR (plugins/color_corrector). Le langage
+   visuel du panneau de réglages en vient : sections `.cc-section` à micro-titre `h4` majuscule,
+   rangées de rotatifs `.cc-knob-row`, composant rotatif `.cc-knob` (cadran + champ chiffré),
+   bandeau d'erreur `.cc-error`, note de bas de panneau `.cc-hint`.
+   ★ Le rotatif n'est PAS réinventé ici : les règles `.cc-knob*` ci-dessous sont la COPIE
+   CONFORME de plugins/color_corrector/control.css (mêmes classes, mêmes dimensions, mêmes
+   états) — nécessaire parce que le shell ne charge que la CSS du plugin actif, et que le
+   correcteur est un sous-module qu'on ne modifie pas. Candidat évident à une promotion dans
+   static/css/base.css le jour où on voudra dédupliquer (une seule définition pour les deux).
+   Seul AJOUT au composant : la variante `.cc-knob[data-shape="angle"]` (cercle complet 0-360°,
+   repère à 12 h) pour les ANGLES — même cadran, même champ, seule la géométrie change.
 
-/* ── Barre d'outils (transposée du composer multiview) ───────────────────── */
+   La barre d'outils (aligner/distribuer/copier-coller + snap) vient, elle, de l'éditeur de
+   layout multiview / PiP (static/pip_editor.js) : mêmes classes .tool-*, mêmes pictos.
+   Charte : DESIGN.md — tokens de thème uniquement, espacements var(--space-N). */
+
+.split-ui { display: flex; flex-direction: column; gap: var(--space-3); }
+
+/* ── Bandeau d'erreur (copie conforme .cc-error) ─────────────────────────── */
+.cc-error {
+    margin: 0 0 var(--space-3); padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--status-stopped-fg);
+    background: var(--status-stopped-bg);
+    color: var(--status-stopped-fg);
+    border-radius: var(--radius-small); font-size: 0.88em;
+    display: flex; align-items: center; gap: var(--space-2);
+}
+.cc-error button { background: none; border: none; color: inherit; cursor: pointer; font-size: 1em; line-height: 1; }
+
+/* ── Sections (copie conforme .cc-section) ──────────────────────────────── */
+.cc-section { padding: var(--space-4) 0; border-top: 1px solid var(--border-soft); }
+.cc-section:first-of-type { border-top: none; padding-top: var(--space-2); }
+.cc-section h4 {
+    margin: 0 0 var(--space-3); font-size: 0.78em;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-muted); font-weight: 600;
+    display: flex; align-items: center; gap: var(--space-2);
+}
+.cc-hint {
+    margin: var(--space-4) 0 0; padding-top: var(--space-2);
+    border-top: 1px dashed var(--border-soft);
+    font-size: 0.78em; color: var(--text-muted); line-height: 1.6;
+}
+.cc-hint kbd {
+    font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.92em;
+    padding: 1px 5px; border: 1px solid var(--border); border-radius: 3px;
+    background: var(--bg-input); color: var(--text);
+}
+
+/* ── Rotatifs — COPIE CONFORME du correcteur de couleur ─────────────────── */
+.cc-knob-row { display: flex; flex-wrap: wrap; gap: 18px; padding: 4px 0; align-items: flex-start; }
+.cc-knob-row-tight { gap: 10px; justify-content: space-around; }
+.cc-knob { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 2px; min-width: 64px; }
+.cc-knob-label {
+    font-size: 0.72em; color: var(--text-muted); text-transform: uppercase;
+    letter-spacing: 0.5px; font-weight: 600; text-align: center; white-space: nowrap;
+}
+.cc-knob-dial {
+    width: 56px; height: 56px; border-radius: 50%;
+    background: radial-gradient(circle at 50% 35%, var(--bg-elev) 0%, var(--bg-elev) 55%, var(--bg-input) 100%);
+    box-shadow: inset 0 0 0 1px var(--border), inset 0 1px 0 rgba(255,255,255,0.04), 0 1px 2px rgba(0,0,0,0.25);
+    cursor: ns-resize; touch-action: none; user-select: none; transition: box-shadow 120ms ease-out;
+}
+.cc-knob-dial:hover {
+    box-shadow: inset 0 0 0 1px var(--accent), inset 0 1px 0 rgba(255,255,255,0.05), 0 1px 3px rgba(0,0,0,0.35);
+}
+.cc-knob-dial:focus-visible {
+    outline: none; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
+}
+.cc-knob-dial:active { cursor: grabbing; }
+.cc-knob-dial svg { width: 100%; height: 100%; display: block; pointer-events: none; }
+.cc-knob-value {
+    font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.78em;
+    width: 56px; text-align: center; background: var(--bg-input);
+    border: 1px solid var(--border); border-radius: 3px; padding: 2px 4px;
+    color: var(--text-strong); min-height: 24px; -moz-appearance: textfield;
+}
+.cc-knob-value::-webkit-outer-spin-button,
+.cc-knob-value::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.cc-knob-value:focus { border-color: var(--accent); outline: none; }
+/* Rotatif d'un réglage désactivé (ex. ombre éteinte) : inerte ET visiblement inerte — le
+   « pourquoi » est porté par le title du groupe (jamais de contrôle muet). */
+.cc-knob-row.is-off { opacity: 0.4; pointer-events: none; }
+
+/* ── Bascule « mode avancé » — COPIE CONFORME du correcteur de couleur ──── */
+.cc-adv-toggle-row { display: flex; align-items: center; gap: 14px; margin: 6px 0 2px; }
+.cc-adv-toggle-row::before, .cc-adv-toggle-row::after { content: ""; flex: 1; height: 1px; background: var(--border-soft); }
+.cc-adv-toggle {
+    display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px;
+    background: var(--bg-input); border: 1px solid var(--border); border-radius: 999px;
+    color: var(--text-muted); font: inherit; font-size: 0.82em; font-weight: 600; letter-spacing: 0.3px;
+    cursor: pointer; transition: color 120ms ease-out, border-color 120ms ease-out, background 120ms ease-out;
+}
+.cc-adv-toggle:hover { color: var(--text); border-color: var(--accent); }
+.cc-adv-toggle:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
+.cc-adv-toggle.is-open { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.cc-adv-toggle-chevron { display: inline-block; font-size: 0.9em; line-height: 1; transition: transform 180ms cubic-bezier(0.22,1,0.36,1); }
+.cc-adv-toggle.is-open .cc-adv-toggle-chevron { transform: rotate(180deg); }
+/* Interrupteur posé dans un titre de section (motif .cc-glow-switch du correcteur). */
+.split-inline-switch { margin-left: auto; display: inline-flex; align-items: center; }
+
+/* ── Barre d'outils (éditeur de layout multiview / PiP) ──────────────────── */
 .split-toolbar {
-    display: flex; flex-wrap: wrap; align-items: flex-end;
-    gap: var(--space-3, 12px);
-    padding: var(--space-2, 8px);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-small, 4px);
-    background: var(--bg-elev);
+    display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3);
+    padding-bottom: var(--space-3); margin-bottom: var(--space-2);
+    border-bottom: 1px solid var(--border-soft);
 }
 .split-ui .tool-group { display: flex; flex-direction: column; gap: 3px; }
 .split-ui .tool-group-label {
@@ -27,7 +117,7 @@
 }
 .split-ui .tool-row {
     display: flex; gap: 2px; padding: 2px;
-    background: var(--bg-input); border-radius: var(--radius-small, 4px);
+    background: var(--bg-input); border-radius: var(--radius-small);
 }
 .split-ui .tool-btn {
     display: inline-flex; align-items: center; justify-content: center;
@@ -41,137 +131,101 @@
 .split-ui .tool-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 .split-ui .tool-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .split-ui .tool-btn svg { width: 16px; height: 16px; }
+.split-snap { align-self: center; white-space: nowrap; }
 
-/* Chip de budget de trame (état moteur — jamais muet : valeur + cause) */
+/* Chip de budget de trame (lecture d'état moteur — valeur + cause, jamais muet) */
 .split-budget {
-    margin-left: auto; display: flex; align-items: center; gap: var(--space-2, 8px);
+    margin-left: auto; align-self: center;
+    display: flex; align-items: center; gap: var(--space-2);
     font-size: 0.8em; color: var(--text-muted);
 }
-.split-budget .split-budget-val {
+.split-budget-val {
     font-family: var(--font-mono, ui-monospace, monospace);
     padding: 2px 8px; border-radius: 3px;
     background: var(--bg-input); border: 1px solid var(--border); color: var(--text);
 }
 .split-budget.warn .split-budget-val {
-    background: var(--status-warning-bg); color: var(--status-warning-fg);
-    border-color: var(--status-warning-fg);
+    background: var(--status-warning-bg); color: var(--status-warning-fg); border-color: var(--status-warning-fg);
 }
 .split-budget.over .split-budget-val {
-    background: var(--status-stopped-bg); color: var(--status-stopped-fg);
-    border-color: var(--status-stopped-fg);
+    background: var(--status-stopped-bg); color: var(--status-stopped-fg); border-color: var(--status-stopped-fg);
 }
 
-/* ── Corps : canvas + panneau de propriétés ─────────────────────────────── */
-.split-cols {
-    display: grid; grid-template-columns: minmax(0, 1fr) 320px;
-    gap: var(--space-3, 12px); align-items: start;
-}
+/* ── Corps : scène (canvas) + panneau de réglages ────────────────────────── */
+.split-cols { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--space-4); align-items: start; }
 @media (max-width: 1080px) { .split-cols { grid-template-columns: 1fr; } }
-
-.split-stage { display: flex; flex-direction: column; gap: var(--space-2, 8px); min-width: 0; }
+.split-stage { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
 .split-canvas-wrap { position: relative; width: 100%; }
 #split_canvas {
     display: block; width: 100%; aspect-ratio: 16 / 9;
     background: var(--canvas-bg, var(--bg));
-    border: 1px solid var(--border); border-radius: var(--radius-small, 4px);
+    border: 1px solid var(--border); border-radius: var(--radius-small);
     touch-action: none; cursor: default;
 }
 #split_canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.split-hint { font-size: 0.8em; color: var(--text-muted); }
-.split-hint kbd {
-    font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.92em;
-    padding: 1px 5px; border: 1px solid var(--border); border-radius: 3px;
-    background: var(--bg-input); color: var(--text);
-}
 
-/* Bande des 4 box : activation + source, sélection cliquable */
-.split-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--space-2, 8px); }
+/* Bande des 4 box : sélection + activation + source */
+.split-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-2); }
 .split-chip {
-    display: flex; flex-direction: column; gap: 5px;
-    padding: var(--space-2, 8px);
-    border: 1px solid var(--border-soft); border-radius: var(--radius-small, 4px);
+    display: flex; flex-direction: column; gap: var(--space-1);
+    padding: var(--space-2);
+    border: 1px solid var(--border-soft); border-radius: var(--radius-small);
     background: var(--bg-input); cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
 }
+.split-chip:hover { border-color: var(--border); background: var(--bg-hover); }
 .split-chip.sel { border-color: var(--accent); background: var(--bg-selected); }
-.split-chip-head { display: flex; align-items: center; gap: var(--space-2, 8px); font-size: 0.86em; font-weight: 600; }
+.split-chip-head { display: flex; align-items: center; gap: var(--space-2); font-size: 0.86em; font-weight: 600; }
 .split-chip-dot { width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; }
-.split-chip-head .split-chip-name { flex: 1; min-width: 0; }
-.split-chip select { width: 100%; min-width: 0; }
+.split-chip-name { flex: 1; min-width: 0; }
 
-/* ── Panneau de propriétés ──────────────────────────────────────────────── */
+/* Panneau de réglages (conteneur = même surface que l'éditeur multiview) */
 .split-props {
-    border: 1px solid var(--border); border-radius: var(--radius, 6px);
-    background: var(--bg-elev); padding: var(--space-3, 12px);
-    display: flex; flex-direction: column; gap: var(--space-2, 8px);
+    background: var(--bg-elev); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: var(--space-4); min-width: 0;
 }
-.split-props h3 { margin: 0; font-size: 0.95em; font-weight: 600; }
-.split-props .tabs { margin-bottom: 0; }
-.split-pane { display: flex; flex-direction: column; gap: var(--space-2, 8px); }
+.split-props-head { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-3); }
+.split-props-head h3 { margin: 0; font-size: 1em; font-weight: 600; color: var(--text-strong); }
 .split-pane[hidden] { display: none; }
-.split-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2, 8px); }
-.split-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.split-field > label { font-size: 0.78em; font-weight: 500; color: var(--text-muted); }
-.split-field input[type=number], .split-field input[type=text], .split-field select {
-    width: 100%; min-width: 0; box-sizing: border-box;
+
+/* Champs (mêmes valeurs que .mw-editor .field — référence des champs du projet) */
+.split-ui .field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.split-ui .field label { font-size: 0.78em; color: var(--text-muted); font-weight: 500; margin-bottom: 0; }
+.split-ui .field input:not([type="checkbox"]),
+.split-ui .field select {
     background: var(--bg-input); color: var(--text);
-    border: 1px solid var(--border); border-radius: var(--radius-small, 4px);
-    padding: 6px 9px; font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.85em;
+    border: 1px solid var(--border); border-radius: var(--radius-small);
+    padding: 6px 9px; font-family: var(--font-mono); font-size: 0.88em;
+    min-height: 32px; min-width: 0; width: 100%; box-sizing: border-box;
 }
-.split-field input:focus, .split-field select:focus {
-    border-color: var(--accent); background: var(--bg); outline: none;
+.split-ui .field input:focus-visible, .split-ui .field select:focus-visible {
+    outline: none; border-color: var(--accent); background: var(--bg);
 }
-.split-field input[type=color] {
-    width: 100%; height: 30px; padding: 2px; box-sizing: border-box;
-    background: var(--bg-input); border: 1px solid var(--border);
-    border-radius: var(--radius-small, 4px); cursor: pointer;
-}
-.split-field input:disabled, .split-field select:disabled { opacity: 0.5; cursor: not-allowed; }
-.split-toggles { display: flex; flex-wrap: wrap; gap: var(--space-3, 12px); }
-.toggle-inline { display: inline-flex; align-items: center; gap: 7px; font-weight: 500; color: var(--text); font-size: 0.85em; }
-.split-note { font-size: 0.78em; color: var(--text-muted); }
-.split-empty { color: var(--text-muted); font-size: 0.86em; }
+.split-ui .field input[type="color"] { padding: 2px; cursor: pointer; }
+.split-ui .field input:disabled, .split-ui .field select:disabled { opacity: 0.5; cursor: not-allowed; }
+.split-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+.split-grid-narrow { max-width: 520px; }
+.split-toggles { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
+/* Rangée d'actions : les .btn du système portent des marges par défaut (margin-top:10px) qui
+   désalignent une rangée mêlant champs et boutons → neutralisées ici, alignement en flex-end. */
+.split-ui .row { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: flex-end; }
+.split-ui .row .btn { margin: 0; }
 
-/* Avertissement de coût (rotation hors budget) — explicite, jamais un contrôle muet */
-.split-warn {
-    font-size: 0.78em; padding: 6px 9px; border-radius: var(--radius-small, 4px);
-    border: 1px solid var(--status-warning-fg);
-    background: var(--status-warning-bg); color: var(--status-warning-fg);
-}
-.split-warn.err { border-color: var(--status-stopped-fg); background: var(--status-stopped-bg); color: var(--status-stopped-fg); }
-
-/* ── Sections basses (habillage, lumière/transition, mémoires) ──────────── */
-.split-sections { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--space-3, 12px); }
-.split-card {
-    border: 1px solid var(--border); border-radius: var(--radius, 6px);
-    background: var(--bg-elev); padding: var(--space-3, 12px);
-    display: flex; flex-direction: column; gap: var(--space-2, 8px);
-}
-.split-card > h3 { margin: 0; font-size: 0.95em; font-weight: 600; }
-.split-card .split-grid { grid-template-columns: 1fr 1fr; }
-
-.split-memories { grid-column: 1 / -1; }
+/* ── Mémoires ───────────────────────────────────────────────────────────── */
 .split-mem-list {
-    list-style: none; padding: 0; margin: 0;
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: var(--space-2, 8px);
+    list-style: none; padding: 0; margin: 0 0 var(--space-3);
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: var(--space-2);
 }
 .split-mem-card {
-    border: 1px solid var(--border-soft); border-radius: var(--radius-small, 4px);
-    background: var(--bg-input); padding: var(--space-2, 8px); font-size: 0.82em;
-    display: flex; flex-direction: column; gap: 5px;
+    border: 1px solid var(--border-soft); border-radius: var(--radius-small);
+    background: var(--bg-input); padding: var(--space-2); font-size: 0.82em;
+    display: flex; flex-direction: column; gap: var(--space-1);
 }
-.split-mem-card b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.split-mem-card b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-strong); }
 .split-mem-card canvas {
     width: 100%; aspect-ratio: 16/9; display: block;
     background: var(--canvas-bg, var(--bg)); border: 1px solid var(--border); border-radius: 3px;
 }
-.split-mem-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
-.split-mem-actions .btn { padding: 2px 7px; font-size: 0.92em; }
-.split-mem-actions select { max-width: 100%; font-size: 0.92em; }
-.split-mem-bar { display: flex; gap: var(--space-2, 8px); align-items: end; flex-wrap: wrap; }
-.split-mem-bar .split-field { width: 150px; }
-
-.split-error {
-    padding: 8px 12px; border-radius: var(--radius-small, 4px); font-size: 0.86em;
-    border: 1px solid var(--status-stopped-fg);
-    background: var(--status-stopped-bg); color: var(--status-stopped-fg);
-}
+.split-mem-actions { display: flex; flex-wrap: wrap; gap: var(--space-1); align-items: center; }
+.split-mem-actions select { font-size: 0.92em; max-width: 100%; }
+.split-mem-bar .field { width: 160px; }

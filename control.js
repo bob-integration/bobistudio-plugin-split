@@ -3,47 +3,57 @@
 // Auteur : Cyril Mazouer, pour le compte de BOBI SAS
 // Distribué sous licence GNU GPL v3 (ou ultérieure) ; voir le fichier LICENSE.
 
-// Split / SuperSource — UI de contrôle embarquée (plugin), montée par le shell Traitements via
+// Split — UI de contrôle embarquée (plugin), montée par le shell Traitements via
 // window.MXLPlugins.split.mount(el, vmid, ctx).
 //
-// Refonte 0.9.1 :
-//   • Conforme DESIGN.md : tokens de thème (aucune couleur en dur), switches .ios-toggle pour
-//     TOUT booléen, i18n (window.t, clés plugin.split.*), typographie/espacements du système.
-//   • Barre d'outils TRANSPOSÉE de l'éditeur de layout multiview / PiP (static/pip_editor.js) :
-//     mêmes groupes, MÊMES PICTOS SVG (aligner ×6, distribuer ×2, copier/coller les réglages),
-//     déplacement clavier pixel par pixel (flèches = 1 px de la sortie, Maj = 10 px).
-//   • Pilote tout le moteur 0.9.0 : mode avancé par box (rotation, opacité, feather, coins,
-//     miroir, ratio libre, z libre), bordure ATEM (intérieur/extérieur/biseau) + source de
-//     lumière, ombre portée, couche ART, transitions à courbes + stagger.
-//   • ★ RIEN N'EST CODÉ EN DUR : bornes, défauts, courbes et modes de clé sont lus dans
-//     /state.caps. Le budget de trame (:8080 adv) est affiché en permanence et la rotation
-//     annonce son coût AVANT qu'on la touche (pas de contrôle muet, pas de décrochage muet).
+// ── D'où vient chaque morceau (rien n'est inventé ici) ────────────────────────────────────
+//  • LANGAGE VISUEL du panneau de réglages : le CORRECTEUR DE COULEUR (plugins/color_corrector)
+//    — LA référence d'UI du projet. On en reprend : les sections `.cc-section` à micro-titre `h4`
+//    majuscule, la bascule « mode avancé » `.cc-adv-toggle`, le bandeau `.cc-error`, la note
+//    `.cc-hint`, et surtout le COMPOSANT ROTATIF `.cc-knob` (cadran + champ chiffré) avec ses
+//    interactions exactes : glissé vertical (Maj = pas fin), molette, flèches / PgUp-PgDn /
+//    Début-Fin, double-clic = valeur par défaut. Seul AJOUT : la variante shape="angle" (cercle
+//    complet, repère à 12 h) pour les ANGLES — même cadran, même champ, géométrie différente.
+//    ★ Le correcteur N'A PAS d'onglets : il empile des sections. Le Split fait pareil désormais
+//      (cf. « POURQUOI PLUS D'ONGLETS » dans renderProps — c'était un échec silencieux).
+//  • BARRE D'OUTILS + SNAP MAGNÉTIQUE : l'éditeur de layout multiview / PiP (static/pip_editor.js)
+//    — mêmes groupes, mêmes pictos SVG, mêmes cibles d'aimantation, mêmes guides, même bouton.
+//
+// ── Règles du projet appliquées ──────────────────────────────────────────────────────────
+//  • Bornes / défauts / courbes / modes de clé LUS dans /state.caps — rien codé en dur.
+//  • i18n FR/EN pour tout libellé (window.t, clés plugin.split.*).
+//  • Jamais de contrôle muet : budget de trame moteur affiché en permanence, coût de la rotation
+//    annoncé AVANT usage, contrôle désactivé qui dit pourquoi, refus moteur remonté à l'écran.
 'use strict';
 window.MXLPlugins = window.MXLPlugins || {};
 window.MXLPlugins.split = (function () {
     let EL = null, VMID = null, TOAST = () => {};
     let st = null, caps = null, boxes = null, inputs = ['', '', '', '', ''];
-    let sel = [], clipboard = null, tab = 'geom';
+    let sel = [], clipboard = null, advanced = false, errorMsg = null;
     let sources = [], containers = [], memCache = [], adv = null, metricsErr = false;
-    let drag = null, boxPostTimer = null, persistTimer = null, pollTimer = null, metTimer = null;
+    let drag = null, knobDrag = null, boxPostTimer = null, persistTimer = null, pollTimer = null, metTimer = null;
+    // Snap magnétique — transposé de l'éditeur de PiP : mêmes cibles (bords + centre du cadre,
+    // bords + centre des autres box), seuil ∝ résolution du canvas, guides pointillés, même
+    // bouton. ★ Le nudge clavier CONTOURNE le snap (c'est sa raison d'être : le pixel près).
+    let snapEnabled = true, snapGuides = [];
 
-    // Couleurs de repérage des box (donnée, pas décoration : identifient la box dans l'aperçu).
-    const BOX_COLORS = ['#c0504d', '#4f81bd', '#9bbb59', '#8064a2'];
+    const BOX_COLORS = ['#c0504d', '#4f81bd', '#9bbb59', '#8064a2'];   // repérage des box (donnée, pas décor)
 
-    const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-    const $ = sel_ => (EL ? EL.querySelector(sel_) : null);
+    const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const $ = q => (EL ? EL.querySelector(q) : null);
     const T = (k, fb) => { const v = window.t ? window.t('plugin.split.' + k) : ''; return (v && v !== 'plugin.split.' + k) ? v : fb; };
     const clamp = (v, lo, hi) => { v = parseFloat(v); if (isNaN(v)) return lo; return Math.max(lo, Math.min(hi, v)); };
     const r3 = v => Math.round(v * 1000) / 1000;
+    const decimals = step => { const s = String(step); return s.includes('.') ? s.split('.')[1].length : 0; };
+    const fmt = (v, step, unit) => Number(v).toFixed(decimals(step)) + (unit || '');
+    const SNAP_PX = () => { const cv = $('#split_canvas'); return Math.max(4, Math.round((cv ? cv.width : 640) / 80)); };
 
-    // ─── Domaine des valeurs : LU dans /state.caps, jamais codé en dur ──────────────
-    // cap(groupe, clé) → [min, max, défaut]. Repli neutre si le moteur est plus vieux que l'UI.
+    // ─── Domaine des valeurs : LU dans /state.caps ──────────────────────────────────
     function cap(group, key) {
         const c = caps || {};
         if (group === 'crop') return c.crop || [0, 0.9, 0];
         if (group === 'stagger') return c.stagger_ms || [0, 2000, 0];
-        const g = c[group] || {};
-        return g[key] || [0, 1, 0];
+        return (c[group] || {})[key] || [0, 1, 0];
     }
     function stepOf(min, max) {
         const range = Math.abs(max - min);
@@ -53,6 +63,17 @@ window.MXLPlugins.split = (function () {
     }
     const easings = () => (caps && caps.easings) || ['linear', 'ease_in_out'];
     const artKeys = () => (caps && caps.art_keys) || ['alpha', 'luma', 'chroma', 'none'];
+
+    // ─── Erreur (bandeau .cc-error du correcteur de couleur) ────────────────────────
+    function showError(m) { errorMsg = m; renderError(); }
+    function clearError() { if (errorMsg === null) return; errorMsg = null; renderError(); }
+    function renderError() {
+        const slot = $('#split-error-slot'); if (!slot) return;
+        slot.innerHTML = errorMsg
+            ? `<div class="cc-error" role="alert"><span>⚠ ${esc(errorMsg)}</span>
+               <button type="button" id="split-error-close" aria-label="${esc(T('close', 'Fermer'))}">✕</button></div>` : '';
+        const b = $('#split-error-close'); if (b) b.onclick = clearError;
+    }
 
     // ─── Sources / instances ────────────────────────────────────────────────────────
     async function loadSources() {
@@ -76,8 +97,8 @@ window.MXLPlugins.split = (function () {
     function srcOptions(selected) {
         let h = `<option value="">${esc(T('src_none', '— non câblé —'))}</option>`, found = false;
         for (const s of sources) {
-            const s_ = (s.shm === selected) ? ' selected' : ''; if (s_) found = true;
-            h += `<option value="${esc(s.shm)}"${s_}>${esc(s.label)}</option>`;
+            const k = (s.shm === selected) ? ' selected' : ''; if (k) found = true;
+            h += `<option value="${esc(s.shm)}"${k}>${esc(s.label)}</option>`;
         }
         if (selected && !found) h += `<option value="${esc(selected)}" selected>${esc(selected)} (?)</option>`;
         return h;
@@ -87,8 +108,8 @@ window.MXLPlugins.split = (function () {
     function normBox(b) {
         b = b || {};
         const crop = b.crop || {}, bd = b.border || {}, sh = b.shadow || {};
-        const cv = (g, k, v) => { const [lo, hi, dflt] = cap(g, k); return clamp(v == null ? dflt : v, lo, hi); };
-        const cc = v => { const [lo, hi, dflt] = cap('crop'); return clamp(v == null ? dflt : v, lo, hi); };
+        const cv = (g, k, v) => { const [lo, hi, d] = cap(g, k); return clamp(v == null ? d : v, lo, hi); };
+        const cc = v => { const [lo, hi, d] = cap('crop'); return clamp(v == null ? d : v, lo, hi); };
         return {
             enabled: !!b.enabled,
             x: cv('box_fields', 'x', b.x), y: cv('box_fields', 'y', b.y),
@@ -119,14 +140,12 @@ window.MXLPlugins.split = (function () {
     }
     const wOf = b => (b.aspect === 'free' && b.size_x > 0) ? b.size_x : b.size;
     const hOf = b => (b.aspect === 'free' && b.size_y > 0) ? b.size_y : b.size;
-    // Rectangle VISIBLE (crop appliqué) en coordonnées normalisées 0..1.
     function rectN(b) {
         const fw = wOf(b), fh = hOf(b);
         const visW = fw * (1 - b.crop.l - b.crop.r), visH = fh * (1 - b.crop.t - b.crop.b);
         const cx = b.x + (b.crop.l - b.crop.r) * 0.5 * fw, cy = b.y + (b.crop.t - b.crop.b) * 0.5 * fh;
         return { x0: cx - visW / 2, y0: cy - visH / 2, w: visW, h: visH, cx, cy };
     }
-    // Repose le rectangle visible en x0/y0 → recalcule le centre b.x/b.y (le crop décale le centre).
     function setRectPos(b, x0, y0) {
         const r = rectN(b);
         if (x0 != null) b.x = r3(clamp(b.x + (x0 - r.x0), 0, 1));
@@ -135,10 +154,12 @@ window.MXLPlugins.split = (function () {
     const primary = () => (sel.length ? sel[0] : -1);
 
     // ─── Fetch état / métriques ─────────────────────────────────────────────────────
-    function editing() {
-        if (drag) return true;
+    function userIsEditing() {
+        if (drag || knobDrag) return true;
         const ae = document.activeElement;
-        return !!(ae && EL && EL.contains(ae) && ['INPUT', 'SELECT', 'TEXTAREA'].includes(ae.tagName));
+        if (!ae || !EL || !EL.contains(ae)) return false;
+        if (['INPUT', 'SELECT', 'TEXTAREA'].includes(ae.tagName)) return true;
+        return !!(ae.classList && ae.classList.contains('cc-knob-dial'));
     }
     async function fetchState({ rebuild = false } = {}) {
         if (VMID == null || !EL) return;
@@ -153,28 +174,168 @@ window.MXLPlugins.split = (function () {
                 inputs = (s.inputs || []).slice(0, 5); while (inputs.length < 5) inputs.push('');
                 sel = sel.filter(i => i < boxes.length); if (!sel.length) sel = [0];
                 renderShell(); loadMemories();
-            } else if (!editing()) {
+            } else if (!userIsEditing()) {
                 boxes = (s.boxes || []).map(normBox);
                 inputs = (s.inputs || []).slice(0, 5);
                 syncAll();
             }
         } catch (e) {
-            if (EL) EL.innerHTML = `<div class="split-error">${esc(T('err_state', 'État du Split injoignable'))} : ${esc(e.message)}</div>`;
+            if (EL && !$('#split_canvas'))
+                EL.innerHTML = `<div class="cc-error" role="alert"><span>⚠ ${esc(T('err_state', 'État du Split injoignable'))} : ${esc(e.message)}</span></div>`;
+            else showError(T('err_state', 'État du Split injoignable') + ' : ' + e.message);
         }
     }
-    // Métriques :8080 (bloc `adv` du moteur 0.9.0) : budget de trame, boxes tournées, cache.
     async function fetchMetrics() {
         if (VMID == null || !EL) return;
         try {
             const r = await fetch(`/api/containers/${VMID}/split/metrics`);
             if (!r.ok) throw new Error('HTTP ' + r.status);
-            const m = await r.json();
-            adv = m.adv || null; metricsErr = false;
+            adv = (await r.json()).adv || null; metricsErr = false;
         } catch (e) { adv = null; metricsErr = true; }
         updateBudget();
     }
 
-    // ─── Pictos : IDENTIQUES au composer multiview / éditeur de PiP (static/pip_editor.js) ──
+    // ═══ ROTATIF — COMPOSANT DU CORRECTEUR DE COULEUR, repris tel quel ══════════════
+    // Mêmes classes (.cc-knob / .cc-knob-dial / .cc-knob-value), même cadran SVG, mêmes
+    // interactions. AJOUT : shape="angle" → cercle complet, repère à 12 h, pour la ROTATION
+    // d'une box et la DIRECTION de la lumière (un angle n'est pas une jauge).
+    function knobSvg(p01, shape, val) {
+        const r = 22, C = 2 * Math.PI * r;
+        if (shape === 'angle') {
+            const deg = Number(val) || 0;                        // 0 = 12 h, sens horaire
+            const pol = a => [28 + r * Math.cos(a * Math.PI / 180), 28 + r * Math.sin(a * Math.PI / 180)];
+            const [x0, y0] = pol(-90), [x1, y1] = pol(-90 + deg);
+            const large = Math.abs(deg) > 180 ? 1 : 0, sweep = deg >= 0 ? 1 : 0;
+            const arc = Math.abs(deg) < 0.5 ? '' : `<path d="M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${large} ${sweep} ${x1.toFixed(2)} ${y1.toFixed(2)}"
+                 fill="none" stroke="var(--accent)" stroke-width="3" stroke-linecap="round"/>`;
+            return `<svg viewBox="0 0 56 56" aria-hidden="true">
+                <circle cx="28" cy="28" r="${r}" fill="none" stroke="var(--border)" stroke-width="3"/>
+                ${arc}
+                <line x1="28" y1="28" x2="28" y2="9" stroke="var(--text-strong)" stroke-width="2"
+                      stroke-linecap="round" transform="rotate(${deg} 28 28)"/>
+                <circle cx="28" cy="28" r="2.2" fill="var(--text-muted)"/></svg>`;
+        }
+        const p = Math.max(0, Math.min(1, p01)), sweep = C * 0.75, prog = sweep * p, ind = -135 + p * 270;
+        return `<svg viewBox="0 0 56 56" aria-hidden="true">
+            <g transform="rotate(135 28 28)">
+                <circle cx="28" cy="28" r="${r}" fill="none" stroke="var(--border)" stroke-width="3" stroke-dasharray="${sweep} ${C}"/>
+                <circle cx="28" cy="28" r="${r}" fill="none" stroke="var(--accent)" stroke-width="3" stroke-dasharray="${prog} ${C}" stroke-linecap="round"/>
+            </g>
+            <line x1="28" y1="28" x2="28" y2="9" stroke="var(--text-strong)" stroke-width="2" stroke-linecap="round" transform="rotate(${ind} 28 28)"/>
+            <circle cx="28" cy="28" r="2.2" fill="var(--text-muted)"/></svg>`;
+    }
+    // p = {target, label, min, max, step, def, unit, shape}. `target` = destination du POST :
+    // 'box:<champ>' · 'box:<sous-dict>.<champ>' · 'light:<champ>' · 'art:<champ>'.
+    function knobHtml(p, value) {
+        const v = (value == null) ? p.def : value, shape = p.shape || 'arc';
+        return `<div class="cc-knob" data-target="${p.target}" data-min="${p.min}" data-max="${p.max}"
+      data-step="${p.step}" data-default="${p.def}" data-unit="${p.unit || ''}" data-shape="${shape}">
+  <div class="cc-knob-label">${esc(p.label)}</div>
+  <div class="cc-knob-dial" role="slider" tabindex="0" aria-label="${esc(p.label)}"
+       aria-valuemin="${p.min}" aria-valuemax="${p.max}" aria-valuenow="${v}" aria-valuetext="${esc(fmt(v, p.step, p.unit))}"
+       title="${esc(T('knob_title', 'Glisser vertical, molette, flèches (Maj = pas fin). Double-clic = valeur par défaut.'))}">${knobSvg((v - p.min) / ((p.max - p.min) || 1), shape, v)}</div>
+  <input type="number" class="cc-knob-value no-stepper" min="${p.min}" max="${p.max}" step="${p.step}"
+         value="${v}" aria-label="${esc(p.label)}"></div>`;
+    }
+    function knobApply(knob, v) {
+        const min = +knob.dataset.min, max = +knob.dataset.max, step = +knob.dataset.step;
+        const unit = knob.dataset.unit || '', shape = knob.dataset.shape;
+        v = parseFloat(Number(v).toFixed(decimals(step)));
+        const dial = knob.querySelector('.cc-knob-dial'), num = knob.querySelector('.cc-knob-value');
+        dial.innerHTML = knobSvg((v - min) / ((max - min) || 1), shape, v);
+        dial.setAttribute('aria-valuenow', v);
+        dial.setAttribute('aria-valuetext', fmt(v, step, unit));
+        if (document.activeElement !== num) num.value = v;
+    }
+    const knobClamp = (knob, v) => Math.max(+knob.dataset.min, Math.min(+knob.dataset.max, v));
+    // Envoie la valeur d'un rotatif vers le bon endpoint (fusion profonde côté moteur).
+    function knobPost(knob, v) {
+        const [kind, path] = String(knob.dataset.target).split(':');
+        if (kind === 'light') { postLight({ [path]: v }); return; }
+        if (kind === 'art') { postArt({ [path]: v }); return; }
+        const i = primary(); if (i < 0) return;
+        const b = boxes[i];
+        if (path.includes('.')) {
+            const [sub, key] = path.split('.');
+            b[sub][key] = v; postBox(i, { [sub]: { [key]: v } });
+        } else { b[path] = v; postBox(i, { [path]: v }); }
+        drawCanvas();
+    }
+    function bindKnobs(root) {
+        (root || EL).querySelectorAll('.cc-knob').forEach(knob => {
+            if (knob._bound) return; knob._bound = true;
+            const dial = knob.querySelector('.cc-knob-dial'), num = knob.querySelector('.cc-knob-value');
+            const move = e => {
+                if (!knobDrag) return;
+                const dy = knobDrag.startY - e.clientY, range = knobDrag.max - knobDrag.min;
+                const vpp = e.shiftKey ? knobDrag.step : range / 200;   // Maj = pas fin (comme le correcteur)
+                const v = knobClamp(knob, knobDrag.startValue + dy * vpp);
+                knobApply(knob, Math.round(v / knobDrag.step) * knobDrag.step);
+            };
+            const up = () => {
+                if (!knobDrag) return;
+                dial.removeEventListener('pointermove', move);
+                dial.removeEventListener('pointerup', up);
+                dial.removeEventListener('pointercancel', up);
+                const v = parseFloat(num.value); knobDrag = null;
+                if (!isNaN(v)) { knobPost(knob, v); }
+            };
+            dial.addEventListener('pointerdown', e => {
+                if (e.button !== undefined && e.button !== 0) return;
+                e.preventDefault();
+                knobDrag = { startY: e.clientY, startValue: parseFloat(num.value) || 0,
+                    min: +knob.dataset.min, max: +knob.dataset.max, step: +knob.dataset.step };
+                try { dial.setPointerCapture(e.pointerId); } catch (_) {}
+                dial.addEventListener('pointermove', move);
+                dial.addEventListener('pointerup', up);
+                dial.addEventListener('pointercancel', up);
+                dial.focus();
+            });
+            dial.addEventListener('dblclick', () => {
+                const d = +knob.dataset.default;
+                knobApply(knob, d); knobPost(knob, d);
+            });
+            dial.addEventListener('wheel', e => {
+                e.preventDefault();
+                const step = +knob.dataset.step;
+                const v = knobClamp(knob, parseFloat(num.value) + (e.deltaY < 0 ? 1 : -1) * step * (e.shiftKey ? 10 : 1));
+                knobApply(knob, v); knobPost(knob, parseFloat(num.value));
+            }, { passive: false });
+            dial.addEventListener('keydown', e => {
+                const step = +knob.dataset.step, min = +knob.dataset.min, max = +knob.dataset.max;
+                const mult = e.shiftKey ? 10 : 1;
+                let v = parseFloat(num.value), handled = true;
+                switch (e.key) {
+                    case 'ArrowUp': case 'ArrowRight': v += step * mult; break;
+                    case 'ArrowDown': case 'ArrowLeft': v -= step * mult; break;
+                    case 'PageUp': v += step * 10; break;
+                    case 'PageDown': v -= step * 10; break;
+                    case 'Home': v = min; break;
+                    case 'End': v = max; break;
+                    case 'Enter': case ' ': v = +knob.dataset.default; break;
+                    default: handled = false;
+                }
+                if (!handled) return;
+                e.preventDefault();
+                e.stopPropagation();       // ne PAS déplacer la box (nudge clavier du canvas)
+                knobApply(knob, knobClamp(knob, v)); knobPost(knob, parseFloat(num.value));
+            });
+            num.addEventListener('input', () => {          // saisie chiffrée : le cadran suit
+                const v = parseFloat(num.value); if (isNaN(v)) return;
+                const min = +knob.dataset.min, max = +knob.dataset.max;
+                const c = Math.max(min, Math.min(max, v));
+                dial.innerHTML = knobSvg((c - min) / ((max - min) || 1), knob.dataset.shape, c);
+                dial.setAttribute('aria-valuenow', c);
+            });
+            num.addEventListener('change', () => {         // commit
+                const v = parseFloat(num.value); if (isNaN(v)) return;
+                const c = knobClamp(knob, v);
+                knobApply(knob, c); knobPost(knob, c);
+            });
+        });
+    }
+
+    // ─── Pictos de la barre d'outils : IDENTIQUES à l'éditeur de PiP / composer multiview ──
     const SVG = {
         align_left: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="1.6" height="14" rx="0.8"/><rect x="4" y="3" width="9.5" height="3.6" rx="1"/><rect x="4" y="9.4" width="6" height="3.6" rx="1"/></svg>',
         align_hcenter: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="2" y="3" width="12" height="3.6" rx="1"/><rect x="4" y="9.4" width="8" height="3.6" rx="1"/><rect x="7.2" y="1" width="1.6" height="14" rx="0.8"/></svg>',
@@ -209,7 +370,6 @@ window.MXLPlugins.split = (function () {
     }
 
     // ─── Outils de disposition (même sémantique que le composer multiview / PiP) ─────
-    // Référence : la box PRIMAIRE (1ʳᵉ sélectionnée) si ≥2 sélectionnées, sinon le cadre entier.
     function alignBoxes(mode) {
         if (!boxes || !sel.length) return;
         const p = boxes[primary()];
@@ -230,17 +390,14 @@ window.MXLPlugins.split = (function () {
         });
         syncAll();
     }
-    // Même taille que la référence (box primaire). Ratio libre → size_x/size_y suivent aussi.
     function matchSize(mode) {
-        if (!boxes || sel.length < 2) {
-            TOAST(T('flash_select2', 'Sélectionnez au moins 2 box (Maj+clic).'), 'warning'); return;
-        }
+        if (!boxes || sel.length < 2) { TOAST(T('flash_select2', 'Sélectionnez au moins 2 box (Maj+clic).'), 'warning'); return; }
         const ref = boxes[primary()]; if (!ref) return;
         sel.forEach(i => {
             if (i === primary()) return;
             const b = boxes[i]; if (!b) return;
-            const patch = {};
-            if (mode === 'both' || mode === 'w' || mode === 'h') { b.size = ref.size; patch.size = ref.size; }
+            const patch = { size: ref.size };
+            b.size = ref.size;
             if (ref.aspect === 'free') {
                 b.aspect = 'free'; patch.aspect = 'free';
                 if (mode === 'w' || mode === 'both') { b.size_x = ref.size_x; patch.size_x = ref.size_x; }
@@ -251,9 +408,7 @@ window.MXLPlugins.split = (function () {
         syncAll();
     }
     function distributeBoxes(axis) {
-        if (!boxes || sel.length < 3) {
-            TOAST(T('flash_select3', 'Sélectionnez au moins 3 box (Maj+clic).'), 'warning'); return;
-        }
+        if (!boxes || sel.length < 3) { TOAST(T('flash_select3', 'Sélectionnez au moins 3 box (Maj+clic).'), 'warning'); return; }
         const items = sel.map(i => ({ i, b: boxes[i] })).filter(o => o.b);
         const k = (axis === 'h') ? 'cx' : 'cy';
         items.sort((a, b_) => rectN(a.b)[k] - rectN(b_.b)[k]);
@@ -268,9 +423,7 @@ window.MXLPlugins.split = (function () {
         });
         syncAll();
     }
-    // Copier/coller LES RÉGLAGES d'une box (hors position) — même contrat que le PiP.
-    const CLIP_KEYS = ['size', 'size_x', 'size_y', 'aspect', 'rotation', 'opacity', 'feather',
-        'radius', 'mirror_h', 'mirror_v'];
+    const CLIP_KEYS = ['size', 'size_x', 'size_y', 'aspect', 'rotation', 'opacity', 'feather', 'radius', 'mirror_h', 'mirror_v'];
     function copySettings() {
         const i = primary(); if (i < 0 || !boxes) return;
         const b = boxes[i], c = {};
@@ -293,19 +446,20 @@ window.MXLPlugins.split = (function () {
         TOAST(T('pasted', 'Réglages collés.'), 'info');
     }
 
-    // ─── Déplacement clavier PIXEL PAR PIXEL (flèches = 1 px sortie, Maj = 10 px) ────
+    // ─── Déplacement clavier PIXEL PAR PIXEL — CONTOURNE le snap (comme l'éditeur de PiP) ──
     const NUDGE = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
     function onKeyDown(e) {
         if (!EL || !boxes || !sel.length) return;
         const dir = NUDGE[e.key]; if (!dir) return;
         const ae = document.activeElement;
-        if (ae && /INPUT|SELECT|TEXTAREA/.test(ae.tagName)) return;   // on édite un champ : laisser faire
+        if (ae && /INPUT|SELECT|TEXTAREA/.test(ae.tagName)) return;
+        if (ae && ae.classList && ae.classList.contains('cc-knob-dial')) return;   // rotatif focalisé
         if (!EL.contains(ae) && ae !== document.body) return;
         e.preventDefault();
         const W = (st && st.width) || 1920, H = (st && st.height) || 1080;
         const mult = e.shiftKey ? 10 : 1;
         let dx = (dir[0] * mult) / W, dy = (dir[1] * mult) / H;
-        sel.forEach(i => {                       // borne collective : la sélection reste dans le cadre
+        sel.forEach(i => {
             const b = boxes[i];
             dx = Math.max(-b.x, Math.min(1 - b.x, dx));
             dy = Math.max(-b.y, Math.min(1 - b.y, dy));
@@ -313,9 +467,10 @@ window.MXLPlugins.split = (function () {
         if (!dx && !dy) return;
         sel.forEach(i => {
             const b = boxes[i];
-            b.x = r3(b.x + dx); b.y = r3(b.y + dy);
+            b.x = r3(b.x + dx); b.y = r3(b.y + dy);   // ★ aucun snap : le nudge sert à en sortir
             postBox(i, { x: b.x, y: b.y });
         });
+        snapGuides = [];
         syncAll();
     }
 
@@ -323,41 +478,39 @@ window.MXLPlugins.split = (function () {
     function renderShell() {
         EL.innerHTML = `
 <div class="split-ui">
+  <div id="split-error-slot"></div>
   <div class="split-toolbar" id="split_toolbar"></div>
   <div class="split-cols">
     <div class="split-stage">
       <div class="split-canvas-wrap"><canvas id="split_canvas" tabindex="0"
            aria-label="${esc(T('canvas_aria', 'Composition des box'))}"></canvas></div>
-      <div class="split-hint">${T('hint', 'Cliquer une box pour la sélectionner · <kbd>Maj</kbd>+clic = multi-sélection · glisser = déplacer · coin bas-droit = taille · arêtes = crop · <kbd>←↑→↓</kbd> = 1 px, <kbd>Maj</kbd> = 10 px')}</div>
       <div class="split-strip" id="split_strip"></div>
-      <div class="split-field" style="max-width:340px">
+      <div class="field" style="max-width:340px">
         <label for="split_bg">${esc(T('bg', 'Fond (plein cadre)'))}</label>
         <select id="split_bg">${srcOptions(inputs[4])}</select>
       </div>
+      <p class="cc-hint">${T('hint', 'Cliquer une box pour la sélectionner · <kbd>Maj</kbd>+clic = multi-sélection · glisser = déplacer · coin bas-droit = taille · arêtes = crop · <kbd>←↑→↓</kbd> = 1 px (contourne le magnétisme), <kbd>Maj</kbd> = 10 px.')}</p>
     </div>
     <aside class="split-props" id="split_props"></aside>
   </div>
-  <div class="split-sections">
-    <div class="split-card" id="split_art"></div>
-    <div class="split-card" id="split_look"></div>
-    <div class="split-card split-memories">
-      <h3>${esc(T('memories', 'Mémoires'))}</h3>
-      <ul class="split-mem-list" id="split_mem_list"></ul>
-      <div class="split-mem-bar">
-        <div class="split-field"><label for="split_mem_name">${esc(T('mem_name', 'Nom'))}</label>
-          <input type="text" id="split_mem_name" placeholder="${esc(T('mem_name_ph', 'Nom de la mémoire'))}"></div>
-        <div class="split-field"><label for="split_recall_dur">${esc(T('mem_duration', 'Transition (ms)'))}</label>
-          <input type="number" id="split_recall_dur" min="0" max="10000" step="100" value="1000"></div>
-        <button type="button" class="btn btn-green" id="split_mem_save">${esc(T('mem_save', 'Enregistrer la disposition'))}</button>
-        <button type="button" class="btn" id="split_mem_import">${esc(T('mem_import', 'Importer un fichier'))}</button>
-        <input type="file" id="split_mem_file" accept="application/json,.json" hidden>
-      </div>
-      <p class="split-note">${esc(T('mem_note', 'Le rappel utilise la courbe et le décalage réglés ci-dessus (Lumière & transitions).'))}</p>
+  <div id="split_art"></div>
+  <div id="split_look"></div>
+  <div class="cc-section" id="split_mem">
+    <h4>${esc(T('memories', 'Mémoires'))}</h4>
+    <ul class="split-mem-list" id="split_mem_list"></ul>
+    <div class="row split-mem-bar">
+      <div class="field"><label for="split_mem_name">${esc(T('mem_name', 'Nom'))}</label>
+        <input type="text" id="split_mem_name" placeholder="${esc(T('mem_name_ph', 'Nom de la mémoire'))}"></div>
+      <div class="field"><label for="split_recall_dur">${esc(T('mem_duration', 'Transition (ms)'))}</label>
+        <input type="number" id="split_recall_dur" min="0" max="10000" step="100" value="1000"></div>
+      <button type="button" class="btn btn-green" id="split_mem_save">${esc(T('mem_save', 'Enregistrer la disposition'))}</button>
+      <button type="button" class="btn" id="split_mem_import">${esc(T('mem_import', 'Importer un fichier'))}</button>
+      <input type="file" id="split_mem_file" accept="application/json,.json" hidden>
     </div>
+    <p class="cc-hint">${esc(T('mem_note', 'Le rappel utilise la courbe et le décalage réglés dans « Lumière & transitions ».'))}</p>
   </div>
 </div>`;
 
-        // Barre d'outils : mêmes groupes / mêmes pictos que le composer multiview.
         const tb = $('#split_toolbar');
         tb.appendChild(toolGroup(T('group_align', 'Aligner'), [
             [SVG.align_left, T('align_left', 'Aligner à gauche'), () => alignBoxes('left')],
@@ -380,6 +533,15 @@ window.MXLPlugins.split = (function () {
             [SVG.copy_settings, T('copy_settings', 'Copier les réglages de la box (hors position)'), copySettings, 'split_copy'],
             [SVG.paste_settings, T('paste_settings', 'Coller les réglages dans les box sélectionnées'), pasteSettings, 'split_paste'],
         ]));
+        // Magnétisme : même contrôle que l'éditeur de PiP (label + switch .ios-toggle).
+        const snapLbl = document.createElement('label');
+        snapLbl.className = 'toggle-inline split-snap';
+        snapLbl.title = T('snap_title', 'Aimante la box aux bords et au centre du cadre, et aux autres box. Les flèches du clavier contournent le magnétisme (réglage au pixel).');
+        snapLbl.innerHTML = `<input type="checkbox" class="ios-toggle" id="split_snap" ${snapEnabled ? 'checked' : ''}>` +
+            `<span>${esc(T('snap', 'Snap magnétique'))}</span>`;
+        tb.appendChild(snapLbl);
+        snapLbl.querySelector('#split_snap').onchange = function () { snapEnabled = this.checked; snapGuides = []; drawCanvas(); };
+
         const budget = document.createElement('div');
         budget.className = 'split-budget'; budget.id = 'split_budget';
         tb.appendChild(budget);
@@ -394,10 +556,10 @@ window.MXLPlugins.split = (function () {
         $('#split_mem_import').onclick = () => $('#split_mem_file').click();
         $('#split_mem_file').onchange = function () { onImportMemFile(this); };
 
-        renderArt(); renderLook(); syncAll(); updateBudget();
+        renderArt(); renderLook(); syncAll(); updateBudget(); renderError();
     }
 
-    // ─── Bande des box (activation + source) ────────────────────────────────────────
+    // ─── Bande des box ──────────────────────────────────────────────────────────────
     function renderStrip() {
         const strip = $('#split_strip'); if (!strip) return;
         strip.innerHTML = boxes.map((b, i) => `
@@ -406,10 +568,9 @@ window.MXLPlugins.split = (function () {
     <span class="split-chip-dot" style="background:${BOX_COLORS[i % 4]}"></span>
     <span class="split-chip-name">${esc(T('box', 'Box'))} ${i + 1}</span>
     <input type="checkbox" class="ios-toggle" data-en="${i}" ${b.enabled ? 'checked' : ''}
-           title="${esc(T('box_enable', 'Afficher cette box'))}"
-           aria-label="${esc(T('box_enable', 'Afficher cette box'))}">
+           title="${esc(T('box_enable', 'Afficher cette box'))}" aria-label="${esc(T('box_enable', 'Afficher cette box'))}">
   </div>
-  <select data-src="${i}">${srcOptions(inputs[i])}</select>
+  <div class="field"><select data-src="${i}" aria-label="${esc(T('box', 'Box'))} ${i + 1}">${srcOptions(inputs[i])}</select></div>
 </div>`).join('');
         strip.querySelectorAll('.split-chip').forEach(chip => {
             chip.addEventListener('click', e => {
@@ -418,7 +579,10 @@ window.MXLPlugins.split = (function () {
             });
         });
         strip.querySelectorAll('input[data-en]').forEach(cb => {
-            cb.onchange = function () { const i = parseInt(this.dataset.en); boxes[i].enabled = this.checked; postBox(i, { enabled: this.checked }); drawCanvas(); };
+            cb.onchange = function () {
+                const i = parseInt(this.dataset.en);
+                boxes[i].enabled = this.checked; postBox(i, { enabled: this.checked }); drawCanvas();
+            };
         });
         strip.querySelectorAll('select[data-src]').forEach(s => {
             s.onchange = function () { postInput(parseInt(this.dataset.src), this.value); };
@@ -426,32 +590,29 @@ window.MXLPlugins.split = (function () {
     }
     function selectBox(i, additive) {
         if (additive) {
-            if (sel.includes(i)) sel = sel.filter(x => x !== i);
-            else sel = sel.concat([i]);
+            sel = sel.includes(i) ? sel.filter(x => x !== i) : sel.concat([i]);
             if (!sel.length) sel = [i];
         } else sel = [i];
         syncAll();
     }
 
-    // ─── Panneau de propriétés (bornes LUES dans caps) ──────────────────────────────
+    // ─── Champs simples ─────────────────────────────────────────────────────────────
     function numField(id, label, group, key, path, opts) {
         const [min, max, dflt] = cap(group, key);
         const step = (opts && opts.step) || stepOf(min, max);
         const b = boxes[primary()];
-        let val = dflt;
-        if (b) val = (path ? (b[path] || {})[key] : b[key]);
-        if (val == null) val = (opts && opts.nullValue != null) ? opts.nullValue : dflt;
-        const dec = step >= 1 ? 0 : (step >= 0.1 ? 1 : 2);
-        return `<div class="split-field">
-  <label for="${id}" title="${esc((opts && opts.title) || '')}">${esc(label)}</label>
+        let val = b ? (path ? (b[path] || {})[key] : b[key]) : dflt;
+        if (val == null) val = (opts && opts.nullValue != null) ? opts.nullValue : (dflt == null ? 0 : dflt);
+        return `<div class="field">
+  <label for="${id}">${esc(label)}</label>
   <input type="number" id="${id}" data-key="${key}" data-path="${path || ''}"
-         min="${min}" max="${max}" step="${step}" value="${Number(val).toFixed(dec)}">
+         min="${min}" max="${max}" step="${step}" value="${Number(val).toFixed(decimals(step))}">
 </div>`;
     }
     function colorField(id, label, path, key) {
         const b = boxes[primary()];
         const val = (b && (path ? (b[path] || {})[key] : b[key])) || '#ffffff';
-        return `<div class="split-field"><label for="${id}">${esc(label)}</label>
+        return `<div class="field"><label for="${id}">${esc(label)}</label>
   <input type="color" id="${id}" data-key="${key}" data-path="${path || ''}" value="${esc(val)}"></div>`;
     }
     function toggleField(key, path, label) {
@@ -462,101 +623,127 @@ window.MXLPlugins.split = (function () {
   <span>${esc(label)}</span></label>`;
     }
 
-    // Coût de la rotation : ANNONCÉ AVANT d'y toucher (mesures du moteur 0.9.0, help.md).
-    // 1080p50 → hors budget ; 1080p25 → ~80 % du budget ; pendant une transition → hors budget.
+    // Coût de la rotation : ANNONCÉ AVANT usage, selon le format courant (mesures du moteur).
     function rotationWarning() {
         const h = (st && st.height) || 0, fps = (st && st.fps) || 25;
-        if (h >= 1080 && fps >= 50)
-            return { cls: 'err', msg: T('rot_over', 'Rotation HORS BUDGET dans ce format (1080p50) : ~31,9 ms/trame pour un budget de 20 ms — le moteur décrochera (fps sous la consigne). Réservez-la au 720p, ou baissez la cadence.') };
-        if (h >= 1080)
-            return { cls: '', msg: T('rot_tight', 'Rotation MARGINALE en 1080p25 (~31,9 ms pour 40 ms de budget, soit 80 %) : aucune marge, et hors budget pendant une transition.') };
-        return { cls: '', msg: T('rot_ok', 'Rotation confortable dans ce format (~11,4 ms/trame en 720p).') };
+        if (h >= 1080 && fps >= 50) return { cls: 'alert-error', msg: T('rot_over', 'Rotation HORS BUDGET dans ce format (1080p50) : ~31,9 ms/trame pour 20 ms de budget — le moteur décrochera. Réservez-la au 720p, ou baissez la cadence.') };
+        if (h >= 1080) return { cls: 'alert-warning', msg: T('rot_tight', 'Rotation MARGINALE en 1080p25 (~31,9 ms pour 40 ms de budget, soit 80 %) : aucune marge, et hors budget pendant une transition.') };
+        return { cls: 'alert-info', msg: T('rot_ok', 'Rotation confortable dans ce format (~11,4 ms/trame en 720p, 4 box).') };
     }
 
+    // ─── Panneau de réglages ────────────────────────────────────────────────────────
+    // ★ POURQUOI PLUS D'ONGLETS (régression corrigée). La 0.9.1 mettait Géométrie / Effets /
+    // Bordure / Ombre dans une barre `.tabs`/`.tab` du système : ELLE ÉTAIT INVISIBLE. Le
+    // composant suppose une barre posée sur le fond de PAGE (`--bg`) : l'onglet ACTIF se peint en
+    // `--bg-elev` pour paraître « soulevé » sur la surface élevée, les inactifs sont en
+    // `--text-muted` sur fond transparent. Posée DANS une carte (fond = `--bg-elev`), la barre
+    // peint donc l'onglet actif de la couleur EXACTE de son conteneur, et les inactifs en gris
+    // sourd sur ce même fond : plus rien ne se détache. Échec silencieux classique (composant
+    // présent, zéro erreur, rien à l'écran). Corrigé À LA RACINE en adoptant la structure de la
+    // RÉFÉRENCE (correcteur de couleur), qui n'a pas d'onglets : des SECTIONS empilées + une
+    // bascule « mode avancé ». Bonus : plus de contenu caché derrière un onglet qu'on ne voit pas.
     function renderProps() {
         const host = $('#split_props'); if (!host) return;
         const i = primary();
-        if (i < 0 || !boxes[i]) { host.innerHTML = `<p class="split-empty">${esc(T('no_sel', 'Aucune box sélectionnée.'))}</p>`; return; }
+        if (i < 0 || !boxes[i]) { host.innerHTML = `<p class="meta">${esc(T('no_sel', 'Aucune box sélectionnée.'))}</p>`; return; }
         const b = boxes[i];
         const rw = rotationWarning();
-        const multi = sel.length > 1
-            ? `<p class="split-note">${esc(T('multi_note', 'Multi-sélection : les champs modifient la box de référence ; les outils (aligner, distribuer, coller) agissent sur toute la sélection.'))}</p>` : '';
+        const K = (target, label, group, key, unit, shape) => {
+            const [min, max, dflt] = cap(group, key);
+            const path = target.split(':')[1];
+            const val = path.includes('.') ? b[path.split('.')[0]][path.split('.')[1]] : b[path];
+            return knobHtml({ target, label, min, max, step: stepOf(min, max), def: (dflt == null ? 0 : dflt), unit, shape }, val);
+        };
         host.innerHTML = `
-<h3><span class="split-chip-dot" style="display:inline-block;background:${BOX_COLORS[i % 4]}"></span>
-    ${esc(T('box', 'Box'))} ${i + 1}${sel.length > 1 ? ` <span class="split-note">(+${sel.length - 1})</span>` : ''}</h3>
-${multi}
-<div class="tabs" role="tablist">
-  <button type="button" class="tab${tab === 'geom' ? ' active' : ''}" data-tab="geom" role="tab">${esc(T('tab_geom', 'Géométrie'))}</button>
-  <button type="button" class="tab${tab === 'fx' ? ' active' : ''}" data-tab="fx" role="tab">${esc(T('tab_fx', 'Effets'))}</button>
-  <button type="button" class="tab${tab === 'border' ? ' active' : ''}" data-tab="border" role="tab">${esc(T('tab_border', 'Bordure'))}</button>
-  <button type="button" class="tab${tab === 'shadow' ? ' active' : ''}" data-tab="shadow" role="tab">${esc(T('tab_shadow', 'Ombre'))}</button>
+<div class="split-props-head">
+  <span class="split-chip-dot" style="background:${BOX_COLORS[i % 4]}"></span>
+  <h3>${esc(T('box', 'Box'))} ${i + 1}${sel.length > 1 ? ` <span class="meta">(+${sel.length - 1})</span>` : ''}</h3>
 </div>
+${sel.length > 1 ? `<p class="meta">${esc(T('multi_note', 'Multi-sélection : les réglages modifient la box de référence ; les outils (aligner, distribuer, coller) agissent sur toute la sélection.'))}</p>` : ''}
 
-<div class="split-pane" data-pane="geom" ${tab === 'geom' ? '' : 'hidden'}>
+<div class="cc-section">
+  <h4>${esc(T('sec_geom', 'Géométrie'))}</h4>
   <div class="split-grid">
     ${numField('sp_x', T('f_x', 'X (centre)'), 'box_fields', 'x', '')}
     ${numField('sp_y', T('f_y', 'Y (centre)'), 'box_fields', 'y', '')}
     ${numField('sp_size', T('f_size', 'Taille'), 'box_fields', 'size', '')}
-    <div class="split-field"><label for="sp_aspect">${esc(T('f_aspect', 'Ratio'))}</label>
+    <div class="field"><label for="sp_aspect">${esc(T('f_aspect', 'Ratio'))}</label>
       <select id="sp_aspect" data-key="aspect" data-path="">
-        <option value="keep"${b.aspect === 'keep' ? ' selected' : ''}>${esc(T('aspect_keep', 'Conservé (ATEM)'))}</option>
+        <option value="keep"${b.aspect === 'keep' ? ' selected' : ''}>${esc(T('aspect_keep', 'Conservé (format de la source)'))}</option>
         <option value="free"${b.aspect === 'free' ? ' selected' : ''}>${esc(T('aspect_free', 'Libre (étirement)'))}</option>
       </select></div>
     ${numField('sp_size_x', T('f_size_x', 'Largeur (0 = taille)'), 'box_fields', 'size_x', '')}
     ${numField('sp_size_y', T('f_size_y', 'Hauteur (0 = taille)'), 'box_fields', 'size_y', '')}
     ${numField('sp_z', T('f_z', 'Z (ordre)'), 'box_fields', 'z', '', { nullValue: i, step: 1 })}
-    ${numField('sp_rot', T('f_rotation', 'Rotation (°)'), 'box_fields', 'rotation', '', { step: 1 })}
   </div>
-  <div class="split-warn${rw.cls ? ' ' + rw.cls : ''}" id="split_rot_warn">${esc(rw.msg)}</div>
-  <div class="split-grid">
-    ${numField('sp_ct', T('f_crop_t', 'Crop haut'), 'crop', 't', 'crop')}
-    ${numField('sp_cb', T('f_crop_b', 'Crop bas'), 'crop', 'b', 'crop')}
-    ${numField('sp_cl', T('f_crop_l', 'Crop gauche'), 'crop', 'l', 'crop')}
-    ${numField('sp_cr', T('f_crop_r', 'Crop droite'), 'crop', 'r', 'crop')}
+  <div class="cc-knob-row">
+    ${K('box:crop.t', T('k_crop_t', 'Crop H'), 'crop', 't', '')}
+    ${K('box:crop.b', T('k_crop_b', 'Crop B'), 'crop', 'b', '')}
+    ${K('box:crop.l', T('k_crop_l', 'Crop G'), 'crop', 'l', '')}
+    ${K('box:crop.r', T('k_crop_r', 'Crop D'), 'crop', 'r', '')}
   </div>
 </div>
 
-<div class="split-pane" data-pane="fx" ${tab === 'fx' ? '' : 'hidden'}>
-  <div class="split-grid">
-    ${numField('sp_op', T('f_opacity', 'Opacité'), 'box_fields', 'opacity', '')}
-    ${numField('sp_fe', T('f_feather', 'Adoucissement (px)'), 'box_fields', 'feather', '')}
-    ${numField('sp_ra', T('f_radius', 'Coins arrondis (px)'), 'box_fields', 'radius', '')}
-  </div>
-  <div class="split-toggles">
-    ${toggleField('mirror_h', '', T('f_mirror_h', 'Miroir horizontal'))}
-    ${toggleField('mirror_v', '', T('f_mirror_v', 'Miroir vertical'))}
-  </div>
-  <p class="split-note">${esc(T('fx_note', 'Ces effets tiennent le budget de trame (mesuré 1080p : feather 8,0 ms · coins 8,9 · opacité 12,8 pour 4 box). Seule la rotation est hors budget en 1080p50.'))}</p>
+<div class="cc-adv-toggle-row">
+  <button type="button" class="cc-adv-toggle ${advanced ? 'is-open' : ''}" id="split_adv_toggle"
+          aria-expanded="${advanced ? 'true' : 'false'}" aria-controls="split_adv">
+    <span class="cc-adv-toggle-chevron" aria-hidden="true">▾</span>
+    <span>${esc(advanced ? T('adv_hide', 'Masquer le mode avancé') : T('adv_show', 'Afficher le mode avancé'))}</span>
+  </button>
 </div>
 
-<div class="split-pane" data-pane="border" ${tab === 'border' ? '' : 'hidden'}>
-  <div class="split-grid">
-    ${numField('sp_bw', T('f_border_w', 'Trait plat (px)'), 'border_fields', 'w', 'border', { step: 1 })}
-    ${colorField('sp_bc', T('f_border_color', 'Couleur'), 'border', 'color')}
-    ${numField('sp_bo', T('f_border_outer', 'Extérieur (px)'), 'border_fields', 'outer', 'border')}
-    ${numField('sp_bi', T('f_border_inner', 'Intérieur (px)'), 'border_fields', 'inner', 'border')}
-    ${numField('sp_bv', T('f_bevel', 'Biseau (−rentrant/+sortant)'), 'border_fields', 'bevel', 'border')}
-    ${numField('sp_bs', T('f_bevel_soft', 'Adoucissement du biseau'), 'border_fields', 'bevel_soft', 'border')}
-    ${numField('sp_bp', T('f_bevel_pos', 'Position du biseau'), 'border_fields', 'bevel_pos', 'border')}
+${!advanced ? '' : `<div id="split_adv">
+  <div class="cc-section">
+    <h4>${esc(T('sec_fx', 'Effets'))}</h4>
+    <div class="cc-knob-row">
+      ${K('box:rotation', T('k_rotation', 'Rotation'), 'box_fields', 'rotation', '°', 'angle')}
+      ${K('box:opacity', T('k_opacity', 'Opacité'), 'box_fields', 'opacity', '')}
+      ${K('box:feather', T('k_feather', 'Adoucis.'), 'box_fields', 'feather', 'px')}
+      ${K('box:radius', T('k_radius', 'Coins'), 'box_fields', 'radius', 'px')}
+    </div>
+    <div class="alert ${rw.cls}" id="split_rot_warn">${esc(rw.msg)}</div>
+    <div class="split-toggles">
+      ${toggleField('mirror_h', '', T('f_mirror_h', 'Miroir horizontal'))}
+      ${toggleField('mirror_v', '', T('f_mirror_v', 'Miroir vertical'))}
+    </div>
   </div>
-  <p class="split-note">${esc(T('border_note', 'Le relief du biseau vient de la SOURCE DE LUMIÈRE (globale, ci-dessous) : sans elle, un biseau n\'est qu\'un dégradé.'))}</p>
-</div>
 
-<div class="split-pane" data-pane="shadow" ${tab === 'shadow' ? '' : 'hidden'}>
-  <div class="split-toggles">${toggleField('enabled', 'shadow', T('f_shadow_on', 'Ombre portée'))}</div>
-  <div class="split-grid">
-    ${numField('sp_sdx', T('f_shadow_dx', 'Décalage X (px)'), 'shadow_fields', 'dx', 'shadow', { step: 1 })}
-    ${numField('sp_sdy', T('f_shadow_dy', 'Décalage Y (px)'), 'shadow_fields', 'dy', 'shadow', { step: 1 })}
-    ${numField('sp_sbl', T('f_shadow_blur', 'Flou (px)'), 'shadow_fields', 'blur', 'shadow')}
-    ${numField('sp_sop', T('f_shadow_op', 'Opacité'), 'shadow_fields', 'opacity', 'shadow')}
-    ${colorField('sp_scol', T('f_shadow_color', 'Couleur'), 'shadow', 'color')}
+  <div class="cc-section">
+    <h4>${esc(T('sec_border', 'Bordure'))}</h4>
+    <div class="split-grid">
+      ${numField('sp_bw', T('f_border_w', 'Trait plat (px)'), 'border_fields', 'w', 'border', { step: 1 })}
+      ${colorField('sp_bc', T('f_border_color', 'Couleur'), 'border', 'color')}
+      ${numField('sp_bo', T('f_border_outer', 'Extérieur (px)'), 'border_fields', 'outer', 'border')}
+      ${numField('sp_bi', T('f_border_inner', 'Intérieur (px)'), 'border_fields', 'inner', 'border')}
+    </div>
+    <div class="cc-knob-row">
+      ${K('box:border.bevel', T('k_bevel', 'Biseau'), 'border_fields', 'bevel', '')}
+      ${K('box:border.bevel_soft', T('k_bevel_soft', 'Adoucis.'), 'border_fields', 'bevel_soft', '')}
+      ${K('box:border.bevel_pos', T('k_bevel_pos', 'Position'), 'border_fields', 'bevel_pos', '')}
+    </div>
+    <p class="meta">${esc(T('border_note', 'Le relief du biseau vient de la source de lumière (globale, plus bas) : sans elle, un biseau n\'est qu\'un dégradé.'))}</p>
   </div>
-</div>`;
 
-        host.querySelectorAll('.tab[data-tab]').forEach(t => {
-            t.onclick = () => { tab = t.dataset.tab; renderProps(); };
-        });
+  <div class="cc-section">
+    <h4>${esc(T('sec_shadow', 'Ombre portée'))}
+      <label class="split-inline-switch"><input type="checkbox" class="ios-toggle" data-flag="enabled" data-path="shadow"
+             ${b.shadow.enabled ? 'checked' : ''} aria-label="${esc(T('f_shadow_on', 'Activer l\'ombre portée'))}"></label>
+    </h4>
+    <div class="cc-knob-row ${b.shadow.enabled ? '' : 'is-off'}">
+      ${K('box:shadow.dx', T('k_shadow_dx', 'Décal. X'), 'shadow_fields', 'dx', 'px')}
+      ${K('box:shadow.dy', T('k_shadow_dy', 'Décal. Y'), 'shadow_fields', 'dy', 'px')}
+      ${K('box:shadow.blur', T('k_shadow_blur', 'Flou'), 'shadow_fields', 'blur', 'px')}
+      ${K('box:shadow.opacity', T('k_shadow_op', 'Opacité'), 'shadow_fields', 'opacity', '')}
+    </div>
+    <div class="split-grid">${colorField('sp_scol', T('f_shadow_color', 'Couleur'), 'shadow', 'color')}</div>
+    ${b.shadow.enabled ? '' : `<p class="meta">${esc(T('shadow_off', 'Activez l\'ombre portée (interrupteur ci-dessus) pour régler ces valeurs.'))}</p>`}
+  </div>
+</div>`}`;
+
+        const at = $('#split_adv_toggle');
+        if (at) at.onclick = () => { advanced = !advanced; renderProps(); };
         host.querySelectorAll('input[type=number], input[type=color], select[data-key]').forEach(inp => {
+            if (inp.classList.contains('cc-knob-value')) return;   // géré par bindKnobs
             inp.onchange = () => onFieldChange(inp);
         });
         host.querySelectorAll('input[data-flag]').forEach(cb => {
@@ -564,9 +751,10 @@ ${multi}
                 const i2 = primary(), path = cb.dataset.path, key = cb.dataset.flag;
                 if (path) { boxes[i2][path][key] = cb.checked; postBox(i2, { [path]: { [key]: cb.checked } }); }
                 else { boxes[i2][key] = cb.checked; postBox(i2, { [key]: cb.checked }); }
-                drawCanvas();
+                renderProps(); drawCanvas();
             };
         });
+        bindKnobs(host);
         syncFieldsDisabled();
     }
     function onFieldChange(inp) {
@@ -575,66 +763,65 @@ ${multi}
         let val = (inp.type === 'number') ? parseFloat(inp.value) : inp.value;
         if (inp.type === 'number' && isNaN(val)) return;
         const b = boxes[i];
-        if (path) { b[path][key] = val; }
-        else b[key] = val;
-        Object.assign(b, normBox(b));                          // re-borne (bornes = caps)
-        const patch = path ? { [path]: { [key]: (path ? b[path][key] : b[key]) } } : { [key]: b[key] };
-        postBox(i, patch);
+        if (path) b[path][key] = val; else b[key] = val;
+        Object.assign(b, normBox(b));                        // re-borne (bornes = caps)
+        postBox(i, path ? { [path]: { [key]: b[path][key] } } : { [key]: b[key] });
         renderProps(); drawCanvas();
     }
-    // Ratio conservé → largeur/hauteur libres sans effet : on les DÉSACTIVE en le DISANT (title).
+    // Ratio conservé → largeur/hauteur libres sans effet : DÉSACTIVÉES en le DISANT.
     function syncFieldsDisabled() {
         const b = boxes[primary()]; if (!b) return;
         const free = (b.aspect === 'free');
         ['sp_size_x', 'sp_size_y'].forEach(id => {
             const el = $('#' + id); if (!el) return;
             el.disabled = !free;
-            el.title = free ? '' : T('free_only', 'Actif seulement en ratio « Libre » — l\'ATEM (ratio conservé) impose une taille unique.');
-            const lab = el.parentNode.querySelector('label'); if (lab) lab.title = el.title;
+            el.title = free ? '' : T('free_only', 'Actif seulement en ratio « Libre » : à ratio conservé, la box garde le format de sa source et une seule taille suffit.');
+            const f = el.closest('.field'), lab = f && f.querySelector('label');
+            if (lab) lab.title = el.title;
         });
-        const sh = b.shadow || {};
-        ['sp_sdx', 'sp_sdy', 'sp_sbl', 'sp_sop', 'sp_scol'].forEach(id => {
-            const el = $('#' + id); if (!el) return;
-            el.disabled = !sh.enabled;
-            el.title = sh.enabled ? '' : T('shadow_off', 'Activez l\'ombre portée pour régler ces valeurs.');
-        });
+        const sc = $('#sp_scol');
+        if (sc) {
+            sc.disabled = !b.shadow.enabled;
+            sc.title = b.shadow.enabled ? '' : T('shadow_off', 'Activez l\'ombre portée (interrupteur ci-dessus) pour régler ces valeurs.');
+        }
     }
 
     // ─── Habillage (couche ART) ─────────────────────────────────────────────────────
     function renderArt() {
         const host = $('#split_art'); if (!host || !st) return;
         const a = st.art || {};
+        const noImg = !a.has_image;
         const keyOpts = artKeys().map(k => `<option value="${esc(k)}"${a.key === k ? ' selected' : ''}>${esc(T('artkey_' + k, k))}</option>`).join('');
+        host.className = 'cc-section';
         host.innerHTML = `
-<h3>${esc(T('art', 'Habillage (couche ART)'))}</h3>
+<h4>${esc(T('art', 'Habillage (couche ART)'))}
+  <label class="split-inline-switch"><input type="checkbox" class="ios-toggle" id="art_en" ${a.enabled ? 'checked' : ''}
+         aria-label="${esc(T('art_enabled', 'Activer l\'habillage'))}"></label></h4>
+<div class="row">
+  <button type="button" class="btn btn-blue" id="art_pick">${esc(T('art_import', 'Importer une image…'))}</button>
+  <input type="file" id="art_file" accept="image/png,image/jpeg" hidden>
+  <span class="meta" id="art_state"></span>
+</div>
 <div class="split-toggles">
-  <label class="toggle-inline"><input type="checkbox" class="ios-toggle" id="art_en" ${a.enabled ? 'checked' : ''}>
-    <span>${esc(T('art_enabled', 'Activer l\'habillage'))}</span></label>
   <label class="toggle-inline"><input type="checkbox" class="ios-toggle" id="art_above" ${a.above ? 'checked' : ''}>
     <span>${esc(T('art_above', 'Au-dessus des box'))}</span></label>
   <label class="toggle-inline"><input type="checkbox" class="ios-toggle" id="art_inv" ${a.invert ? 'checked' : ''}>
     <span>${esc(T('art_invert', 'Inverser la clé'))}</span></label>
 </div>
-<div class="split-grid">
-  <div class="split-field"><label for="art_key">${esc(T('art_key', 'Incrustation'))}</label>
+<div class="split-grid split-grid-narrow">
+  <div class="field"><label for="art_key">${esc(T('art_key', 'Incrustation'))}</label>
     <select id="art_key">${keyOpts}</select></div>
-  <div class="split-field"><label for="art_chroma">${esc(T('art_chroma', 'Couleur de clé (chroma)'))}</label>
+  <div class="field"><label for="art_chroma">${esc(T('art_chroma', 'Couleur de clé (chroma)'))}</label>
     <input type="color" id="art_chroma" value="${esc(a.chroma_key || '#00b140')}"></div>
-  <div class="split-field"><label for="art_clip">${esc(T('art_clip', 'Seuil (clip)'))}</label>
-    <input type="number" id="art_clip" min="0" max="1" step="0.01" value="${Number(a.clip || 0).toFixed(2)}"></div>
-  <div class="split-field"><label for="art_gain">${esc(T('art_gain', 'Gain'))}</label>
-    <input type="number" id="art_gain" min="0.01" max="16" step="0.1" value="${Number(a.gain == null ? 1 : a.gain).toFixed(2)}"></div>
-  <div class="split-field"><label for="art_op">${esc(T('art_opacity', 'Opacité'))}</label>
-    <input type="number" id="art_op" min="0" max="1" step="0.01" value="${Number(a.opacity == null ? 1 : a.opacity).toFixed(2)}"></div>
 </div>
-<div class="split-mem-bar">
-  <button type="button" class="btn" id="art_pick">${esc(T('art_import', 'Importer une image…'))}</button>
-  <input type="file" id="art_file" accept="image/png,image/jpeg" hidden>
-  <span class="split-note" id="art_state"></span>
+<div class="cc-knob-row ${noImg ? 'is-off' : ''}" id="art_knobs">
+  ${knobHtml({ target: 'art:clip', label: T('k_clip', 'Seuil'), min: 0, max: 1, step: 0.01, def: 0.15, unit: '' }, a.clip)}
+  ${knobHtml({ target: 'art:gain', label: T('k_gain', 'Gain'), min: 0.01, max: 16, step: 0.01, def: 1, unit: '' }, a.gain)}
+  ${knobHtml({ target: 'art:opacity', label: T('k_art_op', 'Opacité'), min: 0, max: 1, step: 0.01, def: 1, unit: '' }, a.opacity)}
 </div>
-${a.err ? `<div class="split-warn err">${esc(a.err)}</div>` : ''}
-<p class="split-note">${esc(T('art_note', 'Image importée (PNG/JPEG), pas une 6ᵉ entrée vidéo : un ART vidéo live coûterait 21,7 ms/trame en 1080p (108 % du budget 50 fps). Un PNG à fond transparent + clé « alpha » est le cas le plus propre. L\'image n\'est pas persistée : elle est à réimporter après un redéploiement du conteneur.'))}</p>`;
-        const noImg = !a.has_image;
+${a.err ? `<div class="alert alert-error">${esc(a.err)}</div>` : ''}
+${noImg ? `<p class="meta">${esc(T('art_need_img', 'Importez d\'abord une image d\'habillage : sans image, l\'incrustation n\'a pas d\'objet.'))}</p>` : ''}
+<p class="meta">${esc(T('art_note', 'Image importée (PNG/JPEG), pas une 6ᵉ entrée vidéo : un habillage vidéo live coûterait 21,7 ms/trame en 1080p (108 % du budget 50 fps). Un PNG à fond transparent + clé « alpha » est le cas le plus propre. L\'image n\'est pas persistée : à réimporter après un redéploiement du conteneur.'))}</p>`;
         $('#art_state').textContent = noImg ? T('art_none', 'Aucune image importée.')
             : (a.loaded ? T('art_loaded', 'Image chargée et clé précalculée.') : T('art_pending', 'Image importée — activez l\'habillage pour la cuire.'));
         $('#art_en').onchange = function () { postArt({ enabled: this.checked }); };
@@ -642,21 +829,19 @@ ${a.err ? `<div class="split-warn err">${esc(a.err)}</div>` : ''}
         $('#art_inv').onchange = function () { postArt({ invert: this.checked }); };
         $('#art_key').onchange = function () { postArt({ key: this.value }); };
         $('#art_chroma').onchange = function () { postArt({ chroma_key: this.value }); };
-        $('#art_clip').onchange = function () { postArt({ clip: parseFloat(this.value) }); };
-        $('#art_gain').onchange = function () { postArt({ gain: parseFloat(this.value) }); };
-        $('#art_op').onchange = function () { postArt({ opacity: parseFloat(this.value) }); };
         $('#art_pick').onclick = () => $('#art_file').click();
         $('#art_file').onchange = function () { onArtFile(this); };
-        // Les réglages de clé n'ont de sens qu'avec une image : on le DIT (pas de contrôle muet).
-        ['art_key', 'art_chroma', 'art_clip', 'art_gain', 'art_op', 'art_inv', 'art_en', 'art_above'].forEach(id => {
+        // Sans image, les réglages de clé n'ont pas d'objet : désactivés ET expliqués (ci-dessus).
+        ['art_en', 'art_above', 'art_inv', 'art_key', 'art_chroma'].forEach(id => {
             const el = $('#' + id); if (!el || !noImg) return;
             el.disabled = true;
-            el.title = T('art_need_img', 'Importez d\'abord une image d\'habillage.');
+            el.title = T('art_need_img', 'Importez d\'abord une image d\'habillage : sans image, l\'incrustation n\'a pas d\'objet.');
         });
+        bindKnobs(host);
     }
     async function onArtFile(input) {
         const f = input.files[0]; if (!f) return; input.value = '';
-        if (f.size > 12 * 1024 * 1024) { TOAST(T('art_too_big', 'Image trop lourde (max 12 Mo).'), 'error'); return; }
+        if (f.size > 12 * 1024 * 1024) { showError(T('art_too_big', 'Image trop lourde (max 12 Mo).')); return; }
         const b64 = await new Promise((res, rej) => {
             const rd = new FileReader();
             rd.onload = () => res(String(rd.result));
@@ -672,8 +857,8 @@ ${a.err ? `<div class="split-warn err">${esc(a.err)}</div>` : ''}
                 method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
             });
             const j = await r.json().catch(() => ({}));
-            if (!r.ok || j.error) TOAST((T('art_err', 'Habillage refusé') + ' : ' + (j.error || ('HTTP ' + r.status))), 'error');
-        } catch (e) { TOAST(T('art_err', 'Habillage refusé') + ' : ' + e.message, 'error'); }
+            if (!r.ok || j.error) showError(T('art_err', 'Habillage refusé') + ' : ' + (j.error || ('HTTP ' + r.status)));
+        } catch (e) { showError(T('art_err', 'Habillage refusé') + ' : ' + e.message); }
         await fetchState({ rebuild: false });
         renderArt();
     }
@@ -682,46 +867,53 @@ ${a.err ? `<div class="split-warn err">${esc(a.err)}</div>` : ''}
     function renderLook() {
         const host = $('#split_look'); if (!host || !st) return;
         const L = st.light || {};
-        // Un moteur antérieur au contrat 0.9.0 final ne publie pas `transition_defaults` : on
-        // retombe sur les défauts du manifeste plutôt que d'afficher une courbe FAUSSE en silence.
+        // Un moteur antérieur au contrat 0.9.0 final ne publie pas `transition_defaults` : plutôt
+        // que d'afficher une courbe FAUSSE en silence, on retombe sur le défaut du manifeste ET on le dit.
         const stale = !st.transition_defaults;
         const TR = st.transition_defaults || { curve: 'ease_in_out', stagger_ms: 0 };
-        const [amin, amax] = cap('light_fields', 'angle');
-        const [hmin, hmax] = cap('light_fields', 'altitude');
+        const [amin, amax, adef] = cap('light_fields', 'angle');
+        const [hmin, hmax, hdef] = cap('light_fields', 'altitude');
         const [smin, smax] = cap('stagger');
+        host.className = 'cc-section';
         host.innerHTML = `
-<h3>${esc(T('look', 'Lumière & transitions'))}</h3>
-<div class="split-grid">
-  <div class="split-field"><label for="lt_angle">${esc(T('l_angle', 'Direction de la lumière (°)'))}</label>
-    <input type="number" id="lt_angle" min="${amin}" max="${amax}" step="1" value="${Number(L.angle || 0).toFixed(0)}"></div>
-  <div class="split-field"><label for="lt_alt">${esc(T('l_altitude', 'Hauteur de la lumière (°)'))}</label>
-    <input type="number" id="lt_alt" min="${hmin}" max="${hmax}" step="1" value="${Number(L.altitude || 0).toFixed(0)}"></div>
-  <div class="split-field"><label for="lt_curve">${esc(T('t_curve', 'Courbe de transition'))}</label>
+<h4>${esc(T('look', 'Lumière & transitions'))}</h4>
+<div class="cc-knob-row">
+  ${knobHtml({ target: 'light:angle', label: T('k_light_angle', 'Direction'), min: amin, max: amax, step: 1, def: adef, unit: '°', shape: 'angle' }, L.angle)}
+  ${knobHtml({ target: 'light:altitude', label: T('k_light_alt', 'Hauteur'), min: hmin, max: hmax, step: 1, def: hdef, unit: '°' }, L.altitude)}
+</div>
+<div class="split-grid split-grid-narrow">
+  <div class="field"><label for="lt_curve">${esc(T('t_curve', 'Courbe de transition'))}</label>
     <select id="lt_curve">${easings().map(c => `<option value="${esc(c)}"${TR.curve === c ? ' selected' : ''}>${esc(T('easing_' + c, c))}</option>`).join('')}</select></div>
-  <div class="split-field"><label for="lt_stag">${esc(T('t_stagger', 'Décalage inter-box (ms)'))}</label>
+  <div class="field"><label for="lt_stag">${esc(T('t_stagger', 'Décalage inter-box (ms)'))}</label>
     <input type="number" id="lt_stag" min="${smin}" max="${smax}" step="10" value="${Number(TR.stagger_ms || 0).toFixed(0)}"></div>
 </div>
-<p class="split-note">${esc(T('look_note', 'La lumière donne le relief des bordures biseautées (une seule lumière pour toute la scène, comme l\'ATEM). Le décalage fait arriver les box l\'une après l\'autre — il est compté DANS la durée demandée.'))}</p>
-${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé sur ce conteneur ne publie pas ses réglages de transition (script antérieur au contrat 0.9.0) : les valeurs ci-dessus sont les défauts du manifeste, pas l\'état réel. Redéployez le conteneur pour lever l\'ambiguïté.'))}</div>` : ''}`;
-        $('#lt_angle').onchange = function () { postLight({ angle: parseFloat(this.value) }); };
-        $('#lt_alt').onchange = function () { postLight({ altitude: parseFloat(this.value) }); };
+<p class="meta">${esc(T('look_note', 'La lumière donne le relief des bordures biseautées — une seule lumière éclaire toute la scène (quatre lumières incohérentes = décor faux). Le décalage fait arriver les box l\'une après l\'autre ; il est compté DANS la durée demandée.'))}</p>
+${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur déployé sur ce conteneur ne publie pas ses réglages de transition (script antérieur au contrat 0.9.0) : les valeurs ci-dessus sont les défauts du manifeste, pas l\'état réel. Redéployez le conteneur pour lever l\'ambiguïté.'))}</div>` : ''}`;
         $('#lt_curve').onchange = function () { postTransition({ curve: this.value }); };
         $('#lt_stag').onchange = function () { postTransition({ stagger_ms: parseFloat(this.value) }); };
+        bindKnobs(host);
     }
     async function postLight(patch) {
         if (VMID == null) return;
-        try { await fetch(`/api/containers/${VMID}/plugin/light`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }); } catch (e) {}
+        try {
+            const r = await fetch(`/api/containers/${VMID}/plugin/light`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+            });
+            if (r.ok) { const j = await r.json().catch(() => ({})); if (j.light && st) st.light = j.light; }
+        } catch (e) { showError(T('light_err', 'Réglage de lumière refusé') + ' : ' + e.message); }
         schedulePersist();
     }
     async function postTransition(patch) {
         if (VMID == null) return;
         const body = Object.assign({ curve: (st.transition_defaults || {}).curve }, patch);
         try {
-            const r = await fetch(`/api/containers/${VMID}/plugin/transition`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+            const r = await fetch(`/api/containers/${VMID}/plugin/transition`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+            });
             const j = await r.json().catch(() => ({}));
             if (r.ok && j.transition) st.transition_defaults = j.transition;
-            else if (!r.ok) TOAST(T('trans_err', 'Réglage de transition refusé') + ' : ' + (j.error || ('HTTP ' + r.status)), 'error');
-        } catch (e) {}
+            else if (!r.ok) showError(T('trans_err', 'Réglage de transition refusé') + ' : ' + (j.error || ('HTTP ' + r.status)));
+        } catch (e) { showError(T('trans_err', 'Réglage de transition refusé') + ' : ' + e.message); }
         schedulePersist();
     }
 
@@ -737,18 +929,81 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
         const pct = adv.budget_pct, rot = adv.rotated_boxes || 0;
         const over = !!adv.over_budget, warn = (pct != null && pct > 80);
         host.className = 'split-budget' + (over ? ' over' : (warn ? ' warn' : ''));
-        const rotTxt = rot ? ` · ${T('budget_rot', 'rotation')} ×${rot}` : '';
         host.innerHTML = `<span>${esc(T('budget', 'Budget de trame'))}</span>` +
-            `<span class="split-budget-val">${pct == null ? '—' : pct + ' %'}${esc(rotTxt)}</span>`;
-        host.title = over
-            ? T('budget_over_t', 'Le compositing dépasse le budget de trame : le Split décroche (fps sous la consigne). La rotation est de loin le poste le plus lourd — la retirer est le premier geste.')
+            `<span class="split-budget-val">${pct == null ? '—' : pct + ' %'}${rot ? esc(' · ' + T('budget_rot', 'rotation') + ' ×' + rot) : ''}</span>`;
+        host.title = over ? T('budget_over_t', 'Le compositing dépasse le budget de trame : le Split décroche (fps sous la consigne). La rotation est de loin le poste le plus lourd — la retirer est le premier geste.')
             : (warn ? T('budget_warn_t', 'Le compositing approche du budget de trame — plus de marge pour un effet supplémentaire.')
                 : T('budget_ok_t', 'Coût de composition par trame, rapporté au budget de la cadence (100 % = décrochage).'));
         const w = $('#split_rot_warn');
         if (w && over && rot) {
-            w.className = 'split-warn err';
-            w.textContent = T('rot_live_over', 'Le moteur dépasse actuellement le budget de trame et ') + rot + T('rot_live_over2', ' box est/sont en rotation : remettez la rotation à 0 pour retrouver la cadence.');
+            w.className = 'alert alert-error';
+            w.textContent = T('rot_live_over', 'Le moteur dépasse actuellement le budget de trame et ') + rot +
+                T('rot_live_over2', ' box est/sont en rotation : remettez la rotation à 0 pour retrouver la cadence.');
         }
+    }
+
+    // ─── Snap magnétique (miroir de computeSnap/computeSnapResize du composer) ───────
+    function snapTargets(excludeIdx, CW, CH) {
+        const xT = [0, CW, CW / 2], yT = [0, CH, CH / 2];
+        boxes.forEach((b, i) => {
+            if (i === excludeIdx || !b.enabled) return;
+            const r = rectPx(i, CW, CH);
+            xT.push(r.x0, r.x0 + r.w, r.x0 + r.w / 2);
+            yT.push(r.y0, r.y0 + r.h, r.y0 + r.h / 2);
+        });
+        return { xT, yT };
+    }
+    function computeSnap(excludeIdx, x, y, w, h, CW, CH) {
+        const { xT, yT } = snapTargets(excludeIdx, CW, CH), guides = [], SP = SNAP_PX();
+        let bestDx = SP + 1, snapX = x;
+        [{ e: 'l', v: x }, { e: 'r', v: x + w }, { e: 'c', v: x + w / 2 }].forEach(({ e, v }) => {
+            xT.forEach(t => {
+                const d = Math.abs(v - t);
+                if (d <= SP && d < bestDx) {
+                    bestDx = d; snapX = e === 'l' ? t : e === 'r' ? t - w : t - w / 2;
+                    guides[0] = { type: 'v', pos: t };
+                }
+            });
+        });
+        let bestDy = SP + 1, snapY = y;
+        [{ e: 't', v: y }, { e: 'b', v: y + h }, { e: 'c', v: y + h / 2 }].forEach(({ e, v }) => {
+            yT.forEach(t => {
+                const d = Math.abs(v - t);
+                if (d <= SP && d < bestDy) {
+                    bestDy = d; snapY = e === 't' ? t : e === 'b' ? t - h : t - h / 2;
+                    guides[1] = { type: 'h', pos: t };
+                }
+            });
+        });
+        return { x: snapX, y: snapY, guides: guides.filter(Boolean) };
+    }
+    // Resize : le Split garde le RATIO (contrairement au PiP, W/H indépendants) → on retient le
+    // facteur d'échelle de l'arête la plus proche.
+    function computeSnapResize(excludeIdx, r, CW, CH) {
+        const { xT, yT } = snapTargets(excludeIdx, CW, CH), SP = SNAP_PX();
+        let best = SP + 1, factor = 1, guides = [];
+        xT.forEach(t => {
+            const d = Math.abs((r.x0 + r.w) - t);
+            if (d <= SP && d < best && t > r.x0 && r.w > 0) { best = d; factor = (t - r.x0) / r.w; guides = [{ type: 'v', pos: t }]; }
+        });
+        yT.forEach(t => {
+            const d = Math.abs((r.y0 + r.h) - t);
+            if (d <= SP && d < best && t > r.y0 && r.h > 0) { best = d; factor = (t - r.y0) / r.h; guides = [{ type: 'h', pos: t }]; }
+        });
+        return { factor, guides };
+    }
+    function drawGuides(ctx, CW, CH, css) {
+        if (!drag || !snapGuides.length) return;
+        ctx.save();
+        ctx.strokeStyle = (css.getPropertyValue('--status-warning-fg') || '#c4a667').trim();
+        ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+        snapGuides.forEach(g => {
+            ctx.beginPath();
+            if (g.type === 'v') { ctx.moveTo(g.pos, 0); ctx.lineTo(g.pos, CH); }
+            else { ctx.moveTo(0, g.pos); ctx.lineTo(CW, g.pos); }
+            ctx.stroke();
+        });
+        ctx.restore();
     }
 
     // ─── Canvas ─────────────────────────────────────────────────────────────────────
@@ -762,25 +1017,25 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
     }
     function pathRect(ctx, r, radPx) {
         const rad = Math.max(0, Math.min(radPx, Math.min(r.w, r.h) / 2));
-        if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(r.x0, r.y0, r.w, r.h, rad); }
-        else { ctx.beginPath(); ctx.rect(r.x0, r.y0, r.w, r.h); }
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(r.x0, r.y0, r.w, r.h, rad);
+        else ctx.rect(r.x0, r.y0, r.w, r.h);
     }
     function drawCanvas() {
         const cv = $('#split_canvas'); if (!cv || !boxes) return;
         const CW = cv.clientWidth || 640, CH = Math.round(CW * 9 / 16);
         cv.width = CW; cv.height = CH;
-        const ctx = cv.getContext('2d');
-        const css = getComputedStyle(cv);
+        const ctx = cv.getContext('2d'), css = getComputedStyle(cv);
         ctx.clearRect(0, 0, CW, CH);
         ctx.fillStyle = css.backgroundColor || '#111';
         ctx.fillRect(0, 0, CW, CH);
-        const muted = css.getPropertyValue('--text-muted') || '#888';
-        const strong = css.getPropertyValue('--text-strong') || '#fff';
-        const accent = css.getPropertyValue('--accent') || '#7aa2c8';
+        const muted = (css.getPropertyValue('--text-muted') || '#888').trim();
+        const strong = (css.getPropertyValue('--text-strong') || '#fff').trim();
+        const accent = (css.getPropertyValue('--accent') || '#7aa2c8').trim();
         ctx.font = '11px Inter, system-ui, sans-serif';
         ctx.fillStyle = muted;
         ctx.fillText(inputs[4] ? (T('bg_short', 'Fond') + ' : ' + inputs[4]) : T('bg_none', 'Fond (non câblé)'), 6, 14);
-        const scale = CW / ((st && st.width) || 1280);   // px moteur → px canvas
+        const scale = CW / ((st && st.width) || 1280);
 
         zOrder().forEach(i => {
             const b = boxes[i], r = rectPx(i, CW, CH);
@@ -806,17 +1061,14 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
             ctx.globalAlpha = 1;
             ctx.strokeStyle = sel.includes(i) ? accent : (b.enabled ? strong : muted);
             ctx.lineWidth = sel.includes(i) ? 2 : 1;
-            ctx.setLineDash(sel.includes(i) ? [] : []);
             pathRect(ctx, r, (b.radius || 0) * scale);
             ctx.stroke();
             ctx.fillStyle = strong;
             ctx.fillText(`${T('box', 'Box')} ${i + 1}${inputs[i] ? ' · ' + inputs[i] : ''}`, r.x0 + 4, r.y0 + 14);
-            if (sel.includes(i)) {   // poignée de redimensionnement (coin bas-droit)
-                ctx.fillStyle = accent;
-                ctx.fillRect(r.x0 + r.w - 7, r.y0 + r.h - 7, 7, 7);
-            }
+            if (sel.includes(i)) { ctx.fillStyle = accent; ctx.fillRect(r.x0 + r.w - 7, r.y0 + r.h - 7, 7, 7); }
             ctx.restore();
         });
+        drawGuides(ctx, CW, CH, css);
         redrawSidebar();
     }
     function canvasPos(e) {
@@ -826,8 +1078,7 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
     const EDGE_PX = 7;
     const CURSOR = { move: 'move', resize: 'nwse-resize', 'crop-l': 'ew-resize', 'crop-r': 'ew-resize', 'crop-t': 'ns-resize', 'crop-b': 'ns-resize' };
     function hitTest(px, py, CW, CH) {
-        const order = zOrder().slice().reverse();   // la plus haute d'abord
-        for (const i of order) {
+        for (const i of zOrder().slice().reverse()) {
             const r = rectPx(i, CW, CH), E = EDGE_PX;
             if (px < r.x0 - E || px > r.x0 + r.w + E || py < r.y0 - E || py > r.y0 + r.h + E) continue;
             if (px >= r.x0 + r.w - 10 && px <= r.x0 + r.w + 4 && py >= r.y0 + r.h - 10 && py <= r.y0 + r.h + 4) return { idx: i, mode: 'resize' };
@@ -862,9 +1113,29 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
         const capL = v => clamp(v, cmin, Math.min(cmax, 0.92 - b.crop.r)), capR = v => clamp(v, cmin, Math.min(cmax, 0.92 - b.crop.l));
         const capT = v => clamp(v, cmin, Math.min(cmax, 0.92 - b.crop.b)), capB = v => clamp(v, cmin, Math.min(cmax, 0.92 - b.crop.t));
         const [smin, smax] = cap('box_fields', 'size');
+        snapGuides = [];
         switch (drag.mode) {
-            case 'move': b.x = clamp(drag.bx + (px - drag.sx) / CW, 0, 1); b.y = clamp(drag.by + (py - drag.sy) / CH, 0, 1); break;
-            case 'resize': b.size = clamp(Math.abs(px - b.x * CW) * 2 / CW, smin, smax); break;
+            case 'move': {
+                b.x = clamp(drag.bx + (px - drag.sx) / CW, 0, 1);
+                b.y = clamp(drag.by + (py - drag.sy) / CH, 0, 1);
+                if (snapEnabled) {   // aimantation aux bords/centre du cadre et des autres box
+                    const r = rectPx(drag.idx, CW, CH);
+                    const s = computeSnap(drag.idx, r.x0, r.y0, r.w, r.h, CW, CH);
+                    b.x = clamp(b.x + (s.x - r.x0) / CW, 0, 1);
+                    b.y = clamp(b.y + (s.y - r.y0) / CH, 0, 1);
+                    snapGuides = s.guides;
+                }
+                break;
+            }
+            case 'resize': {
+                b.size = clamp(Math.abs(px - b.x * CW) * 2 / CW, smin, smax);
+                if (snapEnabled) {
+                    const r = rectPx(drag.idx, CW, CH);
+                    const s = computeSnapResize(drag.idx, r, CW, CH);
+                    if (s.guides.length) { b.size = clamp(b.size * s.factor, smin, smax); snapGuides = s.guides; }
+                }
+                break;
+            }
             case 'crop-l': b.crop.l = capL((px - b.x * CW) / fw + 0.5); break;
             case 'crop-r': b.crop.r = capR(0.5 - (px - b.x * CW) / fw); break;
             case 'crop-t': b.crop.t = capT((py - b.y * CH) / fh + 0.5); break;
@@ -874,7 +1145,7 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
     }
     function canvasUp() {
         if (!drag) return;
-        const i = drag.idx; drag = null;
+        const i = drag.idx; drag = null; snapGuides = [];
         const b = boxes[i];
         postBox(i, { x: b.x, y: b.y, size: b.size, crop: b.crop });
         syncAll();
@@ -896,11 +1167,11 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(Object.assign({ idx: i }, patch)),
             });
-            if (!r.ok) {   // le moteur refuse → le DIRE (jamais d'échec silencieux)
+            if (!r.ok) {
                 const j = await r.json().catch(() => ({}));
-                TOAST(T('box_err', 'Réglage refusé par le moteur') + ' : ' + (j.error || ('HTTP ' + r.status)), 'error');
-            }
-        } catch (e) { TOAST(T('box_err', 'Réglage refusé par le moteur') + ' : ' + e.message, 'error'); }
+                showError(T('box_err', 'Réglage refusé par le moteur') + ' : ' + (j.error || ('HTTP ' + r.status)));
+            } else clearError();
+        } catch (e) { showError(T('box_err', 'Réglage refusé par le moteur') + ' : ' + e.message); }
         if (!skipPersist) schedulePersist();
     }
     async function postInput(idx, shm) {
@@ -910,7 +1181,7 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
             await fetch(`/api/containers/${VMID}/plugin/input`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idx, shm }),
             });
-        } catch (e) {}
+        } catch (e) { showError(T('input_err', 'Câblage refusé') + ' : ' + e.message); }
         drawCanvas(); schedulePersist();
     }
     function schedulePersist() {
@@ -926,8 +1197,7 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
         if (!canvas) return;
         const CW = canvas.clientWidth || 150, CH = Math.round(CW * 9 / 16);
         canvas.width = CW; canvas.height = CH;
-        const ctx = canvas.getContext('2d');
-        const css = getComputedStyle(canvas);
+        const ctx = canvas.getContext('2d'), css = getComputedStyle(canvas);
         ctx.fillStyle = css.backgroundColor || '#111'; ctx.fillRect(0, 0, CW, CH);
         (bx || []).slice(0, 4).forEach((raw, i) => {
             const b = normBox(raw); if (!b.enabled) return;
@@ -936,7 +1206,7 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
             ctx.fillStyle = BOX_COLORS[i % 4];
             ctx.fillRect(r.x0 * CW, r.y0 * CH, r.w * CW, r.h * CH);
             ctx.globalAlpha = 1;
-            ctx.strokeStyle = css.getPropertyValue('--text-strong') || '#fff';
+            ctx.strokeStyle = (css.getPropertyValue('--text-strong') || '#fff').trim();
             ctx.lineWidth = 1;
             ctx.strokeRect(r.x0 * CW, r.y0 * CH, r.w * CW, r.h * CH);
         });
@@ -944,7 +1214,7 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
     function sendSelect(memId) {
         const others = containers.filter(d => d.vmid !== VMID);
         if (!others.length) return '';
-        return `<select data-send="${memId}">
+        return `<select data-send="${memId}" aria-label="${esc(T('mem_send', 'Envoyer vers…'))}">
             <option value="">${esc(T('mem_send', 'Envoyer vers…'))}</option>
             ${others.map(d => `<option value="${d.vmid}">${esc(d.hostname)} (#${d.vmid})</option>`).join('')}</select>`;
     }
@@ -954,16 +1224,17 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
         try {
             const mems = await (await fetch(`/api/containers/${VMID}/split/memories`)).json();
             memCache = mems;
-            if (!mems.length) { ul.innerHTML = `<li class="split-empty">${esc(T('mem_empty', 'Aucune mémoire.'))}</li>`; return; }
+            if (!mems.length) { ul.innerHTML = `<li class="meta">${esc(T('mem_empty', 'Aucune mémoire.'))}</li>`; return; }
             ul.innerHTML = mems.map(m => {
                 const nOn = (m.config || []).filter(b => b && b.enabled).length;
                 return `<li class="split-mem-card"><b title="${esc(m.name)}">${esc(m.name)}</b>
                     <canvas data-mem-preview="${m.id}"></canvas>
-                    <span class="split-note">${nOn} ${esc(T('mem_active', 'box active(s)'))}</span>
+                    <span class="meta">${nOn} ${esc(T('mem_active', 'box active(s)'))}</span>
                     <div class="split-mem-actions">
-                        <button type="button" class="btn btn-blue" data-recall="${m.id}">${esc(T('mem_recall', 'Rappeler'))}</button>
-                        <button type="button" class="btn" data-export="${m.id}">${esc(T('mem_export', 'Export'))}</button>
-                        <button type="button" class="btn btn-red" data-del="${m.id}" title="${esc(T('mem_delete', 'Supprimer'))}">✕</button>
+                        <button type="button" class="btn btn-sm btn-blue" data-recall="${m.id}">${esc(T('mem_recall', 'Rappeler'))}</button>
+                        <button type="button" class="btn btn-sm" data-export="${m.id}">${esc(T('mem_export', 'Export'))}</button>
+                        <button type="button" class="btn btn-sm btn-red" data-del="${m.id}"
+                                title="${esc(T('mem_delete', 'Supprimer'))}" aria-label="${esc(T('mem_delete', 'Supprimer'))}">✕</button>
                         ${sendSelect(m.id)}
                     </div></li>`;
             }).join('');
@@ -978,12 +1249,12 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
     }
     async function saveMemory() {
         const name = ($('#split_mem_name').value || '').trim();
-        if (!name) { TOAST(T('mem_need_name', 'Donnez un nom à la mémoire.'), 'warning'); return; }
+        if (!name) { showError(T('mem_need_name', 'Donnez un nom à la mémoire.')); return; }
         const r = await fetch(`/api/containers/${VMID}/split/memories`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
         });
-        if (r.ok) { $('#split_mem_name').value = ''; loadMemories(); }
-        else TOAST(T('mem_save_err', 'Erreur d\'enregistrement de la mémoire'), 'error');
+        if (r.ok) { $('#split_mem_name').value = ''; clearError(); loadMemories(); }
+        else showError(T('mem_save_err', 'Erreur d\'enregistrement de la mémoire'));
     }
     async function recallMemory(id) {
         const dur = parseInt($('#split_recall_dur').value) || 0;
@@ -1006,13 +1277,13 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
         const file = input.files[0]; if (!file) return; input.value = '';
         let data;
         try { data = JSON.parse(await file.text()); }
-        catch (e) { TOAST(T('mem_bad_file', 'Fichier invalide (JSON)') + ' : ' + e.message, 'error'); return; }
-        if (!Array.isArray(data.config)) { TOAST(T('mem_bad_cfg', 'Fichier invalide : champ « config » manquant.'), 'error'); return; }
+        catch (e) { showError(T('mem_bad_file', 'Fichier invalide (JSON)') + ' : ' + e.message); return; }
+        if (!Array.isArray(data.config)) { showError(T('mem_bad_cfg', 'Fichier invalide : champ « config » manquant.')); return; }
         const name = (data.name || file.name.replace(/\.json$/i, '')).trim() || T('mem_imported', 'mémoire importée');
         const r = await fetch(`/api/containers/${VMID}/split/memories`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, config: data.config }),
         });
-        if (r.ok) loadMemories(); else TOAST(T('mem_import_err', 'Erreur d\'import') + ' (HTTP ' + r.status + ')', 'error');
+        if (r.ok) { clearError(); loadMemories(); } else showError(T('mem_import_err', 'Erreur d\'import') + ' (HTTP ' + r.status + ')');
     }
     async function envoyerMemoire(memId, targetVmid) {
         const m = memCache.find(x => x.id === parseInt(memId)); if (!m) return;
@@ -1020,8 +1291,8 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: m.name, config: m.config }),
         });
         const tgt = containers.find(d => d.vmid === parseInt(targetVmid));
-        TOAST(r.ok ? `${T('mem_sent', 'Mémoire copiée vers')} ${tgt ? tgt.hostname : ('#' + targetVmid)}.`
-            : T('mem_send_err', 'Erreur d\'envoi') + ' (HTTP ' + r.status + ')', r.ok ? 'info' : 'error');
+        if (r.ok) TOAST(`${T('mem_sent', 'Mémoire copiée vers')} ${tgt ? tgt.hostname : ('#' + targetVmid)}.`, 'info');
+        else showError(T('mem_send_err', 'Erreur d\'envoi') + ' (HTTP ' + r.status + ')');
     }
 
     // ─── Sync ───────────────────────────────────────────────────────────────────────
@@ -1051,16 +1322,15 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
         const ctx = cv.getContext('2d'), css = getComputedStyle(cv);
         ctx.clearRect(0, 0, CW, CH);
         ctx.fillStyle = css.backgroundColor || '#111'; ctx.fillRect(0, 0, CW, CH);
+        const strong = (css.getPropertyValue('--text-strong') || '#fff').trim();
         (rawBoxes || []).slice(0, 4).forEach((raw, i) => {
             const b = normBox(raw); if (!b.enabled) return;
             const r = rectN(b);
             ctx.fillStyle = BOX_COLORS[i % 4];
             ctx.fillRect(r.x0 * CW, r.y0 * CH, r.w * CW, r.h * CH);
-            ctx.strokeStyle = css.getPropertyValue('--text-strong') || '#fff';
-            ctx.lineWidth = 1;
+            ctx.strokeStyle = strong; ctx.lineWidth = 1;
             ctx.strokeRect(r.x0 * CW, r.y0 * CH, r.w * CW, r.h * CH);
-            ctx.fillStyle = css.getPropertyValue('--text-strong') || '#fff';
-            ctx.font = '9px Inter, system-ui, sans-serif';
+            ctx.fillStyle = strong; ctx.font = '9px Inter, system-ui, sans-serif';
             ctx.fillText(String(i + 1), r.x0 * CW + 3, r.y0 * CH + 10);
         });
     }
@@ -1083,7 +1353,8 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
         unmount();
         EL = el; VMID = vmid; TOAST = (ctx && ctx.toast) || (() => {});
         st = null; boxes = null; caps = null; inputs = ['', '', '', '', ''];
-        sources = []; containers = []; memCache = []; sel = [0]; clipboard = null; adv = null; metricsErr = false;
+        sources = []; containers = []; memCache = []; sel = [0]; clipboard = null;
+        adv = null; metricsErr = false; errorMsg = null; advanced = false;
         window.addEventListener('resize', onResize);
         document.addEventListener('keydown', onKeyDown);
         Promise.all([loadSources(), loadContainers()]).then(() => fetchState({ rebuild: true }));
@@ -1097,7 +1368,7 @@ ${stale ? `<div class="split-warn">${esc(T('stale_engine', 'Le moteur déployé 
         pollTimer = metTimer = boxPostTimer = persistTimer = null;
         window.removeEventListener('resize', onResize);
         document.removeEventListener('keydown', onKeyDown);
-        EL = null; VMID = null; drag = null;
+        EL = null; VMID = null; drag = null; knobDrag = null;
     }
 
     const exp = { mount, unmount, listPreview };
