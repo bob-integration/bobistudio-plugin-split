@@ -16,7 +16,7 @@
 # placeholders. TOUTE autre accolade littérale doit être doublée {{ }}.
 # ─────────────────────────────────────────────────────────────────────────────
 import time, threading, json, signal, math, base64, io, os
-from collections import deque
+from collections import deque, OrderedDict
 import numpy as np
 import bobimxl   # migration MXL Phase 1 : 5 entrées Reader + 1 sortie Writer (planar, genlock fond)
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -35,7 +35,7 @@ inst = bobimxl.Instance()   # domaine MXL ($MXL_DOMAIN ou /dev/shm/mxl)
 _MVK = bool(getattr(bobimxl, "mvk_available", lambda: False)()) \
     and bool(getattr(bobimxl, "mvk_spl_compose_into", None)) \
     and not os.environ.get("BOBI_SPLIT_NOMVK")
-_mvk_miss = {{"compose": 0, "fused": 0, "solid": 0, "calls": 0}}
+_mvk_miss = {{"compose": 0, "fused": 0, "solid": 0, "gradient": 0, "calls": 0}}
 _mvk_why = {{}}   # signature (forme/dtype) des replis — pour identifier la cause sans deviner
 
 
@@ -278,7 +278,7 @@ GLOBAL_NEUTRAL = {{"dx": 0.0, "dy": 0.0, "scale": 1.0, "rotation": 0.0, "opacity
 #  PAS silencieux : `bg.clipped` le dit, et `bg.legal=false` donne la plage COMPLÈTE en
 #  connaissance de cause. La couleur est persistée en HEX (sRGB) — jamais en YUV : si le
 #  conteneur est redéployé en 10 bits ou dans une autre colorimétrie, elle est RECONVERTIE.
-BG_MODES = ("none", "source", "color")
+BG_MODES = ("none", "source", "color", "gradient")   # gradient = mélange N arrêts + wipe
 
 # Matrices luma (Kr, Kb) par colorimétrie DÉCLARÉE. `_hex_to_yuv` (bordure/ombre/clé chroma) est,
 # lui, resté sur du BT.601 pleine échelle codé en dur — dette CONNUE, cf. help.md § audit.
@@ -354,8 +354,32 @@ def _bg_yuv(color, legal):
     return got
 
 
+# Défaut de dégradé : noir → blanc horizontal, dégradé progressif (douceur 1).
+GRAD_STOPS_MIN, GRAD_STOPS_MAX = 2, 4
+_GRAD_DEFAULT = {{"angle": 0.0, "softness": 1.0,
+                  "stops": [{{"color": "#000000", "pos": 0.0}}, {{"color": "#ffffff", "pos": 1.0}}]}}
+
+
+def _norm_gradient(g):
+    """Normalise un dégradé : angle 0-360, douceur 0-1 (0 = wipe net), 2 à 4 arrêts (couleur hex +
+    position 0-1), TRIÉS par position. Défauts = le dégradé par défaut ci-dessus."""
+    g = dict(g or {{}})
+    raw = g.get("stops")
+    if not isinstance(raw, list) or len(raw) < GRAD_STOPS_MIN:
+        raw = [dict(s) for s in _GRAD_DEFAULT["stops"]]
+    stops = []
+    for s in raw[:GRAD_STOPS_MAX]:
+        s = dict(s or {{}})
+        stops.append({{"color": str(s.get("color") or "#000000"),
+                       "pos": _f(s.get("pos", 0.0), 0.0, 1.0, 0.0)}})
+    stops.sort(key=lambda x: x["pos"])
+    return {{"angle": _f(g.get("angle", 0.0), 0.0, 360.0, 0.0),
+             "softness": _f(g.get("softness", 1.0), 0.0, 1.0, 1.0),
+             "stops": stops}}
+
+
 def _norm_bg(bg):
-    """Normalise le fond : mode + couleur + plage. Défaut = `none` (noir) → INCHANGÉ."""
+    """Normalise le fond : mode + couleur (uni) + dégradé + plage. Défaut = `none` (noir)."""
     bg = dict(bg or {{}})
     mode = str(bg.get("mode") or "none").strip().lower()
     if mode not in BG_MODES:
@@ -363,13 +387,19 @@ def _norm_bg(bg):
     lg = bg.get("legal", True)
     return {{"mode": mode, "color": str(bg.get("color") or "#000000"),
              "legal": (lg if isinstance(lg, bool)
-                       else str(lg).strip().lower() in ("1", "true", "yes", "on"))}}
+                       else str(lg).strip().lower() in ("1", "true", "yes", "on")),
+             "gradient": _norm_gradient(bg.get("gradient"))}}
 
 
 def _bg_public(bg):
     """État fond pour /state — conversion effective ET drapeau d'écrêtage (jamais muet)."""
     y, u, v, clipped = _bg_yuv(bg["color"], bg["legal"])
-    return dict(bg) | {{"yuv": [y, u, v], "clipped": bool(clipped and bg["mode"] == "color")}}
+    gclip = False
+    if bg["mode"] == "gradient":
+        for s in bg["gradient"]["stops"]:
+            gclip = gclip or _bg_yuv(s["color"], bg["legal"])[3]
+    return dict(bg) | {{"yuv": [y, u, v],
+                        "clipped": bool((clipped and bg["mode"] == "color") or gclip)}}
 
 
 def _bg_values(bg):
@@ -388,7 +418,187 @@ def _interp_bg(fr, to, p):
     if fr["mode"] == "color" and to["mode"] == "color":
         return {{"mode": "color", "legal": to["legal"],
                  "color": _lerp_hex(fr["color"], to["color"], p)}}
+    if fr["mode"] == "gradient" and to["mode"] == "gradient":
+        # ★ ANIMATION GRATUITE : deux mémoires gradient → un WIPE/dégradé ANIMÉ (angle, douceur,
+        # couleurs et positions tous interpolés). Aucune mécanique nouvelle : c'est la transition
+        # de fond qui existe depuis la 0.12.0, étendue à tous les champs du dégradé.
+        return {{"mode": "gradient", "legal": to["legal"],
+                 "gradient": _interp_gradient(fr["gradient"], to["gradient"], p)}}
     return dict(to if p >= 0.5 else fr)
+
+
+# ═════════════════════════════════════════════════════════════════════════════════════════════
+#  FOND DÉGRADÉ (0.13.0) — mélange de couleurs + WIPE, le même objet
+#
+#  Un dégradé = liste d'arrêts (couleur hex + position) + un ANGLE + une DOUCEUR. La douceur
+#  unifie mélange et wipe : 0 = frontière NETTE (wipe), 1 = dégradé progressif, entre = molle.
+#  Chaque arrêt est converti par `_rgb_to_yuv` (LA conversion du plugin : colorimétrie DÉCLARÉE,
+#  profondeur courante, plage légale — aucune matrice en dur). L'interpolation entre arrêts se
+#  fait EN YUV à la profondeur courante, dans le noyau C (mvk_spl_gradient) — repli numpy IDENTIQUE.
+#
+#  ★ COÛT : une valeur PAR PIXEL → passe plein cadre. STATIQUE, l'empreinte (axe + arrêts YUV) est
+#  cachée et seul le remplissage tourne ; ANIMÉ (wipe qui balaie pendant une transition), il est
+#  refait à chaque trame — d'où le C. Mesuré : cf. help.md.
+#
+#  ★ BANDING : un dégradé plat en 8 bits montre des BANDES (défaut classique, visible à l'antenne).
+#  Un TRAMAGE ordonné (Bayer 8×8, ±½ LSB) est ajouté dans le noyau avant l'arrondi. Amplitude
+#  constante en LSB (±0,49 code) : franc en 8 bits, négligeable en 10/12 (c'est voulu).
+GRAD_AMP = 1.0
+_BAYER8 = [[0, 32, 8, 40, 2, 34, 10, 42], [48, 16, 56, 24, 50, 18, 58, 26],
+           [12, 44, 4, 36, 14, 46, 6, 38], [60, 28, 52, 20, 62, 30, 54, 22],
+           [3, 35, 11, 43, 1, 33, 9, 41], [51, 19, 59, 27, 49, 17, 57, 25],
+           [15, 47, 7, 39, 13, 45, 5, 37], [63, 31, 55, 23, 61, 29, 53, 21]]
+# Bayer CENTRÉ sur 0 (±0,492) et en float32 — MÊME table pour le kernel (aplatie) et le repli.
+_BAYER = ((np.array(_BAYER8, dtype=np.float32) - np.float32(31.5)) / np.float32(64.0))
+_BAYER_FLAT = np.ascontiguousarray(_BAYER.ravel(), dtype=np.float32)
+
+
+def _f32r(x):
+    """Arrondi float32 d'un scalaire : les paramètres d'axe passent au kernel en c_float (float32)
+    ET au repli numpy — on les fige donc en float32 des DEUX côtés, sinon kernel ≢ repli."""
+    return float(np.float32(x))
+
+
+_grad_cache = {{}}   # clé config → empreinte (axe + arrêts YUV) — précalcul fait UNE FOIS
+
+
+def _grad_prep(bg):
+    """Empreinte d'un dégradé (cachée) : axe (cos/sin/pmin/inv_range float32), arrêts YUV float32
+    à la profondeur/colorimétrie, douceur, table Bayer. Le calcul par trame ne fait QUE le
+    remplissage — l'empreinte ne bouge qu'au changement de réglage."""
+    g = bg["gradient"]; legal = bg["legal"]
+    key = (round(g["angle"], 4), round(g["softness"], 5), legal,
+           tuple((s["color"], round(s["pos"], 5)) for s in g["stops"]))
+    got = _grad_cache.get(key)
+    if got is not None:
+        return got
+    th = math.radians(g["angle"])
+    cos = _f32r(math.cos(th)); sin = _f32r(math.sin(th))
+    # normalisation [0,1] sur le cadre : min/max de la projection AUX 4 COINS
+    projs = [x * cos + y * sin for x in (0.0, float(WIDTH)) for y in (0.0, float(HEIGHT))]
+    pmin = _f32r(min(projs)); pmax = _f32r(max(projs))
+    inv = _f32r(1.0 / (pmax - pmin)) if pmax > pmin else _f32r(0.0)
+    pos = np.array([s["pos"] for s in g["stops"]], dtype=np.float32)
+    ys, us, vs = [], [], []
+    for s in g["stops"]:
+        y, u, v, _c = _bg_yuv(s["color"], legal)
+        ys.append(y); us.append(u); vs.append(v)
+    gp = {{"key": key, "axis": (cos, sin, pmin, inv),
+           "pos": np.ascontiguousarray(pos, dtype=np.float32),
+           "yv": np.ascontiguousarray(ys, dtype=np.float32),
+           "uv": np.ascontiguousarray(us, dtype=np.float32),
+           "vv": np.ascontiguousarray(vs, dtype=np.float32),
+           "softness": _f32r(g["softness"])}}
+    _grad_cache[key] = gp
+    return gp
+
+
+def _grad_eval_np(t, pos, yv, uv, vv, soft):
+    """REPLI numpy — reproduit `grad_at` du kernel TERME À TERME, en float64 (le kernel calcule en
+    double, la promotion float32→double est exacte → mêmes octets). t float64 (h,w)."""
+    n = pos.shape[0]
+    p = pos.astype(np.float64); Yv = yv.astype(np.float64); Uv = uv.astype(np.float64); Vv = vv.astype(np.float64)
+    Y = np.full(t.shape, Yv[n - 1]); U = np.full(t.shape, Uv[n - 1]); V = np.full(t.shape, Vv[n - 1])
+    for i in range(n - 1):
+        seg = p[i + 1] - p[i]
+        local = (t - p[i]) / seg if seg > 1e-9 else np.zeros_like(t)
+        if soft <= 1e-6:
+            w = np.where(local < 0.5, 0.0, 1.0)
+        else:
+            w = np.clip((local - 0.5) / soft + 0.5, 0.0, 1.0)
+        iw = 1.0 - w
+        m = (t >= p[i]) & (t < p[i + 1])
+        Y[m] = (Yv[i] * iw + Yv[i + 1] * w)[m]
+        U[m] = (Uv[i] * iw + Uv[i + 1] * w)[m]
+        V[m] = (Vv[i] * iw + Vv[i + 1] * w)[m]
+    le0 = t <= p[0]; ge1 = t >= p[n - 1]              # bornes : recouvrent les segments
+    for A, Av in ((Y, Yv), (U, Uv), (V, Vv)):
+        A[le0] = Av[0]; A[ge1] = Av[n - 1]
+    return Y, U, V
+
+
+def _bg_gradient_np(oy, ou, ov, gp, b0, b1):
+    """REPLI numpy du remplissage dégradé, bande [b0,b1) — bit-exact au kernel (double = float64,
+    même ordre, tramage Bayer identique)."""
+    cos, sin, pmin, inv = gp["axis"]
+    soft = gp["softness"]
+    cos = np.float64(cos); sin = np.float64(sin); pmin = np.float64(pmin); inv = np.float64(inv)
+    soft = float(np.float64(soft)); amp = np.float64(GRAD_AMP)
+    bay = _BAYER.astype(np.float64)
+    # LUMA
+    ys = np.arange(b0, b1, dtype=np.float64)[:, None]
+    xs = np.arange(WIDTH, dtype=np.float64)[None, :]
+    py = (ys + 0.5) * sin
+    t = np.clip(((xs + 0.5) * cos + py - pmin) * inv, 0.0, 1.0)
+    Y, _u, _v = _grad_eval_np(t, gp["pos"], gp["yv"], gp["uv"], gp["vv"], soft)
+    dy = amp * bay[(np.arange(b0, b1)[:, None] & 7), (np.arange(WIDTH)[None, :] & 7)]
+    oy[b0:b1] = np.clip(np.floor(Y + dy + 0.5), 0, _MAXV).astype(_NP_DT)
+    # CHROMA
+    cb0, cb1 = b0 // _CH, b1 // _CH
+    cy = np.arange(cb0, cb1, dtype=np.float64)[:, None]
+    cx = np.arange(UV_W, dtype=np.float64)[None, :]
+    ly = cy * _CH + _CH * 0.5; lx = cx * _CW + _CW * 0.5
+    t2 = np.clip((lx * cos + ly * sin - pmin) * inv, 0.0, 1.0)
+    _y, U, V = _grad_eval_np(t2, gp["pos"], gp["yv"], gp["uv"], gp["vv"], soft)
+    dc = amp * bay[(np.arange(cb0, cb1)[:, None] & 7), (np.arange(UV_W)[None, :] & 7)]
+    ou[cb0:cb1] = np.clip(np.floor(U + dc + 0.5), 0, _MAXV).astype(_NP_DT)
+    ov[cb0:cb1] = np.clip(np.floor(V + dc + 0.5), 0, _MAXV).astype(_NP_DT)
+
+
+_grad_render = OrderedDict()   # clé dégradé → (Y, U, V) plein cadre — rendu UNE FOIS
+_GRAD_RENDER_MAX = 6           # borne (une transition génère un dégradé distinct/trame)
+
+
+def _grad_planes(gp):
+    """Rend le dégradé PLEIN CADRE une fois (kernel mvk, sinon repli numpy IDENTIQUE) et le CACHE.
+    ★ STATIQUE → rendu une fois puis simple recopie (≈ fond uni). ANIMÉ (wipe en transition) →
+    la clé change à chaque trame ⇒ rendu par trame (le C, mesuré ~20 ms en 1080p) — c'est le prix
+    d'un balayage animé plein cadre, DIT dans help.md. Cache borné (transition = churn)."""
+    key = gp["key"]
+    got = _grad_render.get(key)
+    if got is not None:
+        _grad_render.move_to_end(key)
+        return got
+    Y = np.empty((HEIGHT, WIDTH), _NP_DT)
+    U = np.empty((UV_H, UV_W), _NP_DT); V = np.empty((UV_H, UV_W), _NP_DT)
+    cos, sin, pmin, inv = gp["axis"]
+    if not _mvk_try("gradient", bobimxl.mvk_spl_gradient_into, Y, U, V, WIDTH, HEIGHT,
+                    _CW, _CH, 0, HEIGHT, cos, sin, pmin, inv,
+                    gp["pos"], gp["yv"], gp["uv"], gp["vv"], gp["softness"], _MAXV,
+                    GRAD_AMP, _BAYER_FLAT):
+        _bg_gradient_np(Y, U, V, gp, 0, HEIGHT)
+    _grad_render[key] = (Y, U, V)
+    while len(_grad_render) > _GRAD_RENDER_MAX:
+        _grad_render.popitem(last=False)
+    return Y, U, V
+
+
+def _bg_fill_band(oy, ou, ov, bgfill, b0, b1):
+    """Remplit la bande [b0,b1) du fond : couleur UNIE (3 memset, octet-identique) ou DÉGRADÉ
+    (rendu caché → recopie de bande). Une seule voie pour le mode tranche et la trame entière
+    (b0=0,b1=HEIGHT) : les deux ne peuvent pas diverger."""
+    kind, data = bgfill
+    cb0, cb1 = b0 // _CH, b1 // _CH
+    if kind == "solid":
+        y, u, v = data
+        oy[b0:b1] = y; ou[cb0:cb1] = u; ov[cb0:cb1] = v
+        return
+    Y, U, V = _grad_planes(data)
+    oy[b0:b1] = Y[b0:b1]; ou[cb0:cb1] = U[cb0:cb1]; ov[cb0:cb1] = V[cb0:cb1]
+
+
+def _interp_gradient(fr, to, p):
+    """Interpole DEUX dégradés (tous les champs : angle, douceur, chaque arrêt = couleur + pos) —
+    c'est ce qui rend le WIPE ANIMÉ possible sans mécanique nouvelle. Nombre d'arrêts différent →
+    bascule à mi-course (pas d'appariement honnête entre 2 et 4 arrêts)."""
+    fs, ts = fr["stops"], to["stops"]
+    if len(fs) != len(ts):
+        return dict(to if p >= 0.5 else fr)
+    return {{"angle": _lerp(fr["angle"], to["angle"], p),
+             "softness": _lerp(fr["softness"], to["softness"], p),
+             "stops": [{{"color": _lerp_hex(a["color"], b["color"], p),
+                         "pos": _lerp(a["pos"], b["pos"], p)}}
+                        for a, b in zip(fs, ts)]}}
 
 
 def _norm_global(g):
@@ -666,6 +876,12 @@ class ControlHandler(BaseHTTPRequestHandler):
                         # champ). L'UI lit ces bornes — elle n'en code aucune.
                         "pos": [POS_MIN, POS_MAX],
                         "bg_modes": list(BG_MODES),
+                        # Fond DÉGRADÉ : bornes des champs (l'UI ne code rien en dur).
+                        "gradient_fields": {{
+                            "angle": [0.0, 360.0, 0.0], "softness": [0.0, 1.0, 1.0],
+                            "pos": [0.0, 1.0, 0.0],
+                        }},
+                        "gradient_stops": [GRAD_STOPS_MIN, GRAD_STOPS_MAX],
                         # Canal GLOBAL : champ → [min, max, défaut]
                         "global_fields": {{
                             "dx": [-2.0, 2.0, 0.0], "dy": [-2.0, 2.0, 0.0],
@@ -770,13 +986,19 @@ class ControlHandler(BaseHTTPRequestHandler):
             self._reply(200, {{"ok": True, "global": out_g}})
 
         elif self.path == "/bg":
-            # FOND : mode (none|source|color) + couleur + plage légale. Le mode `source` suppose
-            # le slot 4 câblé — on ne le décide PAS à la place de l'exploitant : on le DIT.
+            # FOND : mode (none|source|color|gradient) + couleur + dégradé + plage légale. Le mode
+            # `source` suppose le slot 4 câblé — on ne le décide PAS à sa place : on le DIT.
+            # `gradient` = {{angle, softness, stops:[{{color,pos}}]}} (fusion : l'UI peut n'envoyer
+            # qu'un champ, on complète depuis l'état courant).
             with state_lock:
                 bg = dict(state["bg"])
                 for k in ("mode", "color", "legal"):
                     if k in body:
                         bg[k] = body[k]
+                if isinstance(body.get("gradient"), dict):
+                    g = dict(bg.get("gradient") or {{}})
+                    g.update(body["gradient"])
+                    bg["gradient"] = g
                 state["bg"] = _norm_bg(bg)
                 out_bg = _bg_public(state["bg"])
                 wired = bool(state["inputs"][4])
@@ -2448,7 +2670,7 @@ def _sl_ensure(L, need_k, deadl):
     return dw
 
 
-def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot, bg_fill=None, bg_is_src=True):
+def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot, bg_fill=("solid", None), bg_is_src=True):
     """MODE TRANCHE — compose et PUBLIE la trame BANDE PAR BANDE (SLICE_H lignes/bande) :
     fond + boxes suivis CHACUN sur SON grain via get_slice, sortie committée progressivement
     (validSlices=k+1 → l'aval démarre sur la 1ʳᵉ bande). Budget par couche + backoff des
@@ -2584,8 +2806,8 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot, bg_fill=None, bg_
     oy, ou, ovv = _plane_views(vw_o)
     nb = HEIGHT // SLICE_H
     deadl = time.monotonic() + (interval * 1.5)   # garde-fou GLOBAL (borne dure de la trame)
-    fill_y, fill_u, fill_v = (bg_fill if bg_fill is not None
-                              else (16 * _SCALE, _NEUTRAL, _NEUTRAL))
+    if bg_fill[1] is None:
+        bg_fill = ("solid", (16 * _SCALE, _NEUTRAL, _NEUTRAL))
     art_below = _art_below(); art_above = _art_above()
     try:
         for k in range(nb):
@@ -2597,12 +2819,9 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot, bg_fill=None, bg_
                 ou[cb0:cb1] = bg["su"][cb0:cb1]
                 ovv[cb0:cb1] = bg["sv"][cb0:cb1]
             else:
-                # fond UNI (noir par défaut, ou la COULEUR choisie) : remplissage par bande —
-                # 3 affectations scalaires, aucun coût mesurable, et le chemin tranche est
-                # exactement celui du fond vidéo (pas de branche nouvelle).
-                oy[b0:b1] = fill_y
-                ou[cb0:cb1] = fill_u
-                ovv[cb0:cb1] = fill_v
+                # fond UNI (noir par défaut, ou couleur choisie) ou DÉGRADÉ — remplissage PAR
+                # BANDE : le `t` d'une bande est un sous-ensemble contigu, aucun état à reporter.
+                _bg_fill_band(oy, ou, ovv, bg_fill, b0, b1)
             if art_below:                       # ART SOUS les boxes (sur le fond)
                 _paint_art_rows(oy, ou, ovv, b0, b1)
             for L in layers:
@@ -2759,8 +2978,12 @@ while True:
     if tr is not None and tr.get("bgto") is not None:
         bg_cur = _norm_bg(_interp_bg(tr.get("bgfrom") or bg_cur, tr["bgto"],
                                      _ease(tr["_p_raw"], tr.get("curve") or "linear")))
-    bg_y, bg_u, bg_v = _bg_values(bg_cur)
     bg_is_src = (bg_cur["mode"] == "source")
+    # FOND UNI (3 memset, octet-identique) ou DÉGRADÉ (empreinte cachée → passe pixel, kernel C).
+    if bg_cur["mode"] == "gradient":
+        bg_fill = ("grad", _grad_prep(bg_cur))
+    else:
+        bg_fill = ("solid", _bg_values(bg_cur))
 
     ts_in_per_slot = {{}}
     ts_cycle_start = time.time_ns()   # début du compositing (fond détecté + boxes alignées) → base transit/own
@@ -2773,7 +2996,7 @@ while True:
         try:
             _sl_waited = _slice_frame(_fi_out if FLOW else frame_index, _fi_out,
                                       tr, boxes, ts_in_per_slot,
-                                      bg_fill=(bg_y, bg_u, bg_v), bg_is_src=bg_is_src)
+                                      bg_fill=bg_fill, bg_is_src=bg_is_src)
         except Exception as _e:
             print(f"split: erreur slice_frame ignorée (frame {{frame_index}}) : {{_e}}")
         ts_out = time.time_ns()
@@ -2788,11 +3011,11 @@ while True:
             buf = np.frombuffer(bg_frame, dtype=np.uint8).copy()
             oy, ou, ovv = _plane_views(buf)
         else:
-            # Fond UNI : noir (mode `none`, ou `source` sans flux) ou COULEUR choisie. Trois
-            # memset de plan — la conversion RGB→YUV est cachée, jamais refaite par trame.
+            # Fond UNI (noir/couleur) ou DÉGRADÉ — même helper que le mode tranche (bande = trame
+            # entière) : un seul remplissage, les deux chemins ne peuvent pas diverger.
             buf = np.empty(V_FRAME_SIZE, dtype=np.uint8)
             oy, ou, ovv = _plane_views(buf)
-            oy[:] = bg_y; ou[:] = bg_u; ovv[:] = bg_v
+            _bg_fill_band(oy, ou, ovv, bg_fill, 0, HEIGHT)
 
         if _art_below():                      # ART SOUS les boxes (décor de fond)
             _paint_art_rows(oy, ou, ovv, 0, HEIGHT)

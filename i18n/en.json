@@ -193,5 +193,15 @@
   "plugin.split.g_sec_geo": "Group transform",
   "plugin.split.g_hint": "Double-click a dial = default value (the Global returns to neutral, setting by setting). It is stored in memories and interpolated during transitions. Measured cost: none — it folds into each box's stamp. While it is not neutral, canvas snapping is disabled (snapping in a rotated frame would draw lying guides).",
   "plugin.split.out_clipped": "Hatched area = outside the frame: cropped on air",
-  "plugin.split.out_zone": "Outside the frame (not broadcast)"
+  "plugin.split.out_zone": "Outside the frame (not broadcast)",
+  "plugin.split.bg_m_grad": "Gradient / wipe",
+  "plugin.split.bg_grad_lbl": "Background: gradient",
+  "plugin.split.bg_wipe": "wipe",
+  "plugin.split.grad_angle": "Angle",
+  "plugin.split.grad_soft": "Softness",
+  "plugin.split.grad_pos": "Position",
+  "plugin.split.grad_del": "Remove this stop",
+  "plugin.split.grad_add": "+ Add a stop",
+  "plugin.split.grad_soft_note": "Softness 0 = SHARP boundary (wipe); 1 = smooth gradient. A wipe is just a gradient of zero softness.",
+  "plugin.split.grad_anim_note": "The gradient is stored in memories and interpolated during transitions: two memories (one at position 0, one at position 1) recalled with a duration give an ANIMATED WIPE sweeping the screen — with no new mechanism. Static it costs nothing (cached render); animated full-frame it holds 1080p50 for 2 stops and is at budget for 3-4 (see help)."
 }

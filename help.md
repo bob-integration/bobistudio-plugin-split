@@ -268,6 +268,46 @@ idempotente par nature** (un `1.0` veut dire « opaque » en ancienne unité et 
 un **marqueur** (`opacity_unit: "pct"`) tranche, et le hook de persistance le réécrit — jamais deux
 conversions.
 
+## ★ Fond DÉGRADÉ et WIPE — le même objet (0.13.0)
+
+Le mode de fond `gradient` mélange **2 à 4 arrêts** de couleur, avec un **angle** (0-360°) et une
+**douceur** (0-1). ★ **La douceur unifie mélange et wipe** : à **0**, la frontière entre deux
+arrêts est **nette = un wipe** ; à **1**, c'est un dégradé progressif ; entre, une transition
+molle. **Un wipe n'est qu'un dégradé de douceur nulle** — une seule fonctionnalité, pas deux.
+
+Chaque arrêt est une couleur **hex (sRGB)**, convertie par la conversion unique du plugin
+(colorimétrie déclarée, profondeur courante, plage légale — comme la 0.12.2). L'interpolation
+entre arrêts se fait **en YUV à la profondeur courante**, dans le **noyau C** (`mvk_spl_gradient`),
+avec **tramage** (dither ordonné Bayer 8×8, ±½ LSB) pour éviter le **banding** en 8 bits.
+
+**L'animation vient gratuitement.** Le fond est déjà **enregistré dans les mémoires** et
+**interpolé pendant les transitions** (0.12.0), sur **tous** les champs du dégradé (arrêts,
+positions, angle, douceur). Donc : mémoire A (une frontière à gauche) → mémoire B (la même à
+droite), **rappel avec une durée = un wipe animé qui balaie l'écran**. Idem un fondu de couleurs
+(bleu→rouge) ou un angle qui tourne. Aucune mécanique nouvelle. Bascule `source`↔`gradient` = à
+mi-course (pas d'entre-deux honnête).
+
+**Coût mesuré** (1080p, banc peu chargé) :
+
+| | 720p50 | 1080p50 | 1080p25 |
+|---|---|---|---|
+| **statique** (rendu caché, recopie) | 0,3 ms | **0,3 ms** | 0,3 ms |
+| **animé** 2 arrêts (wipe) | ~6 ms | **~13 ms** | ~13 ms |
+| **animé** 3-4 arrêts | ~8 ms | **~20 ms** | ~20 ms |
+
+Un dégradé **statique** ne coûte **rien** (rendu une fois, mis en cache, recopié — comme un fond
+uni). **Animé plein cadre**, il est refait à chaque trame :
+
+- **720p50** : confortable ;
+- **1080p50** : un wipe **2 arrêts** tient le budget (~13 ms) avec un peu de marge pour les box ;
+- **1080p50, 3-4 arrêts** : **au budget** (~20 ms) — **avec des box composées par-dessus, la
+  trame déborde pendant le balayage** (comme la rotation animée). Réservez le wipe animé riche au
+  **720p** ou au **1080p25** ; en 1080p50, un wipe 2 arrêts passe.
+
+Le noyau a son garde-fou habituel : **repli numpy identique** (`bg` reste correct sans
+`bobi-compute ≥ 0.16`, aux coûts numpy — ~250 ms/trame animé, donc **statique seulement** sur
+vieille image) et **`mvk_miss.gradient`** exposé sur `:8080` (doit rester à 0).
+
 ## ★ Couleurs : la colorimétrie DÉCLARÉE fait foi (0.12.2)
 
 Toutes les couleurs du plugin — **bordure**, **ombre**, **clé chroma**, **habillage (ART)**,

@@ -193,5 +193,15 @@
   "plugin.split.g_sec_geo": "Transformation du groupe",
   "plugin.split.g_hint": "Double-clic sur un cadran = valeur par défaut (le Global redevient neutre réglage par réglage). Il est enregistré dans les mémoires et interpolé pendant les transitions. Coût mesuré : nul — il est replié dans l'empreinte de chaque box. Tant qu'il n'est pas neutre, le magnétisme du canvas est désactivé (aimanter dans un repère tourné donnerait des guides faux).",
   "plugin.split.out_clipped": "Zone hachurée = hors cadre : rognée à l'antenne",
-  "plugin.split.out_zone": "Hors cadre (non diffusé)"
+  "plugin.split.out_zone": "Hors cadre (non diffusé)",
+  "plugin.split.bg_m_grad": "Dégradé / wipe",
+  "plugin.split.bg_grad_lbl": "Fond : dégradé",
+  "plugin.split.bg_wipe": "wipe",
+  "plugin.split.grad_angle": "Angle",
+  "plugin.split.grad_soft": "Douceur",
+  "plugin.split.grad_pos": "Position",
+  "plugin.split.grad_del": "Retirer cet arrêt",
+  "plugin.split.grad_add": "+ Ajouter un arrêt",
+  "plugin.split.grad_soft_note": "Douceur 0 = frontière NETTE (wipe) ; 1 = dégradé progressif. Un wipe n'est qu'un dégradé de douceur nulle.",
+  "plugin.split.grad_anim_note": "Le dégradé est enregistré dans les mémoires et interpolé pendant les transitions : deux mémoires (l'une position 0, l'autre position 1) rappelées avec une durée donnent un WIPE ANIMÉ qui balaie l'écran — sans mécanique nouvelle. Statique il ne coûte rien (rendu caché) ; animé plein cadre il tient le 1080p50 pour 2 arrêts, il est au budget à 3-4 (cf. aide)."
 }

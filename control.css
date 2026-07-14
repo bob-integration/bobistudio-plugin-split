@@ -322,3 +322,10 @@
 .split-chip-global.is-sel { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* Fond : les champs du mode courant seulement (les autres sont masqués par bindBg). */
 .split-bg-legal { margin-top: var(--space-1); }
+
+/* ── FOND DÉGRADÉ (0.13.0) : éditeur d'arrêts (couleur + position) ─────────────────────────── */
+.split-grad-stops { display: flex; flex-direction: column; gap: var(--space-1); margin: var(--space-1) 0; }
+.split-grad-stop { display: flex; align-items: center; gap: var(--space-1); }
+.split-grad-stop .split-grad-col { width: 44px; height: 32px; padding: 2px; flex: 0 0 auto; }
+.split-grad-stop .split-grad-pos { flex: 1 1 auto; min-width: 0; }
+.split-grad-stop .split-grad-del { flex: 0 0 auto; width: 32px; padding: 0; }

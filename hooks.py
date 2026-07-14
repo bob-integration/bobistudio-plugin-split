@@ -25,8 +25,17 @@ def sync_state(state, params, ctx):
     bg = state.get("bg")
     if isinstance(bg, dict) and bg:
         # La couleur est persistée en HEX (sRGB) — JAMAIS en YUV : reconvertie à la profondeur et
-        # à la colorimétrie du conteneur (un redéploiement en 10 bits doit rester juste).
-        params["bg"] = {k: bg[k] for k in ("mode", "color", "legal") if k in bg}
+        # à la colorimétrie du conteneur (un redéploiement en 10 bits doit rester juste). Le
+        # DÉGRADÉ (angle/douceur/arrêts) l'est aussi : chaque arrêt en HEX, pour la même raison.
+        _bg = {k: bg[k] for k in ("mode", "color", "legal") if k in bg}
+        g = bg.get("gradient")
+        if isinstance(g, dict) and g:
+            _bg["gradient"] = {
+                "angle": g.get("angle", 0.0), "softness": g.get("softness", 1.0),
+                "stops": [{"color": s.get("color"), "pos": s.get("pos")}
+                          for s in (g.get("stops") or []) if isinstance(s, dict)],
+            }
+        params["bg"] = _bg
     inputs = state.get("inputs") or []
     params["bg_input"] = (inputs[4] if len(inputs) > 4 else "") or None
     light = state.get("light")

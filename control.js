@@ -329,6 +329,7 @@ window.MXLPlugins.split = (function () {
     function knobPost(knob, v) {
         const [kind, path] = String(knob.dataset.target).split(':');
         if (kind === 'glob') { postGlobal({ [path]: v }); return; }   // canal GLOBAL
+        if (kind === 'bggrad') { postBg({ gradient: { [path]: v } }); return; }   // dégradé de fond
         if (kind === 'light') { postLight({ [path]: v }); return; }
         if (kind === 'art') { postArt({ [path]: v }); return; }
         applySetting(path, v);              // ★ toute la sélection, pas seulement la référence
@@ -608,6 +609,7 @@ window.MXLPlugins.split = (function () {
         <label class="toggle-inline split-bg-legal"><input type="checkbox" class="ios-toggle" id="split_bg_legal">
           <span>${esc(T('bg_legal', 'Plage légale (broadcast)'))}</span></label>
       </div>
+      <div class="split-bg-field" id="split_bg_grad_f"></div>
       <div id="split_bg_warn"></div>
     </aside>
   </div>
@@ -1004,7 +1006,7 @@ ${!advanced ? '' : `<div id="split_adv">
     // colorimétrie déclarée. On ne persiste jamais du YUV.
     const bgModes = () => (caps && caps.bg_modes) || ['none', 'source', 'color'];
     const BG_LBL = { none: ['bg_m_none', 'Noir'], source: ['bg_m_source', 'Source vidéo'],
-                     color: ['bg_m_color', 'Couleur unie'] };
+                     color: ['bg_m_color', 'Couleur unie'], gradient: ['bg_m_grad', 'Dégradé / wipe'] };
     function bgModeOptions() {
         const cur = ((st && st.bg) || {}).mode || 'none';
         return bgModes().map(m => {
@@ -1012,11 +1014,69 @@ ${!advanced ? '' : `<div id="split_adv">
             return `<option value="${esc(m)}"${cur === m ? ' selected' : ''}>${esc(T(k, fb))}</option>`;
         }).join('');
     }
+    // Éditeur du DÉGRADÉ : réutilise les cadrans (angle, douceur) et une liste d'arrêts (couleur
+    // + position). Bornes et nombre d'arrêts min/max lus dans /state.caps — rien en dur.
+    const gradCap = k => (caps && caps.gradient_fields && caps.gradient_fields[k]) || [0, 1, 0];
+    const gradNStops = () => (caps && caps.gradient_stops) || [2, 4];
+    function renderBgGradient() {
+        const host = $('#split_bg_grad_f'); if (!host) return;
+        const bg = (st && st.bg) || {};
+        if (bg.mode !== 'gradient') { host.style.display = 'none'; host.innerHTML = ''; return; }
+        host.style.display = '';
+        const g = bg.gradient || { angle: 0, softness: 1, stops: [] };
+        const stops = g.stops || [];
+        const [amin, amax, adef] = gradCap('angle'), [smin, smax, sdef] = gradCap('softness');
+        const [nmin, nmax] = gradNStops();
+        const knob = (key, label, unit, shape) => {
+            const [mn, mx, df] = gradCap(key);
+            return knobHtml({ target: 'bggrad:' + key, label, min: mn, max: mx, step: stepOf(mn, mx),
+                              def: df, unit, shape }, g[key]);
+        };
+        const rows = stops.map((sp, i) => `
+<div class="split-grad-stop" data-i="${i}">
+  <input type="color" class="split-grad-col" data-i="${i}" value="${esc(sp.color || '#000000')}">
+  <input type="number" class="split-grad-pos" data-i="${i}" min="0" max="1" step="0.01"
+         data-ref="${Number(sp.pos || 0)}" value="${Number(sp.pos || 0).toFixed(2)}"
+         aria-label="${esc(T('grad_pos', 'Position'))}">
+  <button type="button" class="btn split-grad-del" data-i="${i}" ${stops.length <= nmin ? 'disabled' : ''}
+          title="${esc(T('grad_del', 'Retirer cet arrêt'))}">✕</button>
+</div>`).join('');
+        host.innerHTML = `
+<div class="cc-knob-row">
+  ${knob('angle', T('grad_angle', 'Angle'), '°', 'angle')}
+  ${knob('softness', T('grad_soft', 'Douceur'), '', '')}
+</div>
+<p class="meta">${esc(T('grad_soft_note', 'Douceur 0 = frontière NETTE (wipe) ; 1 = dégradé progressif. Un wipe n\'est qu\'un dégradé de douceur nulle.'))}</p>
+<div class="split-grad-stops">${rows}</div>
+${stops.length < nmax ? `<button type="button" class="btn" id="split_grad_add">${esc(T('grad_add', '+ Ajouter un arrêt'))}</button>` : ''}
+<p class="meta">${esc(T('grad_anim_note', 'Le dégradé est enregistré dans les mémoires et interpolé pendant les transitions : deux mémoires (l\'une position 0, l\'autre position 1) rappelées avec une durée donnent un WIPE ANIMÉ qui balaie l\'écran — sans mécanique nouvelle. Statique il ne coûte rien (rendu caché) ; animé plein cadre il tient le 1080p50 pour 2 arrêts, il est au budget à 3-4 (cf. aide).'))}</p>`;
+        host.querySelectorAll('.split-grad-col').forEach(el => el.onchange = () => setGradStop(+el.dataset.i, { color: el.value }));
+        host.querySelectorAll('.split-grad-pos').forEach(el => el.onchange = () => { const v = parseFloat(el.value); if (!isNaN(v)) setGradStop(+el.dataset.i, { pos: Math.max(0, Math.min(1, v)) }); });
+        host.querySelectorAll('.split-grad-del').forEach(el => el.onclick = () => delGradStop(+el.dataset.i));
+        const add = $('#split_grad_add'); if (add) add.onclick = addGradStop;
+        bindKnobs(host);
+    }
+    function curStops() { return (((st && st.bg) || {}).gradient || {}).stops || []; }
+    function setGradStop(i, patch) {
+        const stops = curStops().map((s, j) => j === i ? Object.assign({}, s, patch) : Object.assign({}, s));
+        postBg({ gradient: { stops } });
+    }
+    function addGradStop() {
+        const stops = curStops().map(s => Object.assign({}, s));
+        const last = stops[stops.length - 1] || { pos: 0.5, color: '#808080' };
+        stops.push({ color: last.color, pos: Math.min(1, (last.pos + 0.5) / 1) });   // milieu vers la fin
+        postBg({ gradient: { stops } });
+    }
+    function delGradStop(i) {
+        const stops = curStops().filter((_, j) => j !== i).map(s => Object.assign({}, s));
+        postBg({ gradient: { stops } });
+    }
     function bindBg() {
         const bg = (st && st.bg) || { mode: 'none' };
         const srcF = $('#split_bg_src_f'), colF = $('#split_bg_col_f');
         if (srcF) srcF.style.display = (bg.mode === 'source') ? '' : 'none';
         if (colF) colF.style.display = (bg.mode === 'color') ? '' : 'none';
+        renderBgGradient();
         const lg = $('#split_bg_legal'); if (lg) lg.checked = (bg.legal !== false);
         const md = $('#split_bg_mode'); if (md) md.onchange = () => postBg({ mode: md.value });
         const col = $('#split_bg_color'); if (col) col.onchange = () => postBg({ color: col.value });
@@ -1343,6 +1403,34 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         if (ctx.roundRect) ctx.roundRect(r.x0, r.y0, r.w, r.h, rad);
         else ctx.rect(r.x0, r.y0, r.w, r.h);
     }
+    // Aperçu FIDÈLE du dégradé (douceur comprise) : on échantillonne la MÊME rampe que le moteur
+    // (frontière nette à douceur 0 = wipe ; rampe à douceur 1) en RGB — la couleur exacte reste
+    // celle du rendu YUV, mais l'allure (wipe vs dégradé, angle, arrêts) est juste.
+    function _rgb(h) { h = String(h || '#000000').replace('#', ''); if (h.length === 3) h = h.split('').map(c => c + c).join(''); return [parseInt(h.slice(0, 2), 16) || 0, parseInt(h.slice(2, 4), 16) || 0, parseInt(h.slice(4, 6), 16) || 0]; }
+    function _gradSample(t, stops, soft) {
+        const n = stops.length;
+        if (t <= stops[0].pos) return _rgb(stops[0].color);
+        if (t >= stops[n - 1].pos) return _rgb(stops[n - 1].color);
+        let i = 0; while (i < n - 2 && t >= stops[i + 1].pos) i++;
+        const seg = stops[i + 1].pos - stops[i].pos;
+        const local = seg > 1e-9 ? (t - stops[i].pos) / seg : 0;
+        let w = soft <= 1e-6 ? (local < 0.5 ? 0 : 1) : Math.max(0, Math.min(1, (local - 0.5) / soft + 0.5));
+        const a = _rgb(stops[i].color), b = _rgb(stops[i + 1].color);
+        return [0, 1, 2].map(k => Math.round(a[k] * (1 - w) + b[k] * w));
+    }
+    function bgGradientFill(ctx, V, g) {
+        const stops = (g.stops || []).slice().sort((p, q) => p.pos - q.pos);
+        if (stops.length < 2) return stops.length ? (stops[0].color || '#000') : '#000';
+        const th = (g.angle || 0) * Math.PI / 180, cs = Math.cos(th), sn = Math.sin(th);
+        // point de projection min/max parmi les 4 coins du cadre (px)
+        const cor = [[V.MX, V.MY], [V.MX + V.FW, V.MY], [V.MX, V.MY + V.FH], [V.MX + V.FW, V.MY + V.FH]];
+        let lo = cor[0], hi = cor[0], plo = 1e9, phi = -1e9;
+        cor.forEach(c => { const p = c[0] * cs + c[1] * sn; if (p < plo) { plo = p; lo = c; } if (p > phi) { phi = p; hi = c; } });
+        const grad = ctx.createLinearGradient(lo[0], lo[1], hi[0], hi[1]);
+        const soft = (g.softness == null) ? 1 : g.softness, N = 48;
+        for (let k = 0; k <= N; k++) { const t = k / N; const c = _gradSample(t, stops, soft); grad.addColorStop(t, `rgb(${c[0]},${c[1]},${c[2]})`); }
+        return grad;
+    }
     function drawCanvas() {
         const cv = $('#split_canvas'); if (!cv || !boxes) return;
         const CW = cv.clientWidth || 640, CH = Math.round(CW * 9 / 16);
@@ -1359,7 +1447,11 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         // ni tirer une box DEHORS, ni la voir revenir — donc aucune entrée/sortie de champ.
         // Le FOND est peint tel qu'il sera rendu : couleur unie choisie, ou noir, ou « source ».
         const bg = (st && st.bg) || { mode: 'none' };
-        ctx.fillStyle = (bg.mode === 'color') ? (bg.color || '#000') : '#000';
+        if (bg.mode === 'gradient' && bg.gradient) {
+            ctx.fillStyle = bgGradientFill(ctx, V, bg.gradient);
+        } else {
+            ctx.fillStyle = (bg.mode === 'color') ? (bg.color || '#000') : '#000';
+        }
         ctx.fillRect(V.MX, V.MY, V.FW, V.FH);
         ctx.font = '11px Inter, system-ui, sans-serif';
         const scale = V.FW / ((st && st.width) || 1280);
@@ -1432,7 +1524,8 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         ctx.strokeRect(V.MX + 2.5, V.MY + 2.5, V.FW - 5, V.FH - 5);
         ctx.restore();
         ctx.fillStyle = muted;
-        const bgLbl = (bg.mode === 'color') ? (T('bg_color_lbl', 'Fond : couleur') + ' ' + (bg.color || ''))
+        const bgLbl = (bg.mode === 'gradient') ? (T('bg_grad_lbl', 'Fond : dégradé') + ((bg.gradient && (bg.gradient.softness || 0) <= 1e-6) ? ' (' + T('bg_wipe', 'wipe') + ')' : ''))
+            : (bg.mode === 'color') ? (T('bg_color_lbl', 'Fond : couleur') + ' ' + (bg.color || ''))
             : (bg.mode === 'source' ? (T('bg_short', 'Fond') + ' : ' + (inputs[4] || T('bg_unwired', 'non câblé')))
                                     : T('bg_none_lbl', 'Fond : noir'));
         ctx.fillText(bgLbl, V.MX + 6, V.MY + 14);
