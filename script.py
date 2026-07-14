@@ -15,13 +15,41 @@
 # Template str.format : SEULS {config} / {hostname} / {plugin_version} sont des
 # placeholders. TOUTE autre accolade littérale doit être doublée {{ }}.
 # ─────────────────────────────────────────────────────────────────────────────
-import time, threading, json, signal, math, base64, io
+import time, threading, json, signal, math, base64, io, os
 from collections import deque
 import numpy as np
 import bobimxl   # migration MXL Phase 1 : 5 entrées Reader + 1 sortie Writer (planar, genlock fond)
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 inst = bobimxl.Instance()   # domaine MXL ($MXL_DOMAIN ou /dev/shm/mxl)
+
+# ─── Noyau de compositing C (libbobi_mvk, ABI 4 — image bobi-compute ≥ 0.15) ────────────────
+# Le mode AVANCÉ (rotation, feather, coins, opacité, bordure 3D) était le DERNIER compositeur
+# du projet resté en numpy pur. Ses passes sont memory-bound : gather 2D + ruban + blend, une
+# passe mémoire chacune. Les kernels mvk_spl_* les fusionnent en UNE passe (script_templates/
+# mvcompose.c) — arithmétique 256e IDENTIQUE (accumulation uint32), donc BIT-EXACTE.
+# GARDES (motif mixer/multiview) : lib absente (vieille image), ABI < 4, forme/dtype/contiguïté
+# non conformes → le wrapper renvoie False → REPLI numpy intégral (le code d'origine, qui reste
+# la référence). ★ Un repli SILENCIEUX a déjà coûté 26 % des blends du multiview : ici chaque
+# repli est COMPTÉ et exposé sur :8080 (`mvk_miss`/`mvk_why`) — il doit rester à ZÉRO.
+_MVK = bool(getattr(bobimxl, "mvk_available", lambda: False)()) \
+    and bool(getattr(bobimxl, "mvk_spl_compose_into", None)) \
+    and not os.environ.get("BOBI_SPLIT_NOMVK")
+_mvk_miss = {{"compose": 0, "fused": 0, "solid": 0, "calls": 0}}
+_mvk_why = {{}}   # signature (forme/dtype) des replis — pour identifier la cause sans deviner
+
+
+def _mvk_try(kind, fn, *a, **kw):
+    """Appelle un kernel mvk ; compte et SIGNE le repli s'il refuse (jamais d'échec muet)."""
+    _mvk_miss["calls"] += 1
+    if _MVK and fn(*a, **kw):
+        return True
+    if _MVK:
+        _mvk_miss[kind] += 1
+        d = a[0]
+        k = "%s %s %s" % (kind, getattr(d, "shape", "?"), getattr(d, "dtype", "?"))
+        _mvk_why[k] = _mvk_why.get(k, 0) + 1
+    return False
 
 class RollingMs:
     def __init__(self, n=30):
@@ -276,7 +304,12 @@ if TRANS["curve"] not in EASINGS:
 
 metrics_lock = threading.Lock()
 metrics = {{"fps": 0.0, "frame_index": 0, "inputs_latency_ms": {{}}, "own_latency_ms": None, "inputs_skew_ms": {{}},
-           "inputs_late": [], "plugin_version": PLUGIN_VERSION, "variant": "v2"}}
+           "inputs_late": [], "plugin_version": PLUGIN_VERSION, "variant": "v2",
+           # Noyau C : actif ? combien de threads ? et surtout — combien de REPLIS numpy
+           # (doit rester à 0 : un repli = 5-20× plus lent, et il ne doit JAMAIS être muet).
+           "mvk": _MVK,
+           "mvk_threads": (getattr(bobimxl, "mvk_threads", lambda: 0)() if _MVK else 0),
+           "mvk_miss": dict(_mvk_miss), "mvk_why": {{}}}}
 
 bus_error = threading.Event()
 def _handle_sigbus(signum, frame):
@@ -1459,12 +1492,14 @@ def _stamp_for(idx, b, alpha):
 
 
 def _blend_rows(dst, y_a, y_b, x_a, x_b, k, a16, marg, a_scalar=None):
-    """Compose `k` sur `dst[y_a:y_b, x_a:x_b]`. TROIS RÉGIMES (du moins cher au plus cher) —
-    c'est le cœur du coût par trame :
+    """Compose `k` sur `dst[y_a:y_b, x_a:x_b]` — REPLI NUMPY (le kernel mvk fait la même chose
+    en une passe, cf. _adv_plane). TROIS RÉGIMES (du moins cher au plus cher) :
       • marg == 0 (masque None)  → COPIE DIRECTE : la box est opaque, rien à mélanger.
       • a_scalar (marg == -1)    → blend à alpha CONSTANT : pas de masque à lire.
       • masque 2D                → seul le RUBAN de `marg` px est mélangé, l'intérieur est COPIÉ.
-        (mesuré : blend plein rect 7,2 ms/box en 1080p, ruban ~0,1 ms)."""
+        (mesuré : blend plein rect 7,2 ms/box en 1080p, ruban ~0,1 ms).
+    ⚠ ACCUMULATION uint32 (0.10.0) : l'accumulateur uint16 d'origine DÉBORDAIT en 10/12 bits
+    (4095·256 > 65535 → repliement, image cassée). Octets INCHANGÉS en 8 bits (255·256 tenait)."""
     h = y_b - y_a; w = x_b - x_a
     if h <= 0 or w <= 0:
         return
@@ -1473,23 +1508,67 @@ def _blend_rows(dst, y_a, y_b, x_a, x_b, k, a16, marg, a_scalar=None):
         if av >= 256:
             dst[y_a:y_b, x_a:x_b] = k
             return
-        rr = dst[y_a:y_b, x_a:x_b].astype(np.uint16)
-        dst[y_a:y_b, x_a:x_b] = ((rr * (256 - av) + k.astype(np.uint16) * av) >> 8).astype(_NP_DT)
+        rr = dst[y_a:y_b, x_a:x_b].astype(np.uint32)
+        dst[y_a:y_b, x_a:x_b] = ((rr * (256 - av) + k.astype(np.uint32) * av) >> 8).astype(_NP_DT)
         return
     if a16 is None or marg <= 0:                    # box pleinement opaque → copie directe
         dst[y_a:y_b, x_a:x_b] = k
         return
     if marg >= min(w, h) // 2 + 1:                  # ruban plus large que la box → blend plein
-        rr = dst[y_a:y_b, x_a:x_b].astype(np.uint16)
-        dst[y_a:y_b, x_a:x_b] = ((rr * (256 - a16) + k.astype(np.uint16) * a16) >> 8).astype(_NP_DT)
+        rr = dst[y_a:y_b, x_a:x_b].astype(np.uint32)
+        dst[y_a:y_b, x_a:x_b] = ((rr * (256 - a16) + k.astype(np.uint32) * a16) >> 8).astype(_NP_DT)
         return
     # intérieur (alpha=256) : copie directe ; RUBAN de bord : blend
     for (ra, rb, ca, cb_) in _ring_slices(h, w, marg):
         sub_k = k[ra:rb, ca:cb_]; sub_a = a16[ra:rb, ca:cb_]
         reg = dst[y_a + ra:y_a + rb, x_a + ca:x_a + cb_]
-        rr = reg.astype(np.uint16)
-        reg[:] = ((rr * (256 - sub_a) + sub_k.astype(np.uint16) * sub_a) >> 8).astype(_NP_DT)
+        rr = reg.astype(np.uint32)
+        reg[:] = ((rr * (256 - sub_a) + sub_k.astype(np.uint32) * sub_a) >> 8).astype(_NP_DT)
     dst[y_a + marg:y_b - marg, x_a + marg:x_b - marg] = k[marg:h - marg, marg:w - marg]
+
+
+def _gather(src, flat, riy, cix):
+    """Rééchantillonnage nearest du plan source : carte d'index PLAT 2D (box tournée) ou
+    cartes 1D séparables (box droite). C'est LE poste que mvk fusionne avec le blend."""
+    if flat is not None:
+        return np.take(src.ravel(), flat)
+    return src[riy][:, cix]
+
+
+def _adv_plane(dst, src, flat, riy, cix, ring_a, ring_c, ring_marg, a16, marg, a_scalar,
+               fused3=None):
+    """MODE AVANCÉ — compose UN plan (Y, U ou V) sur la région `dst` : gather ⊗ ruban de
+    bordure ⊗ blend alpha. Chemin mvk = UNE passe C (bit-exact) ; sinon REPLI numpy, qui est
+    exactement le code d'origine (plusieurs passes)."""
+    if fused3 is not None:
+        inv_a, a1, c2 = fused3
+        if _mvk_try("fused", bobimxl.mvk_spl_fused_into, dst, src, inv_a, a1, c2,
+                    flat=flat, row_idx=riy, col_idx=cix, maxv=_MAXV):
+            return
+        k = _gather(src, flat, riy, cix)
+        dst[:] = (((dst.astype(np.uint32) * inv_a) >> 8)
+                  + ((k.astype(np.uint32) * a1) >> 8) + c2).clip(0, _MAXV).astype(_NP_DT)
+        return
+    # Régime de blend (identique à _blend_rows) : masque 2D, alpha scalaire, ou copie.
+    mask = None; av = 256
+    if a_scalar is not None:
+        av = int(round(max(0.0, min(1.0, a_scalar)) * 256.0))
+    elif a16 is not None and marg > 0:
+        mask = a16
+    if _mvk_try("compose", bobimxl.mvk_spl_compose_into, dst, src, flat=flat, row_idx=riy,
+                col_idx=cix, ring_a=ring_a, ring_c=ring_c, alpha=mask, a_scalar=av):
+        return
+    k = _gather(src, flat, riy, cix)
+    if ring_a is not None:
+        # ★ Ruban peint sur TOUT le rect (le masque `ring_a` est nul ailleurs — donc c'est un
+        # no-op hors ruban). La 0.9.x n'évaluait QUE les 4 bandes de bord du rect COURANT :
+        # correct en trame entière (le bord du rect EST le bord de la box), FAUX en mode
+        # TRANCHE — le rect courant est une BANDE, et le bord haut/bas de la box tombe alors
+        # au MILIEU de la bande, hors des 4 bandes évaluées ⇒ bordure MANQUANTE sur les lignes
+        # concernées. Le kernel mvk applique le ruban par pixel : le repli fait pareil.
+        k[:] = ((k.astype(np.uint32) * (256 - ring_a)
+                 + ring_c.astype(np.uint32) * ring_a) >> 8).astype(_NP_DT)
+    _blend_rows(dst, 0, dst.shape[0], 0, dst.shape[1], k, a16, marg, a_scalar)
 
 
 def _ring_slices(h, w, m):
@@ -1543,7 +1622,10 @@ def _paint_shadow_rows(oy, ou, ov, st, b0, b1):
         reg = oy[ya:yb, xa:xb]
         if reg.shape != a.shape:
             continue
-        reg[:] = ((reg.astype(np.uint16) * (256 - a) + int(Ys) * a) >> 8).astype(_NP_DT)
+        # mvk : blend d'une couleur unie sous masque en 1 passe ; sinon repli numpy (uint32 —
+        # l'accumulateur uint16 d'origine débordait en 10/12 bits ; 8 bits inchangé).
+        if not _mvk_try("solid", bobimxl.mvk_spl_solid_into, reg, a, int(Ys)):
+            reg[:] = ((reg.astype(np.uint32) * (256 - a) + int(Ys) * a) >> 8).astype(_NP_DT)
         cya, cyb = ya // _CH, yb // _CH
         cxa, cxb = xa // _CW, xb // _CW
         if cyb <= cya or cxb <= cxa:
@@ -1554,7 +1636,8 @@ def _paint_shadow_rows(oy, ou, ov, st, b0, b1):
             r2 = plane[cya:cyb, cxa:cxb]
             if r2.shape != a2.shape:
                 continue
-            r2[:] = ((r2.astype(np.uint16) * (256 - a2) + val * a2) >> 8).astype(_NP_DT)
+            if not _mvk_try("solid", bobimxl.mvk_spl_solid_into, r2, a2, val):
+                r2[:] = ((r2.astype(np.uint32) * (256 - a2) + val * a2) >> 8).astype(_NP_DT)
 
 
 def _sub_rects(x0, y0, x1, y1, hole):
@@ -1588,69 +1671,23 @@ def _place_adv_rows(oy, ou, ov, sy, su, sv, st, b0, b1):
         return
     ra, rb = ya - y0, yb - y0          # lignes locales (dans la box)
     ca, cb_ = xa - x0, xb - x0         # colonnes locales
-
-    # ── 1) GATHER du source (rotation/miroir = carte d'index PLAT CACHÉE ; sinon 1D séparable)
-    if st["flat"] is not None:
-        fl = st["flat"].reshape(h, w)[ra:rb, ca:cb_]
-        k = np.take(sy.ravel(), fl)
-    else:
-        k = sy[st["iy"][ra:rb]][:, st["ix"][ca:cb_]]
-
-    # ── 1bis) CHEMIN FUSIONNÉ (box tournée / opacité globale avec bordure) : bordure + blend en
-    #    UNE passe, à partir des cartes pré-fusionnées (cf. _build_stamp). Évite le double
-    #    balayage plein rect.
     fu = st.get("fused")
-    if fu is not None:
-        reg = oy[ya:yb, xa:xb]
-        reg[:] = (((reg.astype(np.uint32) * fu["inv_a"][ra:rb, ca:cb_]) >> 8)
-                  + ((k.astype(np.uint32) * fu["A1"][ra:rb, ca:cb_]) >> 8)
-                  + fu["C2y"][ra:rb, ca:cb_]).clip(0, _MAXV).astype(_NP_DT)
-        cya, cyb = ya // _CH, yb // _CH
-        cxa, cxb = xa // _CW, xb // _CW
-        if cyb <= cya or cxb <= cxa:
-            return
-        cra = (ya - y0) // _CH; cca = (xa - x0) // _CW
-        crb = cra + (cyb - cya); ccb = cca + (cxb - cxa)
-        ch2, cw2 = h // _CH, w // _CW
-        if crb > ch2 or ccb > cw2:
-            return
-        for splane, oplane, c2 in ((su, ou, fu["C2u"]), (sv, ov, fu["C2v"])):
-            if st["flat2"] is not None:
-                kc = np.take(splane.ravel(), st["flat2"].reshape(ch2, cw2)[cra:crb, cca:ccb])
-            else:
-                kc = splane[st["iy2"][cra:crb]][:, st["ix2"][cca:ccb]]
-            r2 = oplane[cya:cyb, cxa:cxb]
-            if r2.shape != kc.shape:
-                continue
-            r2[:] = (((r2.astype(np.uint32) * fu["inv_a2"][cra:crb, cca:ccb]) >> 8)
-                     + ((kc.astype(np.uint32) * fu["A1_2"][cra:crb, cca:ccb]) >> 8)
-                     + c2[cra:crb, cca:ccb]).clip(0, _MAXV).astype(_NP_DT)
-        return
 
-    # ── 2) BORDURE 3D : peinte DANS le calque `k` avant le blend (ruban seulement)
-    if st["ring_a"] is not None:
-        rs = st["ring_a"][ra:rb, ca:cb_]
-        ry = st["ring_y"][ra:rb, ca:cb_]
-        nz = st["ring_marg"]
-        if nz > 0:
-            # `k` sort de np.take / d'un gather fancy → c'est DÉJÀ un tableau neuf : pas de
-            # .copy() ici (une copie plein rect par box et par trame, pour rien).
-            hh, ww = k.shape
-            mm = min(nz, max(1, hh // 2), max(1, ww // 2))
-            if mm >= min(hh, ww) // 2 + 1:
-                k[:] = ((k.astype(np.uint16) * (256 - rs) + ry.astype(np.uint16) * rs) >> 8).astype(_NP_DT)
-            else:
-                for (p, q, r_, s_) in _ring_slices(hh, ww, mm):
-                    sa = rs[p:q, r_:s_]
-                    kk = k[p:q, r_:s_]
-                    kk[:] = ((kk.astype(np.uint16) * (256 - sa)
-                              + ry[p:q, r_:s_].astype(np.uint16) * sa) >> 8).astype(_NP_DT)
+    # ── 1) PLAN Y : gather (carte d'index CACHÉE : plate 2D si tournée, sinon 1D séparable)
+    #    ⊗ ruban de bordure ⊗ blend — UNE passe mvk, sinon repli numpy (cf. _adv_plane).
+    fl = st["flat"].reshape(h, w)[ra:rb, ca:cb_] if st["flat"] is not None else None
+    riy = st["iy"][ra:rb] if st["flat"] is None else None
+    cix = st["ix"][ca:cb_] if st["flat"] is None else None
+    _adv_plane(oy[ya:yb, xa:xb], sy, fl, riy, cix,
+               (st["ring_a"][ra:rb, ca:cb_] if (fu is None and st["ring_a"] is not None) else None),
+               (st["ring_y"][ra:rb, ca:cb_] if (fu is None and st["ring_a"] is not None) else None),
+               st["ring_marg"],
+               (st["a"][ra:rb, ca:cb_] if st["a"] is not None else None),
+               st["marg"], st["a_scalar"],
+               fused3=((fu["inv_a"][ra:rb, ca:cb_], fu["A1"][ra:rb, ca:cb_],
+                        fu["C2y"][ra:rb, ca:cb_]) if fu is not None else None))
 
-    # ── 3) BLEND sur la sortie (alpha = feather × coins × opacité × fondu), ruban seulement
-    _a = st["a"][ra:rb, ca:cb_] if st["a"] is not None else None
-    _blend_rows(oy, ya, yb, xa, xb, k, _a, st["marg"], st["a_scalar"])
-
-    # ── 4) CHROMA (mêmes opérations, plans sous-échantillonnés)
+    # ── 2) CHROMA (mêmes opérations, plans sous-échantillonnés)
     cya, cyb = ya // _CH, yb // _CH
     cxa, cxb = xa // _CW, xb // _CW
     if cyb <= cya or cxb <= cxa:
@@ -1660,22 +1697,23 @@ def _place_adv_rows(oy, ou, ov, sy, su, sv, st, b0, b1):
     ch2, cw2 = h // _CH, w // _CW
     if crb > ch2 or ccb > cw2:
         return
-    for splane, oplane, ringp in ((su, ou, st["ring_u"]), (sv, ov, st["ring_v"])):
-        if st["flat2"] is not None:
-            fl2 = st["flat2"].reshape(ch2, cw2)[cra:crb, cca:ccb]
-            kc = np.take(splane.ravel(), fl2)
-        else:
-            kc = splane[st["iy2"][cra:crb]][:, st["ix2"][cca:ccb]]
-        if st["ring_a2"] is not None and ringp is not None:
-            rs2 = st["ring_a2"][cra:crb, cca:ccb]
-            kc = kc.copy()
-            kc[:] = ((kc.astype(np.uint16) * (256 - rs2)
-                      + ringp[cra:crb, cca:ccb].astype(np.uint16) * rs2) >> 8).astype(_NP_DT)
-        a2 = st["a2"][cra:crb, cca:ccb] if st["a2"] is not None else None
-        if a2 is not None and kc.shape != a2.shape:
+    fl2 = st["flat2"].reshape(ch2, cw2)[cra:crb, cca:ccb] if st["flat2"] is not None else None
+    riy2 = st["iy2"][cra:crb] if st["flat2"] is None else None
+    cix2 = st["ix2"][cca:ccb] if st["flat2"] is None else None
+    a2 = st["a2"][cra:crb, cca:ccb] if st["a2"] is not None else None
+    m2 = st["marg"] // max(1, _CH) if st["marg"] > 0 else st["marg"]
+    for splane, oplane, ringp, c2f in ((su, ou, st["ring_u"], "C2u"), (sv, ov, st["ring_v"], "C2v")):
+        r2 = oplane[cya:cyb, cxa:cxb]
+        if a2 is not None and r2.shape != a2.shape:
             continue
-        m2 = st["marg"] // max(1, _CH) if st["marg"] > 0 else st["marg"]
-        _blend_rows(oplane, cya, cyb, cxa, cxb, kc, a2, m2, st["a_scalar"])
+        _adv_plane(r2, splane, fl2, riy2, cix2,
+                   (st["ring_a2"][cra:crb, cca:ccb]
+                    if (fu is None and st["ring_a2"] is not None and ringp is not None) else None),
+                   (ringp[cra:crb, cca:ccb]
+                    if (fu is None and st["ring_a2"] is not None and ringp is not None) else None),
+                   st["ring_marg"], a2, m2, st["a_scalar"],
+                   fused3=((fu["inv_a2"][cra:crb, cca:ccb], fu["A1_2"][cra:crb, cca:ccb],
+                            fu[c2f][cra:crb, cca:ccb]) if fu is not None else None))
 
 
 # ═══ COUCHE « ART » (habillage graphique) — la fonction phare du SuperSource ═════════════════
@@ -1796,9 +1834,10 @@ def _paint_art_rows(oy, ou, ov, b0, b1):
     # frange PARTIELLE → blend
     ya = max(bk["py0"], b0); yb = min(bk["py1"], b1)
     if ya < yb:
+        # Accumulation uint32 (0.10.0) : uint16 débordait en 10/12 bits (cf. _blend_rows).
         a = bk["a"][ya:yb]
         reg = oy[ya:yb]
-        reg[:] = ((reg.astype(np.uint16) * (256 - a) + bk["y"][ya:yb].astype(np.uint16) * a) >> 8).astype(_NP_DT)
+        reg[:] = ((reg.astype(np.uint32) * (256 - a) + bk["y"][ya:yb].astype(np.uint32) * a) >> 8).astype(_NP_DT)
         cya, cyb = ya // _CH, yb // _CH
         if cyb > cya:
             a2 = bk["a2"][cya:cyb]
@@ -1806,8 +1845,8 @@ def _paint_art_rows(oy, ou, ov, b0, b1):
                 r2 = plane[cya:cyb]
                 if r2.shape != a2.shape:
                     continue
-                r2[:] = ((r2.astype(np.uint16) * (256 - a2)
-                          + src[cya:cyb].astype(np.uint16) * a2) >> 8).astype(_NP_DT)
+                r2[:] = ((r2.astype(np.uint32) * (256 - a2)
+                          + src[cya:cyb].astype(np.uint32) * a2) >> 8).astype(_NP_DT)
 
 
 def _sl_ensure(L, need_k, deadl):
@@ -2196,6 +2235,10 @@ while True:
             metrics["frame_index"] = frame_index
             metrics["inputs_latency_ms"] = {{k: v.avg() for k, v in lat_in.items()}}
             metrics["own_latency_ms"] = own_lat.avg()
+            # ★ JAMAIS DE REPLI MUET : un kernel mvk qui refuse (forme/dtype inattendus) renvoie
+            # False et l'appelant retombe en numpy — 5 à 20× plus lent. Compté ET signé ici.
+            metrics["mvk_miss"] = dict(_mvk_miss)
+            metrics["mvk_why"] = dict(_mvk_why)
             # ── MODE AVANCÉ : santé du CACHE STATIQUE. `builds` qui grimpe en régime établi =
             # une clé de cache qui bouge sans raison → le précalcul serait refait par trame
             # (c'est LE mode de défaillance de perf du mode avancé). `hit_rate` doit valoir ~1
@@ -2220,10 +2263,14 @@ while True:
             if _pct is not None and _pct > 100.0:
                 if not _over_warned[0]:
                     _over_warned[0] = True
+                    _hint = ("noyau C mvk ACTIF" if _MVK else
+                             "★ noyau C mvk INACTIF (image bobi-compute < 0.15 ?) — tout le "
+                             "compositing tourne en repli numpy, 5 à 20× plus lent")
                     print(f"split: ATTENTION — compositing à {{_pct}} % du budget de trame "
                           f"({{interval * 1000.0:.0f}} ms @ {{FPS}} fps) : le split va décrocher. "
-                          f"Boxes tournées : {{_n_rot}}. La ROTATION est le poste le plus coûteux "
-                          f"(numpy) — la désactiver, réduire la résolution ou baisser la cadence.")
+                          f"Boxes tournées : {{_n_rot}} ; {{_hint}} ; replis mvk : {{_mvk_miss}}. "
+                          f"Poste n°1 restant : une rotation qui BOUGE (transition/curseur) "
+                          f"reconstruit son empreinte 2D à chaque trame (~13 ms/box en 1080p).")
             elif _pct is not None and _pct < 90.0:
                 _over_warned[0] = False
             if _sl_dbg:

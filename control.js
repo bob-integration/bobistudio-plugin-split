@@ -717,11 +717,16 @@ window.MXLPlugins.split = (function () {
     }
 
     // Coût de la rotation : ANNONCÉ AVANT usage, selon le format courant (mesures du moteur).
+    // ★ RÉ-OUVERTE en 0.10.0 : le compositing tourne sur le noyau C (mvk) — rotation FIXE mesurée
+    // à 8,4 ms/trame en 1080p (4 box) pour 20 ms de budget @50 fps, contre 38,6 ms en numpy. Ce
+    // qui reste hors budget, c'est une rotation qui BOUGE (transition / glissement du curseur) :
+    // l'empreinte 2D est alors reconstruite à chaque trame (~53 ms en 1080p). L'avertissement ne
+    // parle donc plus de la rotation en soi, mais de la rotation ANIMÉE.
     function rotationWarning() {
         const h = (st && st.height) || 0, fps = (st && st.fps) || 25;
-        if (h >= 1080 && fps >= 50) return { cls: 'alert-error', msg: T('rot_over', 'Rotation HORS BUDGET dans ce format (1080p50) : ~31,9 ms/trame pour 20 ms de budget — le moteur décrochera. Réservez-la au 720p, ou baissez la cadence.') };
-        if (h >= 1080) return { cls: 'alert-warning', msg: T('rot_tight', 'Rotation MARGINALE en 1080p25 (~31,9 ms pour 40 ms de budget, soit 80 %) : aucune marge, et hors budget pendant une transition.') };
-        return { cls: 'alert-info', msg: T('rot_ok', 'Rotation confortable dans ce format (~11,4 ms/trame en 720p, 4 box).') };
+        if (h >= 1080 && fps >= 50) return { cls: 'alert-warning', msg: T('rot_over', 'Rotation ANIMÉE (transition/glissement du curseur) HORS BUDGET en 1080p50 : les cartes 2D se reconstruisent à chaque trame (~53 ms). En position FIXE elle tient largement (~9 ms/trame, noyau C).') };
+        if (h >= 1080) return { cls: 'alert-info', msg: T('rot_tight', 'Rotation confortable en 1080p (~9 ms/trame, 4 box, noyau C). Seule une rotation ANIMÉE en transition reste coûteuse (reconstruction des cartes 2D).') };
+        return { cls: 'alert-info', msg: T('rot_ok', 'Rotation confortable dans ce format (~3 ms/trame en 720p, 4 box, noyau C).') };
     }
 
     // ─── Panneau de réglages ────────────────────────────────────────────────────────

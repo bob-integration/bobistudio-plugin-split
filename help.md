@@ -101,38 +101,51 @@ Budget : **40 ms** à 25 fps, **20 ms** à 50 fps.
 
 | Effet (4 boxes)            |  720p   |  1080p  |
 |----------------------------|---------|---------|
-| socle (aucun effet)        |  3,1 ms |  6,2 ms |
-| adoucissement (feather)    |  4,1 ms |  8,0 ms |
-| coins arrondis             |  5,0 ms |  8,9 ms |
-| ombre portée               |  3,3 ms |  6,7 ms |
-| bordure 3D (biseau)        |  4,9 ms | 10,9 ms |
-| opacité                    |  5,8 ms | 12,8 ms |
-| **rotation**               |**11,4 ms**|**31,9 ms**|
-| tous SAUF rotation         | ~10,7 ms| ~22,6 ms|
+Depuis la **0.10.0**, le compositing du mode avancé tourne sur le **noyau C `mvk`**
+(`libbobi_mvk`, ABI 4 — image `bobi-compute` ≥ 0.15), comme le mixer, le multiview et la
+pyramide : *gather* ⊗ ruban de bordure ⊗ blend en **une seule passe mémoire** (ces passes sont
+memory-bound : chaque opération numpy est un aller-retour RAM complet). Colonnes « numpy » =
+repli, toujours présent et bit-exact.
+
+| Effet (4 boxes)            | 720p numpy | **720p mvk** | 1080p numpy | **1080p mvk** |
+|----------------------------|-----------|-----------|-----------|-----------|
+| socle (aucun effet)        |  3,2 ms   | 3,2 ms    |  6,1 ms   | 6,1 ms    |
+| adoucissement (feather)    |  4,5 ms   | **1,7 ms**|  8,0 ms   | **3,1 ms**|
+| coins arrondis             |  5,6 ms   | **1,7 ms**|  9,7 ms   | **3,1 ms**|
+| ombre portée               |  3,6 ms   | **1,6 ms**|  6,6 ms   | **3,0 ms**|
+| bordure 3D (biseau)        | 12,9 ms   | **2,4 ms**| 29,5 ms   | **4,7 ms**|
+| opacité                    |  7,1 ms   | **1,5 ms**| 16,1 ms   | **2,6 ms**|
+| **rotation**               | 15,1 ms   | **3,0 ms**| **38,6 ms** | **8,4 ms** |
+| tous les effets            | 23,0 ms   | **4,5 ms**| 58,1 ms   | **11,2 ms**|
+
+(minimum sur 40 trames, cache de stamp chaud, cpuset de 2 cœurs physiques ; le nœud de banc est
+volontairement chargé → la moyenne est plus haute que le minimum.)
 
 **Comment ça tient** : chaque box précalcule une *empreinte* (cartes d'échantillonnage, masque
 alpha, ruban de bordure, masque d'ombre) **reconstruite seulement au changement de réglage**. La
 position n'entre pas dans la clé de cache : une box qui ne fait que **translater** réutilise son
 empreinte telle quelle. Tout l'habillage sauf la rotation étant fonction de la *distance aux
 bords*, il est construit **séparablement** (2 rampes 1D + 4 patchs de coins) au lieu de balayages
-2D — mesuré **14,5 → 0,8 ms/box** en 1080p. Par trame il ne reste qu'un *gather* et un blend de
-**ruban** (l'intérieur opaque est copié, jamais mélangé).
+2D. Par trame il ne reste qu'un *gather* et un blend — désormais fusionnés en C.
 
-**★ Le plafond : la rotation.** C'est la seule primitive qui ne tient pas le budget en numpy —
-elle impose un rééchantillonnage 2D sur la boîte englobante et des masques obliques non
-séparables. Concrètement :
-
-- **720p** : confortable (11,4 ms).
-- **1080p 25 fps** : marginal (31,9 ms = 80 % du budget) — pas de marge.
-- **1080p 50 fps** : **hors budget**.
-- **Pendant une transition** : la géométrie change à chaque trame, donc les cartes 2D se
-  reconstruisent à chaque trame → **hors budget** dès 1080p. Les autres effets, eux, se
-  reconstruisent séparablement et passent.
+**★ Le plafond a bougé : ce n'est plus la rotation, c'est la rotation qui BOUGE.** En position
+fixe, la rotation tient largement le 1080p50 (**8,4 ms** pour 20 ms de budget). Mais dès que
+l'angle (ou la taille/le crop) **change à chaque trame** — transition en cours, curseur qu'on
+glisse — l'empreinte est **reconstruite à chaque trame** : la carte d'index 2D et les masques
+obliques d'une box tournée coûtent ≈ **13 ms/box** en numpy → **53 ms/trame** en 1080p pour
+4 boxes. C'est le **prochain chantier** (porter la construction de l'empreinte tournée en C).
+Les autres effets, eux, se reconstruisent séparablement et passent (bordure animée : 12 ms).
 
 Le plugin **ne décroche jamais en silence** : les métriques `:8080` exposent
 `adv.budget_pct`, `adv.over_budget`, `adv.rotated_boxes` et `adv.stamp_hit_rate` (un taux qui
 s'effondre en régime établi = une clé de cache qui bouge sans raison), et un dépassement du
-budget de trame est **loggé une fois par franchissement**, en nommant la rotation.
+budget de trame est **loggé une fois par franchissement**. Le noyau C a ses propres témoins :
+`mvk` (actif ?), `mvk_threads`, et surtout **`mvk_miss` / `mvk_why`** — le compte des **replis
+numpy**. Un repli est 5 à 20× plus lent : `mvk_miss` **doit rester à zéro**, et s'il grimpe,
+`mvk_why` dit sur quelle forme/dtype le kernel a refusé (jamais d'échec muet).
+
+> **Vieille image** (`bobi-compute` < 0.15, sans ABI 4) : le plugin fonctionne à l'identique, en
+> repli numpy intégral (`mvk: false` sur `:8080`) — avec les coûts de la colonne « numpy ».
 
 ## Contrat de contrôle (pour l'UI)
 
