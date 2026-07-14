@@ -115,18 +115,29 @@ def main():
     for it in range(args.iters):
         chroma = ("422", "420", "444")[it % 3]
         hard = bool(it % 2)
-        # ⚠ UNITÉS : le moteur ≥ 0.12.0 parle en POURCENT ; la 0.9.x en fraction. On tire UNE
-        # géométrie et on l'exprime dans l'unité de chaque moteur → la comparaison reste juste.
-        # ⚠ OMBRE : son masque a changé (le flou s'épand désormais VERS L'EXTÉRIEUR — la 0.9.x le
-        # rognait au bord). Elle est donc EXCLUE de la comparaison à la REF (divergence VOULUE),
-        # mais comparée entre kernel et repli (qui doivent, eux, être identiques).
+        # ⚠ CE QUI EST COMPARÉ À LA 0.9.x, ET CE QUI NE PEUT PLUS L'ÊTRE (base redéfinie en 0.12.2)
+        #   • UNITÉS : le moteur ≥ 0.12.0 parle en POURCENT, la 0.9.x en fraction → on tire UNE
+        #     géométrie et on l'exprime dans l'unité de chaque moteur.
+        #   • OMBRE : son masque a changé (le flou s'épand enfin VERS L'EXTÉRIEUR).
+        #   • COULEURS (bordure, ombre, clé chroma, habillage) : la 0.9.x les convertissait avec une
+        #     matrice BT.601 pleine échelle CODÉE EN DUR ; elles suivent désormais la colorimétrie
+        #     DÉCLARÉE (709 ici) en plage légale. Les octets CHANGENT — parce qu'ils étaient FAUX
+        #     (preuve : tools/… barres de couleur, 16/16 valeurs de référence exactes en 601 et 709).
+        #   ⇒ La comparaison à la 0.9.x se fait donc sur le compositing SANS COULEUR (géométrie,
+        #     gather, alpha, feather, coins, opacité, rotation, crop, miroir) : là, le critère reste
+        #     max|Δ| = 0. Les chemins COLORÉS sont validés entre kernel et repli, et entre trame
+        #     entière et mode tranche (qui doivent, eux, rester identiques au bit près).
         st0 = rng.bit_generator.state
         boxes_pct = [rand_box(rng, hard, pct=True) for _ in range(4)]
         rng.bit_generator.state = st0
         boxes_frac = [rand_box(rng, hard, pct=False) for _ in range(4)]
         if not SHADOW:
+            # Comparaison à la 0.9.x → on neutralise les postes COLORÉS (ombre + bordure) : ils ont
+            # légitimement changé. Tout le reste du compositing doit rester octet-identique.
             for bb in boxes_pct + boxes_frac:
                 bb["shadow"]["enabled"] = False
+                bb["border"] = {"w": 0, "color": "#ffffff", "outer": 0.0, "inner": 0.0,
+                                "bevel": 0.0, "bevel_soft": 0.3, "bevel_pos": 0.5}
         trans = (it % 4 == 3)
         outs = {}
         for name in ("REF", "NUMPY", "MVK"):

@@ -6,7 +6,7 @@
   "plugin.split.bg_short": "Background",
   "plugin.split.bg_none": "Background (not wired)",
   "plugin.split.canvas_aria": "Box composition",
-  "plugin.split.hint": "Click a box to select it · <kbd>Shift</kbd>+click = multi-select · drag = move · bottom-right corner = size · edges = crop · <kbd>←↑→↓</kbd> = 1 px (bypasses snapping), <kbd>Shift</kbd> = 10 px.",
+  "plugin.split.hint": "Click a box to select it · <kbd>Shift</kbd>+click = multi-select (dragging moves the WHOLE selection) · bottom-right corner = size · edges = crop · <kbd>←↑→↓</kbd> = 1 px (bypasses snapping), <kbd>Shift</kbd> = 10 px. The FRAME EDGE snaps: the box sticks to it from the inside (fully visible) or just beyond it (fully out — the natural start/end of an on-screen entry).",
   "plugin.split.err_state": "Split state unreachable",
   "plugin.split.group_align": "Align",
   "plugin.split.align_left": "Align left",
@@ -191,5 +191,7 @@
   "plugin.split.rot_anim": "ANIMATED rotation (a transition, or dragging the dial) is over budget in this format: the 2D maps are rebuilt every frame (~53 ms at 1080p). At REST, rotation costs almost nothing (C kernel).",
   "plugin.split.global_scope": "The Global transforms the GROUP: it composes on top of each box's settings (render = Global ∘ box) without overwriting any of them — boxes keep their relative positions. That is what lets the whole group enter or leave the frame. A box's EDGE attributes (crop, feather, corners, border, bevel, shadow, mirror, aspect) and what belongs to a single box (source, enable, z-order) therefore do not apply to it: they are not shown here.",
   "plugin.split.g_sec_geo": "Group transform",
-  "plugin.split.g_hint": "Double-click a dial = default value (the Global returns to neutral, setting by setting). It is stored in memories and interpolated during transitions. Measured cost: none — it folds into each box's stamp. While it is not neutral, canvas snapping is disabled (snapping in a rotated frame would draw lying guides)."
+  "plugin.split.g_hint": "Double-click a dial = default value (the Global returns to neutral, setting by setting). It is stored in memories and interpolated during transitions. Measured cost: none — it folds into each box's stamp. While it is not neutral, canvas snapping is disabled (snapping in a rotated frame would draw lying guides).",
+  "plugin.split.out_clipped": "Hatched area = outside the frame: cropped on air",
+  "plugin.split.out_zone": "Outside the frame (not broadcast)"
 }

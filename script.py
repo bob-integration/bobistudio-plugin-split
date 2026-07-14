@@ -205,18 +205,17 @@ def _grid_next(now_s, interval_s):
 
 
 def _hex_to_yuv(h):
-    """#RRGGBB (ou #RGB) → (Y,U,V) BT.601 limité 0..255. Défaut blanc."""
-    h = str(h or "#ffffff").lstrip("#")
-    if len(h) == 3:
-        h = "".join(c * 2 for c in h)
-    try:
-        r = int(h[0:2], 16); g = int(h[2:4], 16); b = int(h[4:6], 16)
-    except Exception:
-        r = g = b = 255
-    y = int((0.299 * r + 0.587 * g + 0.114 * b) * _SCALE)
-    u = int((-0.169 * r - 0.331 * g + 0.5 * b + 128) * _SCALE)
-    v = int((0.5 * r - 0.419 * g - 0.081 * b + 128) * _SCALE)
-    return max(0, min(_MAXV, y)), max(0, min(_MAXV, u)), max(0, min(_MAXV, v))
+    """#RRGGBB (ou #RGB) → (Y, U, V) DANS LE FORMAT DÉCLARÉ du conteneur. Défaut blanc.
+
+    ★ CORRECTION 0.12.2 — Cette fonction (couleurs de BORDURE, d'OMBRE et de CLÉ CHROMA) portait
+    une matrice **BT.601 pleine échelle CODÉE EN DUR**, quelle que soit la colorimétrie du
+    conteneur : dans un pipeline 709 (le cas courant) ou 2020, la couleur demandée n'était PAS
+    celle rendue (un rouge de bordure sortait faux). Elle délègue désormais à `_rgb_to_yuv`, seule
+    conversion du plugin : matrice = `colorimetry` DÉCLARÉE, échelle = `bit_depth`, plage LÉGALE
+    (broadcast). ⚠ Les octets d'une composition existante utilisant une couleur CHANGENT — c'est
+    VOULU : ils étaient FAUX, ils sont maintenant conformes au format déclaré."""
+    y, u, v, _clipped = _rgb_to_yuv(h or "#ffffff", True)
+    return y, u, v
 
 
 def _f(v, lo, hi, dflt):
@@ -284,39 +283,60 @@ BG_MODES = ("none", "source", "color")
 # Matrices luma (Kr, Kb) par colorimétrie DÉCLARÉE. `_hex_to_yuv` (bordure/ombre/clé chroma) est,
 # lui, resté sur du BT.601 pleine échelle codé en dur — dette CONNUE, cf. help.md § audit.
 _KRKB = {{"601": (0.299, 0.114), "709": (0.2126, 0.0722), "2020": (0.2627, 0.0593)}}
-COLORIMETRY = str(CONFIG.get("colorimetry") or "709").strip().lower().replace("bt", "").replace(".", "")
-if COLORIMETRY not in _KRKB:
-    print(f"split: colorimétrie « {{COLORIMETRY}} » inconnue — repli sur 709 (le format déclaré "
-          f"devrait porter 601, 709 ou 2020)")
+_COL_RAW = str(CONFIG.get("colorimetry") or "").strip()
+COLORIMETRY = _COL_RAW.lower().replace("bt", "").replace(".", "")
+# ★ JAMAIS DE DEVINETTE MUETTE : le format déclaré porte normalement `colorimetry` (l'orchestrateur
+# le pousse depuis le format résolu de la source). S'il est ABSENT ou inconnu, on retombe sur 709
+# (la colorimétrie HD, celle de tout ce parc) — et ON LE DIT : log au boot + `colorimetry_assumed`
+# dans /state (l'UI l'affiche). Une couleur rendue dans la mauvaise matrice est un défaut SILENCIEUX
+# — exactement ce qu'on refuse.
+COLORIMETRY_ASSUMED = COLORIMETRY not in _KRKB
+if COLORIMETRY_ASSUMED:
+    print(f"split: colorimétrie NON DÉCLARÉE ou inconnue (« {{_COL_RAW}} ») — on SUPPOSE BT.709 pour "
+          f"toutes les couleurs (bordure, ombre, clé chroma, habillage, fond). Si la chaîne est en "
+          f"601 ou 2020, les couleurs seront FAUSSES : déclarez `colorimetry` dans le format.")
     COLORIMETRY = "709"
+
+
+def _yuv01(r, g, b):
+    """(R, G, B) 0..1 (scalaires OU tableaux numpy) → (Y, U, V) 0..1 / ±0,5, avec la matrice de la
+    colorimétrie DÉCLARÉE. C'EST LA SEULE MATRICE DU PLUGIN — bordure, ombre, clé chroma,
+    habillage et fond passent tous par ici (plus aucune conversion couleur en dur ailleurs)."""
+    kr, kb = _KRKB[COLORIMETRY]
+    kg = 1.0 - kr - kb
+    y = kr * r + kg * g + kb * b
+    return y, (b - y) / (2.0 * (1.0 - kb)), (r - y) / (2.0 * (1.0 - kr))
+
+
+def _encode_yuv(y, u, v, legal=True):
+    """(Y, U, V) 0..1 / ±0,5 → échantillons du format : bornes DÉRIVÉES de la profondeur
+    (S = 2^(depth−8)), jamais tabulées.
+        limitée  : Y = (16 + 219·y)·S     ·  C = neutre + 224·S·c   (8 b : 16-235 / 16-240)
+        complète : Y = maxv·y             ·  C = neutre + maxv·c
+    Fonctionne sur des scalaires ET sur des tableaux numpy (l'habillage y passe plein cadre)."""
+    if legal:
+        return ((16.0 + 219.0 * y) * _SCALE,
+                _NEUTRAL + 224.0 * _SCALE * u,
+                _NEUTRAL + 224.0 * _SCALE * v)
+    return (_MAXV * y, _NEUTRAL + _MAXV * u, _NEUTRAL + _MAXV * v)
+
+
+def _hex_rgb01(hexstr, dflt=0.0):
+    """#RRGGBB (ou #RGB) → (r, g, b) 0..1, tolérant."""
+    h = str(hexstr or "").lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    try:
+        return int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0, int(h[4:6], 16) / 255.0
+    except Exception:
+        return dflt, dflt, dflt
 
 
 def _rgb_to_yuv(hexstr, legal=True):
     """#RRGGBB (sRGB) → (Y, U, V, clipped) DANS LE FORMAT DÉCLARÉ : matrice = colorimétrie du
     conteneur, échelle = sa profondeur. `clipped` = la couleur sortait de la plage encodable."""
-    h = str(hexstr or "#000000").lstrip("#")
-    if len(h) == 3:
-        h = "".join(c * 2 for c in h)
-    try:
-        r = int(h[0:2], 16) / 255.0; g = int(h[2:4], 16) / 255.0; b = int(h[4:6], 16) / 255.0
-    except Exception:
-        r = g = b = 0.0
-    kr, kb = _KRKB[COLORIMETRY]
-    kg = 1.0 - kr - kb
-    y = kr * r + kg * g + kb * b                 # 0..1
-    u = (b - y) / (2.0 * (1.0 - kb))             # −0,5..0,5
-    v = (r - y) / (2.0 * (1.0 - kr))
-    # Bornes de la plage, DÉRIVÉES de la profondeur (aucune table) :
-    #   limitée : Y = 16·S + 219·S·y   ·   C = neutre + 224·S·c      (S = 2^(depth−8))
-    #   complète: Y = maxv·y           ·   C = neutre + maxv·c
-    if legal:
-        fy = (16.0 + 219.0 * y) * _SCALE
-        fu = _NEUTRAL + 224.0 * _SCALE * u
-        fv = _NEUTRAL + 224.0 * _SCALE * v
-    else:
-        fy = _MAXV * y
-        fu = _NEUTRAL + _MAXV * u
-        fv = _NEUTRAL + _MAXV * v
+    r, g, b = _hex_rgb01(hexstr, 0.0)
+    fy, fu, fv = _encode_yuv(*_yuv01(r, g, b), legal=legal)
     vals = [int(round(c)) for c in (fy, fu, fv)]
     clipped = any(c < 0 or c > _MAXV for c in vals)
     return tuple(max(0, min(_MAXV, c)) for c in vals) + (clipped,)
@@ -629,6 +649,10 @@ class ControlHandler(BaseHTTPRequestHandler):
                     # Tout ce que l'UI doit connaître est publié ici : réglages courants ET
                     # domaine des valeurs (`caps`) → l'UI n'a RIEN à coder en dur.
                     "light":      dict(LIGHT),
+                    # Format des COULEURS : matrice réellement utilisée, et si elle est SUPPOSÉE
+                    # (colorimetry absente du format déclaré) — l'UI le dit, ce n'est pas muet.
+                    "colorimetry": COLORIMETRY,
+                    "colorimetry_assumed": COLORIMETRY_ASSUMED,
                     "global":     dict(state["global"]),      # calque de transformation du GROUPE
                     "bg":         _bg_public(state["bg"]),    # fond : mode + couleur + écrêtage
                     # NB : `transition` (plus haut) reste le BOOLÉEN historique « une transition
@@ -1918,17 +1942,21 @@ def _blend_rows(dst, y_a, y_b, x_a, x_b, k, a16, marg, a_scalar=None):
     if a16 is None or marg <= 0:                    # box pleinement opaque → copie directe
         dst[y_a:y_b, x_a:x_b] = k
         return
-    if marg >= min(w, h) // 2 + 1:                  # ruban plus large que la box → blend plein
-        rr = dst[y_a:y_b, x_a:x_b].astype(np.uint32)
-        dst[y_a:y_b, x_a:x_b] = ((rr * (256 - a16) + k.astype(np.uint32) * a16) >> 8).astype(_NP_DT)
-        return
-    # intérieur (alpha=256) : copie directe ; RUBAN de bord : blend
-    for (ra, rb, ca, cb_) in _ring_slices(h, w, marg):
-        sub_k = k[ra:rb, ca:cb_]; sub_a = a16[ra:rb, ca:cb_]
-        reg = dst[y_a + ra:y_a + rb, x_a + ca:x_a + cb_]
-        rr = reg.astype(np.uint32)
-        reg[:] = ((rr * (256 - sub_a) + sub_k.astype(np.uint32) * sub_a) >> 8).astype(_NP_DT)
-    dst[y_a + marg:y_b - marg, x_a + marg:x_b - marg] = k[marg:h - marg, marg:w - marg]
+    # ★ BUG CORRIGÉ (0.12.2) — « l'intérieur est opaque, on le COPIE » : FAUX EN CHROMA 4:2:0.
+    # Le raccourci d'origine ne mélangeait que le RUBAN de `marg` px et COPIAIT l'intérieur, en
+    # supposant qu'il y vaut alpha = 256. Vrai en luma (avec une opacité globale, `marg` couvre
+    # tout le rect) — mais en 4:2:0 la marge chroma est DEUX FOIS PLUS PETITE (`marg // 2`) alors
+    # que le rect chroma l'est aussi : l'intérieur chroma n'est PAS vide, et son alpha n'est PAS
+    # 256 dès qu'une opacité globale est en jeu. Résultat : une box semi-transparente avec
+    # adoucissement ou coins arrondis gardait, EN 4:2:0, une CHROMA À PLEINE OPACITÉ à l'intérieur
+    # (la luma fondait, la couleur non) — teinte fausse, en silence, depuis toujours.
+    # Le kernel mvk, lui, mélange PIXEL PAR PIXEL : c'est le repli qui mentait. Le repli fait
+    # désormais la même chose que le kernel (blend plein rect sous masque) — un repli qui diverge
+    # du kernel, c'est un bug qui n'apparaît QUE quand le kernel ne charge pas : invisible au banc,
+    # bien réel en prod. Le masque vaut 256 partout où la box est opaque : le résultat y est
+    # identique à la copie (aucune régression), et JUSTE là où il ne l'est pas.
+    rr = dst[y_a:y_b, x_a:x_b].astype(np.uint32)
+    dst[y_a:y_b, x_a:x_b] = ((rr * (256 - a16) + k.astype(np.uint32) * a16) >> 8).astype(_NP_DT)
 
 
 def _gather(src, flat, riy, cix):
@@ -2185,33 +2213,39 @@ def _bake_art():
         im = im0.convert("RGBA")
         if im.size != (WIDTH, HEIGHT):
             im = im.resize((WIDTH, HEIGHT), Image.LANCZOS)
-        arr = np.asarray(im).astype(np.float32)
+        # ★ MÊME CONVERSION QUE TOUT LE RESTE (0.12.2) : matrice de la colorimétrie DÉCLARÉE,
+        # échelle de la profondeur, plage LÉGALE. L'habillage portait, lui aussi, une matrice
+        # BT.601 pleine échelle CODÉE EN DUR : dans un pipeline 709/2020, l'image importée sortait
+        # avec des couleurs FAUSSES (teintes décalées). Une seule conversion pour tout le plugin.
+        arr = np.asarray(im).astype(np.float32) / 255.0        # RGBA en 0..1 (sRGB)
         r, g, b, al = arr[..., 0], arr[..., 1], arr[..., 2], arr[..., 3]
-        Y = (0.299 * r + 0.587 * g + 0.114 * b)
-        U = (-0.169 * r - 0.331 * g + 0.5 * b + 128.0)
-        V = (0.5 * r - 0.419 * g - 0.081 * b + 128.0)
+        y01, u01, v01 = _yuv01(r, g, b)                        # 0..1 / ±0,5, matrice DÉCLARÉE
+        Yf, Uf, Vf = _encode_yuv(y01, u01, v01, legal=True)    # échantillons du format
 
         mode = cfg["key"]
         clip = float(cfg["clip"]); gain = max(0.01, float(cfg["gain"]))
         if mode == "luma":
-            a = np.clip((Y / 255.0 - clip) * gain, 0.0, 1.0)
+            # Clé sur la LUMA de la source (0..1), pas sur l'échantillon encodé : le seuil de
+            # l'exploitant reste 0..1 quelle que soit la profondeur ou la plage.
+            a = np.clip((y01 - clip) * gain, 0.0, 1.0)
         elif mode == "chroma":
-            kr, kg, kb = _hex_to_yuv(cfg["chroma_key"])   # échelle _SCALE
-            ku = kr and 0  # (silence lint) — on n'utilise que U/V de la clé
-            _, kU, kV = _hex_to_yuv(cfg["chroma_key"])
-            du = (U - float(kU) / _SCALE); dv = (V - float(kV) / _SCALE)
-            dist = np.sqrt(du * du + dv * dv) / 128.0
-            a = np.clip((dist - clip) * gain, 0.0, 1.0)   # proche de la clé → transparent
-        else:                                             # "alpha" : canal alpha du PNG
-            a = np.clip((al / 255.0 - clip) * gain, 0.0, 1.0)
+            # Distance à la couleur de clé dans le plan (U, V) de la MÊME matrice → une clé verte
+            # est la même en 601, 709 ou 2020 (elle suit la colorimétrie déclarée).
+            kr_, kg_, kb_ = _hex_rgb01(cfg["chroma_key"] or "#00b140")
+            _ky, ku, kv = _yuv01(kr_, kg_, kb_)
+            du = u01 - ku; dv = v01 - kv
+            dist = np.sqrt(du * du + dv * dv) / 0.5            # 0..1 (±0,5 = pleine amplitude)
+            a = np.clip((dist - clip) * gain, 0.0, 1.0)        # proche de la clé → transparent
+        else:                                                  # "alpha" : canal alpha du PNG
+            a = np.clip((al - clip) * gain, 0.0, 1.0)
         if cfg["invert"]:
             a = 1.0 - a
         a *= float(cfg["opacity"]) / 100.0     # POURCENT → fraction
 
         a16 = (a * 256.0).astype(np.uint16)
-        Yp = np.clip(Y * _SCALE, 0, _MAXV).astype(_NP_DT)
-        Up = np.clip(U * _SCALE, 0, _MAXV).astype(_NP_DT)[::_CH, ::_CW].copy()
-        Vp = np.clip(V * _SCALE, 0, _MAXV).astype(_NP_DT)[::_CH, ::_CW].copy()
+        Yp = np.clip(Yf, 0, _MAXV).astype(_NP_DT)
+        Up = np.clip(Uf, 0, _MAXV).astype(_NP_DT)[::_CH, ::_CW].copy()
+        Vp = np.clip(Vf, 0, _MAXV).astype(_NP_DT)[::_CH, ::_CW].copy()
         a16_2 = a16[::_CH, ::_CW].copy()
         # ★ Décomposition OPAQUE / PARTIEL : un décor est fait de grandes zones pleines et de
         #   grands trous. Les zones OPAQUES se COPIENT (np.copyto), seule la frange PARTIELLE se

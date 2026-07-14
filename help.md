@@ -268,17 +268,60 @@ idempotente par nature** (un `1.0` veut dire « opaque » en ancienne unité et 
 un **marqueur** (`opacity_unit: "pct"`) tranche, et le hook de persistance le réécrit — jamais deux
 conversions.
 
-## ⚠ Audit des constantes de format (dette CONNUE, dite plutôt que tue)
+## ★ Couleurs : la colorimétrie DÉCLARÉE fait foi (0.12.2)
 
-Le code **neuf** (fond couleur, Global, hors-cadre, opacité) ne contient **aucune** constante de
-format : tout dérive de `bit_depth`, `chroma`, `colorimetry`, `width`, `height`, `fps`, `scan`.
-Mais **deux endroits anciens mentent encore** sur le format :
+Toutes les couleurs du plugin — **bordure**, **ombre**, **clé chroma**, **habillage (ART)**,
+**fond** — passent par **une seule conversion**, paramétrée par le **format du conteneur** :
 
-| Endroit | Ce qui est figé | Conséquence |
-|---|---|---|
-| `_hex_to_yuv` (couleurs de **bordure**, d'**ombre**, **clé chroma**) | matrice **BT.601 pleine échelle** codée en dur (l'échelle suit bien la profondeur) | dans un pipeline **709**, ces couleurs **dérivent** (un rouge de bordure n'est pas le rouge demandé) |
-| `_bake_art` (couche **habillage**) | même matrice **601 pleine échelle** | même dérive sur l'image d'habillage |
+- **matrice** = `colorimetry` déclarée (**BT.601 / BT.709 / BT.2020**) ;
+- **échelle** = `bit_depth` (8/10/12), bornes **calculées** par `2^(depth−8)`, jamais tabulées ;
+- **plage légale** (broadcast) par défaut ; écrêtage **jamais silencieux**.
 
-Ce **n'est pas** corrigé ici : le faire changerait les octets de **toutes** les compositions
-existantes (la non-régression octet-identique du portage `mvk` s'appuie dessus). À traiter comme un
-chantier à part, avec une bascule explicite.
+**Preuve** — barres de couleur 100 %, 8 bits, plage légale : les **16 valeurs de référence**
+(SMPTE/EBU) tombent **exactement**, en 601 **et** en 709 :
+
+| | blanc | jaune | cyan | vert | magenta | rouge | bleu | noir |
+|---|---|---|---|---|---|---|---|---|
+| **709** | 235/128/128 | 219/16/138 | 188/154/16 | 173/42/26 | 78/214/230 | 63/102/240 | 32/240/118 | 16/128/128 |
+| **601** | 235/128/128 | 210/16/146 | 170/166/16 | 145/54/34 | 106/202/222 | 81/90/240 | 41/240/110 | 16/128/128 |
+
+En **10 bits**, le rouge 709 donne **250/409/960** — la valeur exacte du standard (un simple ×4 de
+la valeur 8 bits arrondie donnerait 252 : on **calcule**, on ne multiplie pas). En **BT.2020**, les
+couleurs **changent** (le vert y est plus lumineux : Kg = 0,678 vs 0,715) — **c'est le but**.
+
+> ⚠ **Les couleurs d'une composition existante peuvent légèrement changer.** Elles étaient
+> **fausses** : `_hex_to_yuv` (bordure/ombre/clé chroma) et l'habillage portaient une matrice
+> **BT.601 pleine échelle codée en dur**, quelle que soit la colorimétrie du conteneur — dans un
+> pipeline 709 (le cas de ce parc), un rouge de bordure n'était pas le rouge demandé. Elles sont
+> désormais **conformes au format déclaré**.
+
+**Si `colorimetry` est absent du format**, le moteur **suppose BT.709 et le DIT** (log au boot +
+`colorimetry_assumed` dans `/state`) — il ne devine pas en silence.
+
+## ⚠ Bug corrigé au passage : l'opacité (et l'adoucissement) ignorés à l'intérieur des box
+
+Le repli numpy ne mélangeait que le **ruban** de bord et **copiait l'intérieur**, en supposant qu'il
+y vaut alpha = 256. **Faux** dès que le masque n'y est pas plein :
+
+- en **4:2:0**, la marge chroma est **deux fois plus petite** que le rect chroma → l'intérieur
+  n'est pas vide : une box **semi-transparente** gardait une **chroma à pleine opacité** (la luma
+  fondait, la couleur non) ;
+- sur une box **tournée + rognée**, l'intérieur « sûr » ne l'était plus : **adoucissement et coins
+  y étaient ignorés**.
+
+Mesuré sur un cas de référence (fond et source **plats**, donc valeur juste calculable depuis le
+masque) : la 0.9.x était **fausse sur 18,4 % des pixels de la box** (erreur max **119**) ; la 0.12.2
+est **exacte à 100 %** — **kernel et repli numpy**. Le kernel faisait déjà le bon calcul : c'est le
+**repli** qui mentait — soit exactement le piège « un repli qui diverge du kernel est un bug
+invisible au banc et bien réel en prod ».
+
+## Non-régression : la base, redéfinie honnêtement
+
+- **Octet-identique à la 0.9.x** sur tout le compositing **sans couleur** (géométrie, gather, alpha,
+  adoucissement, coins, opacité, rotation, crop, miroir), 720p et 1080p, 422/420/444, **kernel et
+  repli**, **trame entière et mode tranche** — `max|Δ| = 0`.
+- **Divergences VOULUES et prouvées** : les **couleurs** (elles étaient fausses), l'**ombre** (le
+  flou s'épand enfin vers l'extérieur), l'**opacité/adoucissement à l'intérieur** (ci-dessus), et le
+  cas `genlock` + fond non câblé (la 0.11.x publiait du noir sans composer les box).
+- **Invariant absolu, toujours vérifié** : `kernel ≡ repli numpy` et `trame entière ≡ mode tranche`
+  (`max|Δ| = 0`, 0 repli mvk sur 4 623 appels).

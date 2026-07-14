@@ -6,7 +6,7 @@
   "plugin.split.bg_short": "Fond",
   "plugin.split.bg_none": "Fond (non câblé)",
   "plugin.split.canvas_aria": "Composition des box",
-  "plugin.split.hint": "Cliquer une box pour la sélectionner · <kbd>Maj</kbd>+clic = multi-sélection · glisser = déplacer · coin bas-droit = taille · arêtes = crop · <kbd>←↑→↓</kbd> = 1 px (contourne le magnétisme), <kbd>Maj</kbd> = 10 px.",
+  "plugin.split.hint": "Cliquer une box pour la sélectionner · <kbd>Maj</kbd>+clic = multi-sélection (glisser déplace TOUTE la sélection) · coin bas-droit = taille · arêtes = crop · <kbd>←↑→↓</kbd> = 1 px (contourne le magnétisme), <kbd>Maj</kbd> = 10 px. Le BORD DU CADRE aimante : la box s'y colle par l'intérieur (entièrement visible) ou juste au-delà (entièrement sortie — départ/arrivée d'une entrée de champ).",
   "plugin.split.err_state": "État du Split injoignable",
   "plugin.split.group_align": "Aligner",
   "plugin.split.align_left": "Aligner à gauche",
@@ -191,5 +191,7 @@
   "plugin.split.rot_anim": "Rotation ANIMÉE (transition, ou curseur qu'on fait glisser) hors budget dans ce format : les cartes 2D se reconstruisent à chaque trame (~53 ms en 1080p). À l'ARRÊT, la rotation ne coûte presque rien (noyau C).",
   "plugin.split.global_scope": "Le Global transforme le GROUPE : il se compose par-dessus les réglages de chaque box (rendu = Global ∘ box), sans en écraser aucun — les box gardent leurs positions relatives. C'est ce qui permet de faire entrer ou sortir tout le groupe du cadre. Les attributs de BORD d'une box (crop, adoucissement, coins, bordure, biseau, ombre, miroir, ratio) et ce qui est propre à une box (source, activation, z-ordre) ne s'appliquent donc pas à lui : ils ne sont pas affichés ici.",
   "plugin.split.g_sec_geo": "Transformation du groupe",
-  "plugin.split.g_hint": "Double-clic sur un cadran = valeur par défaut (le Global redevient neutre réglage par réglage). Il est enregistré dans les mémoires et interpolé pendant les transitions. Coût mesuré : nul — il est replié dans l'empreinte de chaque box. Tant qu'il n'est pas neutre, le magnétisme du canvas est désactivé (aimanter dans un repère tourné donnerait des guides faux)."
+  "plugin.split.g_hint": "Double-clic sur un cadran = valeur par défaut (le Global redevient neutre réglage par réglage). Il est enregistré dans les mémoires et interpolé pendant les transitions. Coût mesuré : nul — il est replié dans l'empreinte de chaque box. Tant qu'il n'est pas neutre, le magnétisme du canvas est désactivé (aimanter dans un repère tourné donnerait des guides faux).",
+  "plugin.split.out_clipped": "Zone hachurée = hors cadre : rognée à l'antenne",
+  "plugin.split.out_zone": "Hors cadre (non diffusé)"
 }

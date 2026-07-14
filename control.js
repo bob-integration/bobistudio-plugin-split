@@ -578,7 +578,7 @@ window.MXLPlugins.split = (function () {
     <div class="split-stage">
       <div class="split-canvas-wrap"><canvas id="split_canvas" tabindex="0"
            aria-label="${esc(T('canvas_aria', 'Composition des box'))}"></canvas></div>
-      <p class="cc-hint">${T('hint', 'Cliquer une box pour la sélectionner · <kbd>Maj</kbd>+clic = multi-sélection · glisser = déplacer · coin bas-droit = taille · arêtes = crop · <kbd>←↑→↓</kbd> = 1 px (contourne le magnétisme), <kbd>Maj</kbd> = 10 px.')}</p>
+      <p class="cc-hint">${T('hint', 'Cliquer une box pour la sélectionner · <kbd>Maj</kbd>+clic = multi-sélection (glisser déplace TOUTE la sélection) · coin bas-droit = taille · arêtes = crop · <kbd>←↑→↓</kbd> = 1 px (contourne le magnétisme), <kbd>Maj</kbd> = 10 px. Le BORD DU CADRE aimante : la box s\'y colle par l\'intérieur (entièrement visible) ou juste au-delà (entièrement sortie — départ/arrivée d\'une entrée de champ).')}</p>
     </div>
     <aside class="split-targets">
       <h4>${esc(T('targets', 'Box & fond'))}</h4>
@@ -1245,8 +1245,27 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
     }
 
     // ─── Snap magnétique (miroir de computeSnap/computeSnapResize du composer) ───────
+    // ★ CIBLES DE MAGNÉTISME (corrigé 0.12.2) — LE BORD DU CADRE EST LA CIBLE N°1.
+    //
+    // BUG INTRODUIT EN 0.12.0 (hors-cadre) : ces cibles étaient `0` et `CW` — c'est-à-dire les
+    // bords du CANVAS. Or depuis que le canvas entoure le cadre d'une MARGE, les bords du canvas
+    // ne sont plus le cadre : ils tombent DANS le hors-cadre. Le bord de l'image avait donc PERDU
+    // tout magnétisme, et se caler pile contre l'arête était devenu impossible (« on ne peut pas
+    // se positionner facilement contre un bord »). Les cibles sont désormais les arêtes du CADRE
+    // DE SORTIE (rectangle intérieur), avec le MÊME seuil que les autres (SNAP_PX) : la cible la
+    // plus utile n'est pas la plus dure à attraper.
+    //
+    // ★ ET LES DEUX GESTES SONT SERVIS D'UN COUP, sans cible supplémentaire : les arêtes de la
+    // box testées sont {gauche, droite, centre} contre les cibles {bord gauche, bord droit,
+    // centre du cadre} — donc
+    //     • box AFFLEURANTE À L'INTÉRIEUR : arête gauche ≡ bord gauche (entièrement visible) ;
+    //     • box ENTIÈREMENT DEHORS, juste au-delà : arête DROITE ≡ bord GAUCHE (position de
+    //       départ/arrivée naturelle d'une entrée/sortie de champ).
+    // Idem en haut/bas. C'est la combinatoire {arêtes} × {bords} qui donne les deux, gratuitement.
     function snapTargets(excludeIdx, CW, CH) {
-        const xT = [0, CW, CW / 2], yT = [0, CH, CH / 2];
+        const V = view(CW, CH);
+        const xT = [V.MX, V.MX + V.FW, V.MX + V.FW / 2];   // bord GAUCHE, bord DROIT, centre
+        const yT = [V.MY, V.MY + V.FH, V.MY + V.FH / 2];   // bord HAUT, bord BAS, centre
         boxes.forEach((b, i) => {
             if (i === excludeIdx || !b.enabled) return;
             const r = rectPx(i, CW, CH);
@@ -1376,22 +1395,57 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
             if (sel.includes(i)) { ctx.fillStyle = accent; ctx.fillRect(r.x0 + r.w - 7, r.y0 + r.h - 7, 7, 7); }
             ctx.restore();
         });
-        // Voile sur le HORS-CADRE : ce qui déborde est visible (on le manipule) mais clairement
-        // « dehors » — c'est ce qui sortira du champ. Le liseré marque le cadre de sortie.
+        // ★ « ON DOIT COMPRENDRE QU'AU-DELÀ, ON QUITTE LA ZONE VISIBLE » (0.12.2).
+        // 1) La PORTION HORS CADRE de chaque box est HACHURÉE : elle ne sera PAS diffusée (elle
+        //    est rognée à l'antenne). On ne découvre pas à l'antenne que la moitié d'une box
+        //    n'existe pas — on le voit ici, tout de suite.
+        const hatch = outHatch(ctx, muted);
         ctx.save();
-        ctx.fillStyle = 'rgba(0,0,0,0.55)';
-        ctx.beginPath();
+        ctx.beginPath();                                   // tout SAUF le cadre (règle even-odd)
         ctx.rect(0, 0, CW, CH);
         ctx.rect(V.MX, V.MY, V.FW, V.FH);
-        ctx.fill('evenodd');
+        ctx.clip('evenodd');
+        zOrder().forEach(i => {
+            const b = gTransform(boxes[i]);
+            if (!boxes[i].enabled) return;
+            const r = rectPx(i, CW, CH);
+            ctx.save();
+            ctx.translate(r.cx, r.cy);
+            if (b.rotation) ctx.rotate(-b.rotation * Math.PI / 180);
+            ctx.translate(-r.cx, -r.cy);
+            pathRect(ctx, r, (b.radius || 0) * scale);
+            ctx.fillStyle = hatch; ctx.fill();
+            ctx.restore();
+        });
+        // 2) Le HORS-CADRE lui-même est voilé (il reste manipulable, mais il est « dehors »).
+        ctx.fillStyle = 'rgba(0,0,0,0.42)';
+        ctx.fillRect(0, 0, CW, CH);
         ctx.restore();
-        ctx.strokeStyle = muted; ctx.lineWidth = 1;
-        ctx.strokeRect(V.MX + 0.5, V.MY + 0.5, V.FW - 1, V.FH - 1);
+        // 3) L'ARÊTE DU CADRE DE SORTIE est FRANCHE (2 px pleins + liseré clair) : c'est une
+        //    LIMITE, pas une nuance de fond.
+        ctx.save();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = strong;
+        ctx.strokeRect(V.MX + 1, V.MY + 1, V.FW - 2, V.FH - 2);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+        ctx.strokeRect(V.MX + 2.5, V.MY + 2.5, V.FW - 5, V.FH - 5);
+        ctx.restore();
         ctx.fillStyle = muted;
         const bgLbl = (bg.mode === 'color') ? (T('bg_color_lbl', 'Fond : couleur') + ' ' + (bg.color || ''))
             : (bg.mode === 'source' ? (T('bg_short', 'Fond') + ' : ' + (inputs[4] || T('bg_unwired', 'non câblé')))
                                     : T('bg_none_lbl', 'Fond : noir'));
         ctx.fillText(bgLbl, V.MX + 6, V.MY + 14);
+        // Dire ce qu'est la zone hachurée — un pictogramme muet n'explique rien.
+        const clipped = boxes.some((b, i) => {
+            if (!b.enabled) return false;
+            const r = rectPx(i, CW, CH);
+            return r.x0 < V.MX - 0.5 || r.y0 < V.MY - 0.5
+                || r.x0 + r.w > V.MX + V.FW + 0.5 || r.y0 + r.h > V.MY + V.FH + 0.5;
+        });
+        ctx.fillStyle = muted;
+        ctx.fillText(clipped ? T('out_clipped', 'Zone hachurée = hors cadre : rognée à l\'antenne')
+                             : T('out_zone', 'Hors cadre (non diffusé)'), V.MX + 6, V.MY + V.FH - 8);
         drawGuides(ctx, CW, CH, css);
         redrawSidebar();
     }
@@ -1410,6 +1464,16 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
     // tout le mapping écran ↔ normalisé passe par `view()`. Les BORNES, elles, viennent de
     // `/state.caps.pos` (rien en dur).
     const OUT_M = 0.18;                       // marge visible autour du cadre (× la taille du cadre)
+    let _hatch = null;                        // motif de hachures « hors cadre » (créé une fois)
+    function outHatch(ctx, color) {
+        if (_hatch) return _hatch;
+        const c = document.createElement('canvas'); c.width = c.height = 8;
+        const g = c.getContext('2d');
+        g.strokeStyle = color; g.globalAlpha = 0.55; g.lineWidth = 1.5;
+        g.beginPath(); g.moveTo(-2, 6); g.lineTo(6, -2); g.moveTo(2, 10); g.lineTo(10, 2); g.stroke();
+        _hatch = ctx.createPattern(c, 'repeat');
+        return _hatch;
+    }
     function view(CW, CH) {
         const FW = CW / (1 + 2 * OUT_M), FH = CH / (1 + 2 * OUT_M);
         return { FW, FH, MX: (CW - FW) / 2, MY: (CH - FH) / 2 };
