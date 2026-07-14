@@ -1,26 +1,177 @@
-/* UI de contrôle embarquée du Split / SuperSource (montée dans le shell Traitements).
-   Styles de l'ÉDITEUR uniquement (sidebar/liste = shell). */
-.split-canvas-wrap { position:relative; width:100%; max-width:640px; margin-bottom:14px; }
-#split_canvas { width:100%; aspect-ratio:16/9; background:#111; border:1px solid var(--border);
-    border-radius:4px; touch-action:none; cursor:default; }
-.split-boxes { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; }
-.split-box-card { border:1px solid var(--border-soft); border-radius:6px; padding:8px; }
-.split-box-card.on { border-color: var(--accent, var(--status-running-fg)); }
-.split-box-card h4 { margin:0 0 6px; font-size:0.9em; display:flex; align-items:center; gap:6px; }
-.split-row { display:flex; gap:6px; align-items:center; margin:3px 0; font-size:0.82em; }
-.split-row label { width:3.2em; color:var(--text-muted); }
-.split-row input[type=number] { width:5em; }
-.split-row select { flex:1; min-width:0; }
-.split-crop { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; margin-top:4px; }
-.split-crop label { display:flex; flex-direction:column; font-size:0.74em; color:var(--text-muted); }
-.split-memories { margin-top:16px; border-top:1px solid var(--border-soft); padding-top:12px; }
-.split-mem-list { list-style:none; padding:0; margin:8px 0;
-    display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; }
-.split-mem-card { border:1px solid var(--border-soft); border-radius:6px; padding:6px; font-size:0.82em; }
-.split-mem-card b { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.split-mem-card canvas { width:100%; aspect-ratio:16/9; background:#111; border-radius:3px;
-    border:1px solid var(--border); display:block; margin:4px 0; }
-.split-mem-actions { display:flex; flex-wrap:wrap; gap:3px; align-items:center; }
-.split-mem-actions .btn { padding:2px 6px; font-size:0.92em; }
-.split-mem-actions select { font-size:0.92em; max-width:100%; }
-.split-mem-bar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright (C) 2026 BOBI SAS, France
+
+   UI de contrôle du Split / SuperSource (montée dans le shell Traitements).
+   Charte : DESIGN.md — tokens de thème uniquement (var(--bg-*), var(--border*), var(--text*),
+   var(--accent*), var(--space-N)), aucune couleur en dur hors surfaces de prévisualisation
+   canvas (--canvas-bg) et couleurs de signal des box (données, pas décor).
+   La barre d'outils reprend le vocabulaire du composer multiview / éditeur de PiP
+   (.tool-group / .tool-row / .tool-btn) : mêmes classes, mêmes pictos, mêmes tailles —
+   redéfinies ici pour que le Split reste autonome si la CSS multiview n'est pas chargée. */
+
+.split-ui { display: flex; flex-direction: column; gap: var(--space-3, 12px); }
+
+/* ── Barre d'outils (transposée du composer multiview) ───────────────────── */
+.split-toolbar {
+    display: flex; flex-wrap: wrap; align-items: flex-end;
+    gap: var(--space-3, 12px);
+    padding: var(--space-2, 8px);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-small, 4px);
+    background: var(--bg-elev);
+}
+.split-ui .tool-group { display: flex; flex-direction: column; gap: 3px; }
+.split-ui .tool-group-label {
+    font-size: 0.62em; font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase;
+    color: var(--text-muted); padding-left: 2px;
+}
+.split-ui .tool-row {
+    display: flex; gap: 2px; padding: 2px;
+    background: var(--bg-input); border-radius: var(--radius-small, 4px);
+}
+.split-ui .tool-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; height: 30px; padding: 0;
+    border: none; border-radius: 3px; background: transparent;
+    color: var(--text-muted); cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+}
+.split-ui .tool-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-strong); }
+.split-ui .tool-btn:active:not(:disabled) { filter: brightness(0.92); }
+.split-ui .tool-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.split-ui .tool-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.split-ui .tool-btn svg { width: 16px; height: 16px; }
+
+/* Chip de budget de trame (état moteur — jamais muet : valeur + cause) */
+.split-budget {
+    margin-left: auto; display: flex; align-items: center; gap: var(--space-2, 8px);
+    font-size: 0.8em; color: var(--text-muted);
+}
+.split-budget .split-budget-val {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    padding: 2px 8px; border-radius: 3px;
+    background: var(--bg-input); border: 1px solid var(--border); color: var(--text);
+}
+.split-budget.warn .split-budget-val {
+    background: var(--status-warning-bg); color: var(--status-warning-fg);
+    border-color: var(--status-warning-fg);
+}
+.split-budget.over .split-budget-val {
+    background: var(--status-stopped-bg); color: var(--status-stopped-fg);
+    border-color: var(--status-stopped-fg);
+}
+
+/* ── Corps : canvas + panneau de propriétés ─────────────────────────────── */
+.split-cols {
+    display: grid; grid-template-columns: minmax(0, 1fr) 320px;
+    gap: var(--space-3, 12px); align-items: start;
+}
+@media (max-width: 1080px) { .split-cols { grid-template-columns: 1fr; } }
+
+.split-stage { display: flex; flex-direction: column; gap: var(--space-2, 8px); min-width: 0; }
+.split-canvas-wrap { position: relative; width: 100%; }
+#split_canvas {
+    display: block; width: 100%; aspect-ratio: 16 / 9;
+    background: var(--canvas-bg, var(--bg));
+    border: 1px solid var(--border); border-radius: var(--radius-small, 4px);
+    touch-action: none; cursor: default;
+}
+#split_canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.split-hint { font-size: 0.8em; color: var(--text-muted); }
+.split-hint kbd {
+    font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.92em;
+    padding: 1px 5px; border: 1px solid var(--border); border-radius: 3px;
+    background: var(--bg-input); color: var(--text);
+}
+
+/* Bande des 4 box : activation + source, sélection cliquable */
+.split-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--space-2, 8px); }
+.split-chip {
+    display: flex; flex-direction: column; gap: 5px;
+    padding: var(--space-2, 8px);
+    border: 1px solid var(--border-soft); border-radius: var(--radius-small, 4px);
+    background: var(--bg-input); cursor: pointer;
+}
+.split-chip.sel { border-color: var(--accent); background: var(--bg-selected); }
+.split-chip-head { display: flex; align-items: center; gap: var(--space-2, 8px); font-size: 0.86em; font-weight: 600; }
+.split-chip-dot { width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; }
+.split-chip-head .split-chip-name { flex: 1; min-width: 0; }
+.split-chip select { width: 100%; min-width: 0; }
+
+/* ── Panneau de propriétés ──────────────────────────────────────────────── */
+.split-props {
+    border: 1px solid var(--border); border-radius: var(--radius, 6px);
+    background: var(--bg-elev); padding: var(--space-3, 12px);
+    display: flex; flex-direction: column; gap: var(--space-2, 8px);
+}
+.split-props h3 { margin: 0; font-size: 0.95em; font-weight: 600; }
+.split-props .tabs { margin-bottom: 0; }
+.split-pane { display: flex; flex-direction: column; gap: var(--space-2, 8px); }
+.split-pane[hidden] { display: none; }
+.split-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2, 8px); }
+.split-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.split-field > label { font-size: 0.78em; font-weight: 500; color: var(--text-muted); }
+.split-field input[type=number], .split-field input[type=text], .split-field select {
+    width: 100%; min-width: 0; box-sizing: border-box;
+    background: var(--bg-input); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--radius-small, 4px);
+    padding: 6px 9px; font-family: var(--font-mono, ui-monospace, monospace); font-size: 0.85em;
+}
+.split-field input:focus, .split-field select:focus {
+    border-color: var(--accent); background: var(--bg); outline: none;
+}
+.split-field input[type=color] {
+    width: 100%; height: 30px; padding: 2px; box-sizing: border-box;
+    background: var(--bg-input); border: 1px solid var(--border);
+    border-radius: var(--radius-small, 4px); cursor: pointer;
+}
+.split-field input:disabled, .split-field select:disabled { opacity: 0.5; cursor: not-allowed; }
+.split-toggles { display: flex; flex-wrap: wrap; gap: var(--space-3, 12px); }
+.toggle-inline { display: inline-flex; align-items: center; gap: 7px; font-weight: 500; color: var(--text); font-size: 0.85em; }
+.split-note { font-size: 0.78em; color: var(--text-muted); }
+.split-empty { color: var(--text-muted); font-size: 0.86em; }
+
+/* Avertissement de coût (rotation hors budget) — explicite, jamais un contrôle muet */
+.split-warn {
+    font-size: 0.78em; padding: 6px 9px; border-radius: var(--radius-small, 4px);
+    border: 1px solid var(--status-warning-fg);
+    background: var(--status-warning-bg); color: var(--status-warning-fg);
+}
+.split-warn.err { border-color: var(--status-stopped-fg); background: var(--status-stopped-bg); color: var(--status-stopped-fg); }
+
+/* ── Sections basses (habillage, lumière/transition, mémoires) ──────────── */
+.split-sections { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--space-3, 12px); }
+.split-card {
+    border: 1px solid var(--border); border-radius: var(--radius, 6px);
+    background: var(--bg-elev); padding: var(--space-3, 12px);
+    display: flex; flex-direction: column; gap: var(--space-2, 8px);
+}
+.split-card > h3 { margin: 0; font-size: 0.95em; font-weight: 600; }
+.split-card .split-grid { grid-template-columns: 1fr 1fr; }
+
+.split-memories { grid-column: 1 / -1; }
+.split-mem-list {
+    list-style: none; padding: 0; margin: 0;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: var(--space-2, 8px);
+}
+.split-mem-card {
+    border: 1px solid var(--border-soft); border-radius: var(--radius-small, 4px);
+    background: var(--bg-input); padding: var(--space-2, 8px); font-size: 0.82em;
+    display: flex; flex-direction: column; gap: 5px;
+}
+.split-mem-card b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.split-mem-card canvas {
+    width: 100%; aspect-ratio: 16/9; display: block;
+    background: var(--canvas-bg, var(--bg)); border: 1px solid var(--border); border-radius: 3px;
+}
+.split-mem-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.split-mem-actions .btn { padding: 2px 7px; font-size: 0.92em; }
+.split-mem-actions select { max-width: 100%; font-size: 0.92em; }
+.split-mem-bar { display: flex; gap: var(--space-2, 8px); align-items: end; flex-wrap: wrap; }
+.split-mem-bar .split-field { width: 150px; }
+
+.split-error {
+    padding: 8px 12px; border-radius: var(--radius-small, 4px); font-size: 0.86em;
+    border: 1px solid var(--status-stopped-fg);
+    background: var(--status-stopped-bg); color: var(--status-stopped-fg);
+}

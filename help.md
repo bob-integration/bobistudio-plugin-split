@@ -11,12 +11,20 @@ Câbler depuis la page **Câbles** :
 ## Composer
 
 Dans **Traitements → DVE** :
-- **Glisser** une box pour la déplacer
-- **Tirer le coin** bas-droit pour redimensionner (ratio préservé)
-- **Crop** : rogner chaque box (haut/bas/gauche/droite)
-- **Activer/désactiver** chaque box via sa case
+- **Cliquer** une box pour la sélectionner ; **Maj+clic** pour en sélectionner plusieurs (la
+  première sélectionnée sert de **référence** aux outils).
+- **Glisser** une box pour la déplacer · **tirer le coin** bas-droit pour redimensionner ·
+  **tirer une arête** pour rogner (crop).
+- **Flèches du clavier** : déplacement **pixel par pixel** de la sortie ; **Maj+flèche** = 10 px.
+- **Barre d'outils** (identique à l'éditeur de layout multiview) : **aligner** (gauche / centre /
+  droite, haut / milieu / bas), **même taille** que la référence, **distribuer** (H/V),
+  **copier/coller les réglages** d'une box (hors position).
+- **Activer/désactiver** chaque box via son switch.
+- Le **budget de trame** du moteur est affiché en permanence dans la barre d'outils
+  (% du budget, nombre de box en rotation) : au-delà de 100 %, le Split décroche — la rotation
+  est le premier poste à retirer (cf. « Coût par trame » plus bas).
 
-Tous les changements sont **live et persistés**.
+Tous les changements sont **live et persistés** (sauf l'image d'habillage ART, cf. plus bas).
 
 ## Mémoires
 
