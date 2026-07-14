@@ -1,7 +1,13 @@
 {
-  "version": "0.11.1",
+  "version": "0.11.2",
   "date": "2026-07-14",
   "changes": {
+    "Boutons −/+ : le stepper à SA taille (0.11.2) — l'étalon est le « Max entrées » du multiview": [
+      "RETOUR UTILISATEUR sur la 0.11.1 : « regarde le Max entrées du multiview, c'est plus facile à utiliser, y compris en tactile ». Juste : la 0.11.1 avait bien mis les boutons, mais les avait RÉTRÉCIS (28 × 26 px) pour les faire tenir dans la colonne du cadran — c'est-à-dire adapté le COMPOSANT à la mise en page. C'est l'inverse qu'il faut faire.",
+      "Le stepper global (base.css : « deux GROS boutons −/+ de part et d'autre, plus confortables que les flèches natives ») retrouve sa taille de RÉFÉRENCE : boutons de 30 px sur TOUTE la hauteur du champ (align-items: stretch), champ PLEINE LARGEUR — exactement le « Max entrées » du multiview. Plus aucune règle du split ne touche `.num-btn` : les 3 thèmes suivent sans règle dédiée.",
+      "La mise en page s'adapte : la colonne du rotatif est ÉLARGIE (136 px, plancher de stepper 132 px — la grille pleine largeur de la 0.9.3 en a la place) et le bloc « valeur + −/+ » occupe TOUTE la largeur de la colonne, SOUS le cadran centré. Champ à 32 px de haut → cible tactile réelle, police non réduite. Les rangées de cadrans se replient toujours (flex-wrap) en fenêtre étroite.",
+      "Inchangé (et conservé) : pas unique (caps) partagé par bouton/flèches/molette, et l'amorçage sur la valeur de RÉFÉRENCE quand la sélection a des valeurs divergentes (sinon un −/+ partirait de zéro)."
+    ],
     "Boutons −/+ sur TOUS les champs numériques (0.11.1) — parité avec le correcteur de couleur": [
       "DEMANDE UTILISATEUR : « les zones avec valeur numérique peuvent-elles avoir le +/− comme déjà implémenté ailleurs ? ». Elles le peuvent — et elles le doivent : le stepper est GLOBAL au produit (static/scripts.js, MutationObserver : « − [champ] + », appui maintenu = répétition), et le correcteur de couleur — la référence d'UI du projet — laisse bien ses champs de rotatif le recevoir.",
       "Le champ des rotatifs du split en était EXCLU (classe `no-stepper`, 0.9.2) parce que 56 px de champ + 2 boutons débordaient de la colonne du cadran. C'était contourner le problème : on ÉLARGIT la colonne (112 px — la grille pleine largeur de la 0.9.3 en a la place) et le champ redevient FLUIDE dans le stepper. Boutons −/+ désormais sur crop, rotation, opacité, adoucissement, coins, biseau (×3), ombre (×4), lumière (×2) et habillage (seuil/gain/opacité) — les champs simples (X/Y, largeur/hauteur, z-ordre, largeurs de bordure, durée de rappel, décalage) les avaient déjà.",

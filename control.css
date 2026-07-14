@@ -84,23 +84,28 @@
 .cc-knob-value::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .cc-knob-value:focus { border-color: var(--accent); outline: none; }
 
-/* ── Boutons −/+ SUR LE CHAMP DU ROTATIF (0.11.1) — parité avec le correcteur de couleur ──
-   Le champ chiffré reçoit le stepper GLOBAL du produit (static/scripts.js, MutationObserver :
-   `− [champ] +`, appui maintenu = répétition). Il en était exclu (`no-stepper`) parce que
-   56 px de champ + 2 boutons débordaient de la colonne du cadran : on ÉLARGIT la colonne (la
-   grille pleine largeur de la 0.9.3 en a la place) au lieu de supprimer des boutons que
-   l'utilisateur attend et qui existent partout ailleurs.
-   Dans le stepper, le champ redevient FLUIDE (flex) : sa largeur fixe de 56 px ne vaut plus que
-   pour un champ nu. Les coins arrondis passent aux boutons (règle de base.css). */
-.cc-knob { min-width: 112px; }
-.cc-knob .num-stepper { width: 112px; }
+/* ── Boutons −/+ SOUS LE CADRAN (0.11.2) — le stepper GLOBAL, À SA TAILLE DE RÉFÉRENCE ────────
+   Le champ chiffré reçoit le stepper global du produit (static/scripts.js, MutationObserver :
+   `− [champ] +`, appui maintenu = répétition). ÉTALON = le « Max entrées » du multiview : champ
+   PLEINE LARGEUR, boutons de 30 px sur TOUTE la hauteur du champ (`align-items: stretch`).
+   C'est ce confort — tactile compris — qui fait l'intérêt du composant.
+
+   ★ DEUX ERREURS SUCCESSIVES, corrigées ici :
+     1. (0.9.2) exclure le champ du stepper (`no-stepper`) parce qu'il « ne rentrait pas » ;
+     2. (0.11.1) le garder mais RÉTRÉCIR les boutons (28 × 26 px) pour les faire tenir dans la
+        colonne du cadran — soit adapter le COMPOSANT à la mise en page, à l'envers du bon sens,
+        et sous la cible tactile.
+   La mise en page s'adapte au composant : la colonne du cadran est ÉLARGIE (la grille pleine
+   largeur de la 0.9.3 en a la place) et le bloc « valeur + −/+ » occupe TOUTE la largeur de la
+   colonne, SOUS le cadran centré. Aucune règle ne touche `.num-btn` : les 30 px et la hauteur
+   pleine de base.css s'appliquent, et les 3 thèmes suivent sans règle dédiée. */
+.cc-knob { min-width: 136px; }
+.cc-knob .num-stepper { width: 100%; min-width: 132px; }
 .cc-knob .num-stepper .cc-knob-value {
-    width: auto; flex: 1 1 auto; min-width: 0;
-    border-radius: 0; min-height: 26px;
+    width: auto; flex: 1 1 auto; min-width: 0;   /* fluide DANS le stepper (56 px = champ nu) */
+    border-radius: 0;                            /* les coins arrondis sont portés par les boutons */
+    min-height: 32px; font-size: 0.82em;         /* hauteur = cible tactile des boutons */
 }
-/* Cible tactile : 28 px de large, hauteur alignée sur le champ (26 px) — comme les steppers
-   des autres pages. Couleurs/états : ceux de base.css (thèmes clair/sombre/contraste). */
-.cc-knob .num-stepper .num-btn { width: 28px; min-height: 26px; font-size: 1.05em; }
 
 /* Rotatif d'un réglage désactivé (ex. ombre éteinte) : inerte ET visiblement inerte — le
    « pourquoi » est porté par le title du groupe (jamais de contrôle muet). */

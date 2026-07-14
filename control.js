@@ -248,12 +248,14 @@ window.MXLPlugins.split = (function () {
     // interactions. AJOUT : shape="angle" → cercle complet, repère à 12 h, pour la ROTATION
     // d'une box et la DIRECTION de la lumière (un angle n'est pas une jauge).
     //
-    // ★ BOUTONS −/+ (0.11.1) : le champ chiffré n'est plus exclu du stepper GLOBAL
-    // (static/scripts.js : MutationObserver → enrobage `.num-stepper`). La 0.9.2 le retirait
-    // (`no-stepper`) parce que 56 px de champ + 2 boutons débordaient de la colonne du cadran :
-    // c'était contourner le problème, pas le régler. La colonne est ÉLARGIE (control.css) — la
-    // grille pleine largeur de la 0.9.3 en a la place — et le correcteur de couleur, lui, laisse
-    // bien ses champs recevoir le stepper : parité, comme partout ailleurs dans le produit.
+    // ★ BOUTONS −/+ (0.11.1, taille corrigée en 0.11.2) : le champ chiffré n'est plus exclu du
+    // stepper GLOBAL (static/scripts.js : MutationObserver → enrobage `.num-stepper`). ÉTALON =
+    // le « Max entrées » du multiview : champ pleine largeur, boutons de 30 px sur toute la
+    // hauteur du champ — c'est CE confort (tactile compris) qui fait l'intérêt du composant.
+    // La 0.9.2 l'excluait (`no-stepper`, « ça ne rentre pas ») et la 0.11.1 rétrécissait les
+    // boutons pour les faire rentrer : deux façons d'adapter le COMPOSANT à la mise en page.
+    // C'est l'inverse — la colonne du cadran est élargie (control.css), le stepper garde sa
+    // taille de référence, et le bloc « valeur + −/+ » prend toute la largeur sous le cadran.
     // Le PAS est le même pour tout le monde (`step` du champ = `data-step` du cadran, dérivé de
     // /state.caps) : bouton −/+, flèches clavier et molette avancent EXACTEMENT du même pas —
     // une seule vérité. Le stepper émet `change` → le commit passe par le handler du rotatif.
