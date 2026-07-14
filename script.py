@@ -657,6 +657,38 @@ def lire_frame_yuv(r):
         return None, None
 
 
+def _read_slot(slot):
+    """CHEMIN TRAME ENTIÈRE — lit le slot `slot` en NOMMANT chaque renoncement (0.11.0). Le
+    chemin historique renvoyait (None, None) pour trois causes très différentes — flux absent,
+    producteur muet, grain d'un AUTRE format — et l'appelant faisait `continue` sans un mot.
+    Même comptabilité que le mode tranche (`_slot_skip` : compté, exposé sur :8080, loggé une
+    fois, lecteur relâché/rouvert si ça dure → rattrape un producteur redéployé)."""
+    rd = ensure_input(slot)
+    if rd is None:
+        with state_lock:
+            wired = bool(state["inputs"][slot])
+        _slot_skip(slot, "input_absent" if wired else "not_wired")
+        return None, None
+    try:
+        got = rd.get_latest()
+    except Exception as _e:
+        _slot_skip(slot, "exception", "%s: %s" % (type(_e).__name__, _e))
+        return None, None
+    if got is None:
+        _slot_skip(slot, "no_grain")
+        return None, None
+    n = len(got[2])
+    if n != V_FRAME_SIZE and not (n == V_FRAME_SIZE // 2 and _il_order(rd) is not None):
+        _slot_skip(slot, "format", "grain %d o ≠ canvas %d o (%dx%d %s %d bits)"
+                   % (n, V_FRAME_SIZE, WIDTH, HEIGHT, CHROMA, BIT_DEPTH))
+        return None, None
+    f, ts = lire_frame_yuv(rd)
+    if f is None:
+        _slot_skip(slot, "no_grain")
+        return None, None
+    return f, ts
+
+
 # ─── Transitions : courbes d'accélération + interpolation ────────────────────────────────────
 # 0.8.0 : interpolation strictement LINÉAIRE (mouvement mécanique) et bordure NON interpolée
 # (elle SAUTAIT à la cible pendant que la géométrie glissait). 0.9.0 : jeu de courbes standard
@@ -1908,6 +1940,80 @@ def _paint_art_rows(oy, ou, ov, b0, b1):
                           + src[cya:cyb].astype(np.uint32) * a2) >> 8).astype(_NP_DT)
 
 
+# ═════════════════════════════════════════════════════════════════════════════════════════════
+#  ★ POURQUOI CE BLOC EXISTE (0.11.0) — « le split ne compose AUCUNE box, et tout va bien »
+#
+#  BUG VÉCU EN PROD (conteneur 598) : le split publiait une image VIDE à la bonne cadence, sans
+#  une seule erreur. `:8080` disait fps 25,0, budget 2,5 %, aucun repli, aucune exception… et
+#  `slice.layers: 0`. Un split qui ne compose RIEN ressemblait EXACTEMENT à un split qui va bien.
+#
+#  CAUSE RACINE (reproduite au banc) : le producteur (`avsync`) a été REDÉPLOYÉ **après** le
+#  split, et il a changé de format (1080p50 → 640×360p25). Le Reader du split, ouvert sur
+#  l'ANCIENNE génération du flux, y est resté COLLÉ : cette génération est morte, sa tête est
+#  FIGÉE, et ses grains font la taille de l'ANCIEN format → la garde format-fixe les rejetait à
+#  chaque trame, EN SILENCE.
+#  Et la garde « génération périmée » ne le rattrapait pas : elle testait `fi_out - hi > 250`,
+#  or l'ancienne génération était sur la grille TAI **50 fps** (tête ≈ 8,92e10) et le split sur
+#  la grille **25 fps** (fi_out ≈ 4,46e10) → la différence était **NÉGATIVE** (la tête morte est
+#  « en avance ») → la garde ne se déclenchait JAMAIS. Le slot n'était jamais lâché, donc jamais
+#  rouvert : mort définitive, muette.
+#
+#  DEUX CORRECTIFS, indissociables :
+#  1. DÉTECTION ROBUSTE : une tête FIGÉE est périmée quelle que soit sa POSITION (|Δ| et non Δ),
+#     et TOUT slot qui n'a rien donné d'utilisable depuis _REOPEN_AFTER trames est relâché
+#     (close + GC + réouverture) — quelle que soit la raison. Une réouverture retombe sur la
+#     génération VIVANTE (chemin déjà éprouvé : un redéploiement du producteur À FORMAT ÉGAL
+#     était, lui, correctement rattrapé).
+#  2. PLUS UN SEUL `continue` MUET : chaque renoncement est COMPTÉ par slot AVEC SA RAISON,
+#     exposé sur `:8080` (`slots`), et loggé UNE FOIS par transition (pas à chaque trame). Le
+#     rétablissement est loggé aussi. L'exception de la boucle de rendu n'est plus avalée.
+# ═════════════════════════════════════════════════════════════════════════════════════════════
+_REOPEN_AFTER = 50      # trames consécutives sans grain utilisable → on relâche le slot (≈ 2 s)
+_SKIP_LABELS = {{
+    "not_wired":  "slot non câblé",
+    "input_absent": "flux introuvable (le producteur n'existe pas encore ?)",
+    "no_grain":   "aucun grain lisible (producteur muet ou génération morte)",
+    "format":     "grain ≠ format du canvas (producteur d'un AUTRE format, ou génération périmée)",
+    "stamp_none": "empreinte nulle (box invisible : trop petite, hors cadre, alpha nul)",
+    "geom_none":  "géométrie nulle (box invisible : trop petite ou hors cadre)",
+    "exception":  "exception dans la boucle de rendu",
+    "stale_gen":  "génération périmée (tête figée) → slot relâché et rouvert",
+}}
+_slot_skips = {{}}    # slot -> {{raison: compte cumulé}} — exposé sur :8080
+_slot_state = {{}}    # slot -> [raison_courante, trames_consécutives, détail]
+
+
+def _slot_skip(slot, reason, detail=""):
+    """Renonce à composer le slot `slot` — COMPTÉ, EXPOSÉ, et loggé UNE FOIS par transition.
+    Après _REOPEN_AFTER trames consécutives d'échec, le lecteur est RELÂCHÉ (close + GC) : la
+    réouverture retombera sur la génération vivante du flux (c'est le remède au producteur
+    redéployé). `not_wired` est un état normal (pas de fond câblé, par ex.) → aucune réouverture."""
+    d = _slot_skips.setdefault(slot, {{}})
+    d[reason] = d.get(reason, 0) + 1
+    cur = _slot_state.get(slot)
+    if cur is None or cur[0] != reason:
+        _slot_state[slot] = [reason, 1, detail]
+        if reason != "not_wired":
+            print(f"split: slot {{slot}} NON COMPOSÉ — {{_SKIP_LABELS.get(reason, reason)}}"
+                  + (f" ({{detail}})" if detail else ""))
+        return
+    cur[1] += 1
+    if reason != "not_wired" and cur[1] % _REOPEN_AFTER == 0:
+        # Rien d'utilisable depuis ≈ 2 s : la cause la plus probable est un flux dont la
+        # GÉNÉRATION a changé sous nos pieds (producteur redéployé). On lâche le lecteur ; il
+        # sera rouvert au tour suivant, sur la génération vivante.
+        print(f"split: slot {{slot}} muet depuis {{cur[1]}} trames "
+              f"({{_SKIP_LABELS.get(reason, reason)}}) — RELÂCHE du lecteur et réouverture")
+        _drop_slot(slot)
+
+
+def _slot_ok(slot):
+    """Le slot compose de nouveau — remet les compteurs d'état à zéro et le DIT (une fois)."""
+    cur = _slot_state.pop(slot, None)
+    if cur is not None and cur[0] != "not_wired":
+        print(f"split: slot {{slot}} RÉTABLI (après {{cur[1]}} trames « {{cur[0]}} »)")
+
+
 def _sl_ensure(L, need_k, deadl):
     """Attend (get_slice, réveil au commit partiel) que la couche L couvre need_k tranches —
     budget PAR COUCHE (une couche en retard n'entame que SON budget, borne dure globale =
@@ -1963,23 +2069,40 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot):
             if _is_adv(b_):
                 st = _stamp_for(slot, b_, alpha)
                 if st is None:
+                    _slot_skip(slot, "stamp_none")
                     continue
             else:
                 g = _box_slice_geom(b_, alpha)
                 if g is None:
+                    _slot_skip(slot, "geom_none")
                     continue
         rd = ensure_input(slot)
         if rd is None:
-            continue     # fond absent → bandes noires ; box absente → non composée (historique)
+            # fond absent → bandes noires ; box absente → non composée. Distingué : un slot NON
+            # CÂBLÉ est un état normal ; un slot câblé dont le flux ne s'ouvre pas est un PROBLÈME.
+            with state_lock:
+                wired = bool(state["inputs"][slot])
+            _slot_skip(slot, "input_absent" if wired else "not_wired",
+                       (state["inputs"][slot] if wired else ""))
+            continue
         try:
             hi = rd.head_index()
             got = None
             if FLOW:
-                # GÉNÉRATION PÉRIMÉE (motif multiview flow) : tête FIGÉE très en retard sur la
-                # grille = Reader sur l'ancien ring d'un producteur recréé sous le même nom →
-                # drop (GC entre close et reopen) ; rouvert à la trame suivante.
-                if (hi != bobimxl.MXL_UNDEFINED_INDEX and fi_out - hi > 250
+                # GÉNÉRATION PÉRIMÉE (motif multiview flow) : tête FIGÉE = Reader collé sur
+                # l'ancien ring d'un producteur recréé sous le même nom → drop (GC entre close et
+                # reopen) ; rouvert à la trame suivante.
+                # ★ FIX 0.11.0 — la garde testait `fi_out - hi > 250` : elle ne voyait qu'une tête
+                # morte EN RETARD. Quand le producteur redéployé CHANGE DE CADENCE (1080p50 →
+                # 640×360p25, cas du 598), l'ancienne génération est sur la grille TAI 50 fps et
+                # la nouvelle sur celle à 25 fps : la tête morte est DEUX FOIS PLUS GRANDE que
+                # notre index d'epoch → la différence est NÉGATIVE → la garde ne se déclenchait
+                # JAMAIS, et le slot restait collé à vie sur un flux mort (grains à l'ancien
+                # format, rejetés en silence par la garde format-fixe). C'est le FIGEMENT de la
+                # tête qui trahit une génération morte, pas le SIGNE de l'écart → valeur ABSOLUE.
+                if (hi != bobimxl.MXL_UNDEFINED_INDEX and abs(fi_out - hi) > 250
                         and hi == _sl_lasthead.get(slot)):
+                    _slot_skip(slot, "stale_gen", "tête figée à %d, grille à %d" % (hi, fi_out))
                     _drop_slot(slot)
                     _sl_lasthead.pop(slot, None)
                     continue
@@ -2002,15 +2125,25 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot):
                 # suivi par tranches possible ; repli whole-frame TISSÉ (cf. lire_frame_yuv).
                 fr, ts = lire_frame_yuv(rd)
                 if fr is None:
+                    _slot_skip(slot, "no_grain", "source entrelacée : tissage impossible")
                     continue
                 if ts: ts_in_per_slot[slot] = ts
                 sy, su, sv = _plane_views(np.frombuffer(fr, dtype=np.uint8))
                 layers.append({{"slot": slot, "rd": rd, "fi": int(got[0]), "sy": sy, "su": su,
                                 "sv": sv, "total": 1, "valid": 1, "islh": HEIGHT, "g": g, "st": st,
                                 "budget": int(interval * 1e9)}})
+                _slot_ok(slot)
                 continue
-            if got is None or len(got[2]) != V_FRAME_SIZE:
-                continue   # garde format-fixe : grain ≠ canvas → ignoré
+            if got is None:
+                _slot_skip(slot, "no_grain")
+                continue
+            if len(got[2]) != V_FRAME_SIZE:
+                # ★ Garde format-fixe — LA garde qui, muette, a fait passer le 598 pour sain :
+                # elle rejetait TOUS les grains d'une génération périmée restée à l'ancien format.
+                _slot_skip(slot, "format",
+                           "grain %d o ≠ canvas %d o (%dx%d %s %d bits)"
+                           % (len(got[2]), V_FRAME_SIZE, WIDTH, HEIGHT, CHROMA, BIT_DEPTH))
+                continue
             ts = rd.last_write_time()
             if ts:
                 ts_in_per_slot[slot] = ts
@@ -2034,7 +2167,12 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot):
                             "total": total, "valid": valid,
                             "islh": max(1, HEIGHT // total), "g": g, "st": st,
                             "budget": int(interval * 1e9)}})
-        except Exception:
+            _slot_ok(slot)
+        except Exception as _e:
+            # ★ PLUS D'EXCEPTION AVALÉE : une exception dans la boucle de rendu était jusqu'ici
+            # invisible (continue muet). Comptée, signée, loggée une fois — et le slot finit par
+            # être relâché/rouvert si ça dure (cf. _slot_skip).
+            _slot_skip(slot, "exception", "%s: %s" % (type(_e).__name__, _e))
             continue
     _sl_dbg = [len(layers), -1, 0, 0, dormant]
     bg = next((L for L in layers if L["slot"] == 4), None)
@@ -2221,7 +2359,7 @@ while True:
         # MÊMES primitives par bandes que le mode tranche (bande = trame entière) : une seule
         # implémentation du compositing → les deux chemins ne peuvent plus diverger.
         # Réglages par défaut (aucun effet avancé) ⇒ strictement le rendu de 0.8.0.
-        bg_frame, ts_bg = lire_frame_yuv(ensure_input(4))
+        bg_frame, ts_bg = _read_slot(4)
         if ts_bg: ts_in_per_slot[4] = ts_bg
         buf = np.frombuffer(bg_frame or empty_frame, dtype=np.uint8).copy()
         oy, ou, ovv = _plane_views(buf)
@@ -2230,21 +2368,24 @@ while True:
             _paint_art_rows(oy, ou, ovv, 0, HEIGHT)
 
         for slot, b, alpha in _plan_layers(tr, boxes):
-            f, ts = lire_frame_yuv(ensure_input(slot))
+            f, ts = _read_slot(slot)          # (compte et NOMME les renoncements — cf. _slot_skip)
             if ts: ts_in_per_slot[slot] = ts
             if not f:
                 continue
             sy, su, sv = _plane_views(np.frombuffer(f, dtype=np.uint8))
             if _is_adv(b):
                 st = _stamp_for(slot, b, alpha)
-                if st is None: continue
+                if st is None:
+                    _slot_skip(slot, "stamp_none"); continue
                 _paint_shadow_rows(oy, ou, ovv, st, 0, HEIGHT)     # ombre SOUS la box
                 _place_adv_rows(oy, ou, ovv, sy, su, sv, st, 0, HEIGHT)
             else:
                 g = _box_slice_geom(b, alpha)                       # chemin 0.8.0 inchangé
-                if g is None: continue
+                if g is None:
+                    _slot_skip(slot, "geom_none"); continue
                 _place_box_band(oy, ou, ovv, sy, su, sv, g, 0, HEIGHT)
                 _paint_border_band(oy, ou, ovv, g, 0, HEIGHT)
+            _slot_ok(slot)
 
         if _art_above():                      # ART AU-DESSUS des boxes (habillage à trous)
             _paint_art_rows(oy, ou, ovv, 0, HEIGHT)
@@ -2298,6 +2439,24 @@ while True:
             # False et l'appelant retombe en numpy — 5 à 20× plus lent. Compté ET signé ici.
             metrics["mvk_miss"] = dict(_mvk_miss)
             metrics["mvk_why"] = dict(_mvk_why)
+            # ★ LE COMPTEUR QUI MANQUAIT (0.11.0) : combien de couches COMPOSÉES, et pour chaque
+            # slot renoncé, POURQUOI. Un split qui ne compose rien ne peut plus passer pour sain :
+            # `composed` tombe à 0 et `slots` nomme la cause (format / génération périmée / flux
+            # absent / exception…), avec le nombre de trames consécutives.
+            with state_lock:
+                _wired = list(state["inputs"])
+            metrics["slots"] = {{
+                str(s): {{"shm": (_wired[s] if s < len(_wired) else ""),
+                          "skips": dict(_slot_skips.get(s, {{}})),
+                          "reason": (_slot_state[s][0] if s in _slot_state else None),
+                          "frames": (_slot_state[s][1] if s in _slot_state else 0),
+                          "detail": (_slot_state[s][2] if s in _slot_state else ""),
+                          "why": (_SKIP_LABELS.get(_slot_state[s][0], "")
+                                  if s in _slot_state else "")}}
+                for s in range(N_INPUTS)
+            }}
+            metrics["composed"] = (_sl_dbg[0] if (SLICE_ON and _sl_dbg) else
+                                   sum(1 for s in range(N_BOXES) if s not in _slot_state))
             # ── MODE AVANCÉ : santé du CACHE STATIQUE. `builds` qui grimpe en régime établi =
             # une clé de cache qui bouge sans raison → le précalcul serait refait par trame
             # (c'est LE mode de défaillance de perf du mode avancé). `hit_rate` doit valoir ~1

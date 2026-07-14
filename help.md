@@ -169,6 +169,35 @@ numpy**. Un repli est 5 à 20× plus lent : `mvk_miss` **doit rester à zéro**,
 > **Vieille image** (`bobi-compute` < 0.15, sans ABI 4) : le plugin fonctionne à l'identique, en
 > repli numpy intégral (`mvk: false` sur `:8080`) — avec les coûts de la colonne « numpy ».
 
+## ★★ « Le split ne compose aucune box » — pourquoi, et comment il le dit (0.11.0)
+
+**Le bug vécu** : sortie **vide**, à la bonne cadence, **sans une seule erreur** — `fps 25,0`,
+budget 2,5 %, 0 repli, 0 exception… et `slice.layers: 0`. Un split qui ne compose **rien**
+ressemblait **exactement** à un split qui va bien.
+
+**La cause** : le producteur (ici `avsync`) a été **redéployé après** le split, **en changeant de
+format** (1080p50 → 640×360p25). Le lecteur du split est resté **collé sur l'ancienne génération**
+du flux : tête figée, grains à l'**ancien format** → rejetés à chaque trame par la garde
+format-fixe, **en silence**. Et le filet « génération périmée » ne jouait pas : il testait un
+écart d'index **signé** (`fi_out − hi > 250`), alors que l'ancienne génération vivait sur la
+grille TAI **50 fps** (tête ≈ 8,9·10¹⁰) et le split sur celle à **25 fps** (≈ 4,5·10¹⁰) — la tête
+morte était **deux fois plus grande**, l'écart **négatif**, le filet muet. Corrigé : c'est le
+**figement** de la tête qui trahit une génération morte, pas le **signe** de l'écart (valeur
+absolue) — et **tout** slot muet depuis 50 trames (≈ 2 s) est **relâché et rouvert**, quelle que
+soit la raison.
+
+**Ce que le plugin dit désormais** — plus aucun renoncement muet. Chaque slot non composé est
+**compté avec sa raison**, loggé **une fois** (pas par trame), et publié sur `:8080` :
+
+- `composed` — nombre de couches **réellement composées** (0 = le split ne fait rien : l'alerte) ;
+- `slots.<n>` — par slot : `shm`, `reason`, `why` (libellé), `detail`, `frames` (trames
+  consécutives), `skips` (cumul par raison). Raisons : `not_wired` (état **normal** : slot non
+  câblé), `input_absent`, `no_grain`, **`format`** (« grain 4 147 200 o ≠ canvas 460 800 o
+  (640×360 422 8 bits) »), `stale_gen`, `stamp_none`, `geom_none`, **`exception`** (l'exception de
+  la boucle de rendu n'est plus avalée).
+
+Le rétablissement est loggé lui aussi (« slot 0 RÉTABLI après N trames »).
+
 ## Contrat de contrôle (pour l'UI)
 
 - `GET /state` — publie les réglages **et leur domaine** dans `caps` (`easings`, `art_keys`,
