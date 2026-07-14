@@ -486,8 +486,13 @@ class ControlHandler(BaseHTTPRequestHandler):
                 if "chroma_key" in body: _art["chroma_key"] = str(body["chroma_key"] or "#00b140")
             _bake_art()
             with _art_lock:
+                # `warn` renvoyé DÈS L'IMPORT (l'UI affiche le bandeau sans attendre un poll) :
+                # image sans canal alpha + clé « alpha », et/ou habillage qui masque tout.
                 self._reply(200, {{"ok": not _art["err"], "error": _art["err"],
-                                   "loaded": _art.get("baked") is not None}})
+                                   "loaded": _art.get("baked") is not None,
+                                   "warn": list(_art["warn"]),
+                                   "has_alpha": _art["has_alpha"], "cover": _art["cover"],
+                                   "holes": _art["holes"]}})
 
         elif self.path == "/recall":
             # Rappel de mémoire : tween boxes courantes -> boxes cibles sur duration_ms, avec
@@ -1732,7 +1737,17 @@ def _place_adv_rows(oy, ou, ov, sy, su, sv, st, b0, b1):
 _art_lock = threading.Lock()
 _art = {{"enabled": False, "above": True, "image": "", "key": "alpha", "clip": 0.15,
          "gain": 1.0, "invert": False, "opacity": 1.0, "chroma_key": "#00b140",
-         "baked": None, "err": ""}}
+         "baked": None, "err": "",
+         # ── DIAGNOSTIC DE L'HABILLAGE (0.10.1) — cf. _bake_art. Un habillage OPAQUE PARTOUT et
+         # posé AU-DESSUS efface toute la composition : les box disparaissent, et jusqu'ici le
+         # plugin ne disait RIEN (échec silencieux : l'exploitant voit sa photo plein cadre et
+         # n'a aucun moyen de comprendre). On MESURE et on DIT — on ne corrige PAS en douce
+         # (forcer `above=false` ou baisser l'opacité serait décider à sa place : un fond plein
+         # cadre peut être voulu).
+         "has_alpha": None,     # l'image importée a-t-elle un canal de transparence ?
+         "cover": None,         # opacité MOYENNE du masque cuit (0..1)
+         "holes": None,         # part du cadre réellement TRANSPARENTE (α = 0) — les « trous »
+         "warn": []}}           # codes d'avertissement (l'UI/i18n les traduit)
 
 
 def _art_public():
@@ -1740,9 +1755,10 @@ def _art_public():
     renvoyer à chaque poll de /state saturerait l'UI). `has_image` suffit à l'UI."""
     with _art_lock:
         return {{k: _art[k] for k in ("enabled", "above", "key", "clip", "gain", "invert",
-                                      "opacity", "chroma_key", "err")}} | {{
+                                      "opacity", "chroma_key", "err", "has_alpha", "cover", "holes")}} | {{
             "has_image": bool(_art["image"]),
             "loaded": _art.get("baked") is not None,
+            "warn": list(_art["warn"]),
         }}
 
 
@@ -1754,13 +1770,20 @@ def _bake_art():
     if not cfg["enabled"] or not cfg["image"]:
         with _art_lock:
             _art["baked"] = None; _art["err"] = ""
+            _art["warn"] = []; _art["cover"] = None; _art["has_alpha"] = None
+            _art["holes"] = None
         return
     try:
         from PIL import Image
         raw = cfg["image"]
         if "," in raw[:64] and raw.strip().startswith("data:"):
             raw = raw.split(",", 1)[1]
-        im = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGBA")
+        im0 = Image.open(io.BytesIO(base64.b64decode(raw)))
+        # ★ CANAL DE TRANSPARENCE : un JPEG (ou un PNG opaque) n'en a PAS → `convert("RGBA")`
+        # fabrique un alpha à 255 partout → la clé « alpha » ne découpe RIEN → l'habillage est
+        # plein cadre. C'est le piège n°1 de l'habillage, et il était muet.
+        has_alpha = bool("A" in im0.getbands() or im0.info.get("transparency") is not None)
+        im = im0.convert("RGBA")
         if im.size != (WIDTH, HEIGHT):
             im = im.resize((WIDTH, HEIGHT), Image.LANCZOS)
         arr = np.asarray(im).astype(np.float32)
@@ -1806,13 +1829,49 @@ def _bake_art():
             "py0": int(rows_p[0]) if rows_p.size else 0,
             "py1": int(rows_p[-1]) + 1 if rows_p.size else 0,
         }}
+        # ── DIAGNOSTIC (0.10.1) : l'habillage cache-t-il TOUT ? ────────────────────────────────
+        # `cover` = part de la surface où le masque est OPAQUE (le fond et les box y sont
+        # intégralement recouverts). Deux avertissements, JAMAIS une correction d'office :
+        #   • no_alpha  : image SANS canal de transparence + clé « alpha » → alpha = 255 partout ;
+        #   • covers_all: masque opaque sur ≥ 99 % de la surface ET habillage AU-DESSUS → la
+        #                 composition (box comprises) est entièrement masquée.
+        # `cover` = opacité MOYENNE du masque (pas la part de pixels PLEINEMENT opaques : une
+        # photo sans alpha cuite avec le seuil par défaut donne α = 0,85 PARTOUT — aucun pixel
+        # « plein », et pourtant les box sont noyées). `holes` = part réellement TRANSPARENTE
+        # (α = 0) : c'est par là que les box se voient. Aucun trou + forte opacité = tout est
+        # masqué, quel que soit le détail du masque.
+        cover = float(a16.mean()) / 256.0
+        holes = float((a16 == 0).mean())
+        warn = []
+        if mode == "alpha" and not has_alpha and not cfg["invert"]:
+            warn.append("no_alpha")
+        if cfg["above"] and holes < 0.01 and cover >= 0.75:
+            warn.append("covers_all")
         with _art_lock:
             _art["baked"] = baked; _art["err"] = ""
+            _art["has_alpha"] = has_alpha; _art["cover"] = round(cover, 4)
+            _art["holes"] = round(holes, 4)
+            _art["warn"] = warn
         print(f"split: ART cuit ({{mode}}) — opaque[{{baked['oy0']}}:{{baked['oy1']}}] "
-              f"partiel[{{baked['py0']}}:{{baked['py1']}}]")
+              f"partiel[{{baked['py0']}}:{{baked['py1']}}] opacité_moyenne={{cover * 100:.1f}} % "
+              f"trous(α=0)={{holes * 100:.1f}} % canal_alpha={{has_alpha}}")
+        # ★ JAMAIS EN SILENCE (anti-patron n°1 du projet) : l'habillage vient d'effacer toute la
+        # composition — on le DIT, en nommant la cause et les remèdes. Rien n'est corrigé d'office.
+        if "no_alpha" in warn:
+            print("split: ATTENTION — l'image d'habillage n'a AUCUN canal de transparence "
+                  "(JPEG ou PNG opaque) et la clé est « alpha » : elle est donc OPAQUE PARTOUT. "
+                  "Remèdes : importer un PNG à fond transparent, choisir la clé « luma » ou "
+                  "« chroma », ou placer l'habillage EN DESSOUS des box.")
+        if "covers_all" in warn:
+            print(f"split: ATTENTION — l'habillage couvre tout le cadre (opacité moyenne "
+                  f"{{cover * 100:.0f}} %, trous transparents {{holes * 100:.1f}} %) ET il est posé "
+                  f"AU-DESSUS : il MASQUE les box (elles sont composées, puis recouvertes). Rien "
+                  f"n'est corrigé d'office (un fond plein cadre peut être voulu) : décochez "
+                  f"« au-dessus », changez de clé, ou baissez l'opacité.")
     except Exception as e:
         with _art_lock:
             _art["baked"] = None; _art["err"] = str(e)
+            _art["warn"] = []; _art["cover"] = None; _art["holes"] = None
         print(f"split: ART illisible — {{e}}")
 
 
@@ -2252,6 +2311,11 @@ while True:
                 "stamp_hit_rate": (round(_stamp_stats["hits"] / _tot, 3) if _tot else None),
                 "stamp_build_ms_total": round(_stamp_stats["build_ms"], 1),
                 "art": (_art.get("key") if _art.get("baked") is not None else None),
+                # Habillage : couverture opaque + avertissements (« il masque tout ») — visibles
+                # dans le monitoring, pas seulement dans le log du conteneur.
+                "art_cover": _art.get("cover"),
+                "art_holes": _art.get("holes"),
+                "art_warn": list(_art.get("warn") or []),
                 "budget_pct": _pct,
                 "over_budget": bool(_pct is not None and _pct > 100.0),
                 "rotated_boxes": _n_rot,

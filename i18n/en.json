@@ -162,5 +162,9 @@
   "plugin.split.mixed_short": "multiple values",
   "plugin.split.box_enable_one": "Show this box (per-box setting, never applied to the selection).",
   "plugin.split.box_src_one": "Source of this box (per-box setting, never applied to the selection).",
-  "plugin.split.multi_note": "Any setting changed below applies to ALL selected boxes. Position, size and z-order are carried over as an OFFSET (each box keeps its relative layout); appearance (crop, rotation, opacity, border, shadow…) is UNIFORMISED. A “≠” marks diverging values: as long as you don't touch that control, it is not overwritten. Source and activation stay per-box (“Boxes & background” column)."
+  "plugin.split.multi_note": "Any setting changed below applies to ALL selected boxes. Position, size and z-order are carried over as an OFFSET (each box keeps its relative layout); appearance (crop, rotation, opacity, border, shadow…) is UNIFORMISED. A “≠” marks diverging values: as long as you don't touch that control, it is not overwritten. Source and activation stay per-box (“Boxes & background” column).",
+  "plugin.split.art_w_noalpha": "This image has NO transparency channel (JPEG, or opaque PNG). With the “alpha” key it is therefore fully opaque and WILL HIDE the boxes. Fixes: import a PNG with a transparent background, pick the “luma” or “chroma” key, or place the artwork BELOW the boxes.",
+  "plugin.split.art_w_covers": "The artwork is opaque over NEARLY THE WHOLE frame and sits ABOVE: it completely covers the boxes (they are composed, then painted over). Uncheck “Above the boxes”, change the key, or lower the opacity.",
+  "plugin.split.art_w_cover_lbl": "average opacity",
+  "plugin.split.art_w_holes_lbl": "holes"
 }

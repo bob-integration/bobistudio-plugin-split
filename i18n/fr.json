@@ -162,5 +162,9 @@
   "plugin.split.mixed_short": "valeurs multiples",
   "plugin.split.box_enable_one": "Afficher cette box (réglage propre à cette box, jamais appliqué à la sélection).",
   "plugin.split.box_src_one": "Source de cette box (réglage propre à cette box, jamais appliqué à la sélection).",
-  "plugin.split.multi_note": "Tout réglage modifié ci-dessous s'applique à TOUTES les box sélectionnées. Position, taille et z-ordre sont reportés en DÉCALAGE (chaque box garde sa disposition relative) ; l'apparence (crop, rotation, opacité, bordure, ombre…) est UNIFORMISÉE. Un « ≠ » signale des valeurs divergentes : tant que vous ne touchez pas ce réglage, il n'est pas écrasé. La source et l'activation restent propres à chaque box (colonne « Box & fond »)."
+  "plugin.split.multi_note": "Tout réglage modifié ci-dessous s'applique à TOUTES les box sélectionnées. Position, taille et z-ordre sont reportés en DÉCALAGE (chaque box garde sa disposition relative) ; l'apparence (crop, rotation, opacité, bordure, ombre…) est UNIFORMISÉE. Un « ≠ » signale des valeurs divergentes : tant que vous ne touchez pas ce réglage, il n'est pas écrasé. La source et l'activation restent propres à chaque box (colonne « Box & fond »).",
+  "plugin.split.art_w_noalpha": "Cette image n'a AUCUN canal de transparence (JPEG, ou PNG opaque). Avec la clé « alpha », elle est donc entièrement opaque et MASQUERA les box. Remèdes : importer un PNG à fond transparent, choisir la clé « luma » ou « chroma », ou placer l'habillage EN DESSOUS des box.",
+  "plugin.split.art_w_covers": "L'habillage est opaque sur la QUASI-TOTALITÉ du cadre et il est posé AU-DESSUS : il recouvre intégralement les box (elles sont bien composées, puis effacées). Décochez « Au-dessus des box », changez de clé, ou baissez l'opacité.",
+  "plugin.split.art_w_cover_lbl": "opacité moyenne",
+  "plugin.split.art_w_holes_lbl": "trous"
 }

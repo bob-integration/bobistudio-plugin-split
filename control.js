@@ -890,6 +890,33 @@ ${!advanced ? '' : `<div id="split_adv">
         }
     }
 
+    // ─── Habillage : AVERTISSEMENTS (0.10.1) ────────────────────────────────────────
+    // ★ LE PIÈGE PAYÉ EN PROD : une photo SANS canal de transparence (JPEG, PNG opaque) importée
+    // avec la clé « alpha » est opaque PARTOUT ; posée AU-DESSUS, elle recouvre intégralement les
+    // 4 box. L'utilisateur voyait sa photo plein cadre, ses box « disparues », et RIEN ne le lui
+    // disait (le moteur cuisait l'image sans broncher). Le moteur publie désormais `art.warn`
+    // (`no_alpha`, `covers_all`), `art.has_alpha` et `art.cover` : on les AFFICHE, et on ne
+    // corrige RIEN d'office (un habillage plein cadre peut être voulu — c'est son choix, pas le
+    // nôtre : jamais de correction muette, jamais de contrôle muet).
+    function artWarnHtml(a) {
+        const w = (a && a.warn) || [];
+        if (!w.length) return '';
+        const pct = (a.cover == null) ? null : Math.round(a.cover * 100);
+        const out = [];
+        if (w.indexOf('no_alpha') >= 0) {
+            out.push(`<div class="alert alert-warning">⚠ ${esc(T('art_w_noalpha',
+                'Cette image n\'a AUCUN canal de transparence (JPEG, ou PNG opaque). Avec la clé « alpha », elle est donc entièrement opaque et MASQUERA les box. Remèdes : importer un PNG à fond transparent, choisir la clé « luma » ou « chroma », ou placer l\'habillage EN DESSOUS des box.'))}</div>`);
+        }
+        if (w.indexOf('covers_all') >= 0) {
+            const holes = (a.holes == null) ? null : Math.round(a.holes * 100);
+            const det = (pct == null) ? '' : ` (${T('art_w_cover_lbl', 'opacité moyenne')} ${pct} %` +
+                (holes == null ? '' : `, ${T('art_w_holes_lbl', 'trous')} ${holes} %`) + ')';
+            out.push(`<div class="alert alert-error">⚠ ${esc(T('art_w_covers',
+                'L\'habillage est opaque sur la QUASI-TOTALITÉ du cadre et il est posé AU-DESSUS : il recouvre intégralement les box (elles sont bien composées, puis effacées). Décochez « Au-dessus des box », changez de clé, ou baissez l\'opacité.'))}${esc(det)}</div>`);
+        }
+        return out.join('');
+    }
+
     // ─── Habillage (couche ART) ─────────────────────────────────────────────────────
     function renderArt() {
         const host = $('#split_art'); if (!host || !st) return;
@@ -924,6 +951,7 @@ ${!advanced ? '' : `<div id="split_adv">
   ${knobHtml({ target: 'art:opacity', label: T('k_art_op', 'Opacité'), min: 0, max: 1, step: 0.01, def: 1, unit: '' }, a.opacity)}
 </div>
 ${a.err ? `<div class="alert alert-error">${esc(a.err)}</div>` : ''}
+${artWarnHtml(a)}
 ${noImg ? `<p class="meta">${esc(T('art_need_img', 'Importez d\'abord une image d\'habillage : sans image, l\'incrustation n\'a pas d\'objet.'))}</p>` : ''}
 <p class="meta">${esc(T('art_note', 'Image importée (PNG/JPEG), pas une 6ᵉ entrée vidéo : un habillage vidéo live coûterait 21,7 ms/trame en 1080p (108 % du budget 50 fps). Un PNG à fond transparent + clé « alpha » est le cas le plus propre. L\'image n\'est pas persistée : à réimporter après un redéploiement du conteneur.'))}</p>`;
         $('#art_state').textContent = noImg ? T('art_none', 'Aucune image importée.')

@@ -68,6 +68,28 @@ dessous** des boxes, avec un **incrustateur** qui y perce des trous où se logen
   (fond vert/bleu), ou `none`. Réglages : `clip` (seuil), `gain`, `invert`, `opacity`.
 - Un PNG à fond transparent + clé `alpha` est le cas le plus simple et le plus propre.
 
+### ★ Le piège : « mes box ont disparu »
+
+Une **photo sans canal de transparence** (JPEG, ou PNG opaque) importée avec la clé **`alpha`**
+est **opaque partout** : le canal alpha vaut 255 sur tout le cadre, la clé ne perce **aucun
+trou**, et l'habillage — posé **au-dessus** — **recouvre intégralement les 4 boxes**. Elles sont
+bien composées… puis effacées. (Vécu en prod : « j'importe une photo, je l'ai bien, mais aucune
+box dessus ».)
+
+Depuis la **0.10.1**, le plugin **le dit** — il ne le corrige pas d'office (un fond plein cadre
+peut être voulu : c'est votre choix, pas le sien) :
+
+- à la **cuisson** de l'image, il mesure `has_alpha` (l'image a-t-elle un canal de
+  transparence ?), `cover` (opacité **moyenne** du masque) et `holes` (part réellement
+  transparente — c'est par là que les boxes se voient) ;
+- deux avertissements : **`no_alpha`** (image sans alpha + clé `alpha`) et **`covers_all`**
+  (aucun trou + forte opacité + habillage au-dessus) ;
+- affichés en **bandeau dans l'UI dès l'import**, loggés **une fois** (à la cuisson, jamais par
+  trame), et exposés sur `:8080` (`adv.art_cover`, `adv.art_holes`, `adv.art_warn`).
+
+**Remèdes** : importer un **PNG à fond transparent**, choisir la clé **`luma`** ou **`chroma`**,
+ou placer l'habillage **en dessous** des boxes.
+
 ## Bordure complète
 
 - `w` / `color` : le trait plat historique (inchangé).

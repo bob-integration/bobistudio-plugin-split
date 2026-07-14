@@ -1,7 +1,12 @@
 {
-  "version": "0.10.0",
+  "version": "0.10.1",
   "date": "2026-07-14",
   "changes": {
+    "★ Habillage OPAQUE qui efface les box : l'échec n'est plus SILENCIEUX (0.10.1)": [
+      "BUG D'USAGE REMONTÉ EN PROD (conteneur 598) : « je n'arrive pas à voir d'image dans une box ; si j'importe une photo, je l'ai bien, mais aucune box dessus ». Cause racine : une photo SANS canal de transparence (JPEG, ou PNG opaque) importée avec la clé « alpha » → convert(RGBA) fabrique un alpha à 255 PARTOUT → la clé ne découpe rien → l'habillage, posé AU-DESSUS, recouvre intégralement les 4 box. Le plugin acceptait l'image, effaçait toute la composition, et ne disait RIEN (anti-patron n°1 du projet).",
+      "_bake_art MESURE désormais ce qu'il vient de cuire : `has_alpha` (l'image a-t-elle un canal de transparence ?) et `cover` (part de la surface OPAQUE du masque), et lève deux avertissements — `no_alpha` (image sans alpha + clé « alpha ») et `covers_all` (masque opaque sur ≥ 99 % du cadre ET habillage au-dessus). Loggés à la cuisson (pas par trame), exposés sur :8080 (`adv.art_cover`, `adv.art_warn`), publiés dans /state (`art.warn/has_alpha/cover`) et renvoyés par POST /art → l'UI affiche un BANDEAU dès l'import, avec les trois remèdes (PNG transparent, clé luma/chroma, habillage EN DESSOUS).",
+      "★ RIEN N'EST CORRIGÉ D'OFFICE : on ne force pas `above=false`, on ne baisse pas l'opacité — un habillage plein cadre peut être voulu. On le DIT, on ne décide pas à sa place (jamais de contrôle muet, jamais de correction muette)."
+    ],
     "★ Noyau C (mvk) : la ROTATION passe SOUS le budget 1080p50 (0.10.0)": [
       "Le split était le DERNIER compositeur du projet resté en numpy pur. Ses passes de mode avancé sont memory-bound (gather 2D de la boîte englobante, ruban de bordure, blend alpha : une passe mémoire chacune). Profil AVANT (banc nœud 30, 1080p, 4 boxes, yuv422p 8 bits) : rotation = 7,1 ms/box, dont gather 3,6 ms (np.take sur la carte d'index) et blends 3,5 ms.",
       "Les trois call-sites chauds passent par les kernels mvk_spl_* (libbobi_mvk, ABI 4, image bobi-compute ≥ 0.15) : gather ⊗ ruban ⊗ blend en UNE passe (mvk_spl_compose), chemin pré-fusionné du stamp (mvk_spl_fused), ombre portée (mvk_spl_solid). Mesuré 1080p, 4 boxes, min sur 40 trames : rotation 38,6 → 8,4 ms, bordure 29,5 → 4,7 ms, opacité 16,1 → 2,6 ms, coins 9,7 → 3,1 ms, adoucissement 8,0 → 3,1 ms, ombre 6,6 → 3,0 ms, TOUT 58,1 → 11,2 ms. ⇒ la ROTATION TIENT le budget 1080p50 (20 ms) : elle est ré-ouverte dans l'UI (l'avertissement « hors budget » ne vise plus qu'une rotation ANIMÉE en transition, cf. ci-dessous).",
