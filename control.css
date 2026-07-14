@@ -151,11 +151,16 @@
     background: var(--status-stopped-bg); color: var(--status-stopped-fg); border-color: var(--status-stopped-fg);
 }
 
-/* ── Corps : scène (canvas) + panneau de réglages ────────────────────────── */
-.split-cols { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--space-4); align-items: start; }
-@media (max-width: 1080px) { .split-cols { grid-template-columns: 1fr; } }
+/* ── Étage 1 : APERÇU compact + cible d'édition (box & fond) à sa droite ──
+   Patron de l'éditeur de PiP (.pip-compose) : minmax(0,1fr) + colonne fixe, repli en une
+   colonne sous 1100 px. L'aperçu est PLAFONNÉ en largeur (il sert à viser, pas à remplir
+   l'écran) : c'est ce qui libère la hauteur pour les réglages, qui passent en pleine largeur
+   juste en dessous — exactement le patron de la bibliothèque de modèles de PiP sortie de son
+   aside (`.pip-lib-full` + grille `auto-fill`). */
+.split-cols { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: var(--space-4); align-items: start; }
+@media (max-width: 1100px) { .split-cols { grid-template-columns: 1fr; } }
 .split-stage { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
-.split-canvas-wrap { position: relative; width: 100%; }
+.split-canvas-wrap { position: relative; width: 100%; max-width: 620px; }
 #split_canvas {
     display: block; width: 100%; aspect-ratio: 16 / 9;
     background: var(--canvas-bg, var(--bg));
@@ -164,8 +169,38 @@
 }
 #split_canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* Bande des 4 box : sélection + activation + source */
-.split-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: var(--space-2); }
+/* Colonne de droite : sélecteur de cible d'édition (les 4 box + le fond) */
+.split-targets {
+    background: var(--bg-elev); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: var(--space-3); min-width: 0;
+}
+.split-targets > h4 {
+    margin: 0 0 var(--space-2); font-size: 0.78em; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--text-muted); font-weight: 600;
+}
+.split-bg-field { margin-top: var(--space-3); }
+/* Bande des box : une par ligne dans la colonne (elle s'étale en grille si la colonne
+   passe pleine largeur au repli responsive). */
+.split-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-2); }
+
+/* ── Étage 2 : réglages PLEINE LARGEUR, en grille responsive ──────────────
+   Les sections empilées du correcteur de couleur restent la structure : elles se
+   RÉPARTISSENT simplement en colonnes au lieu d'être écrasées dans une colonne étroite
+   (c'était le motif du défilement sans fin). */
+.split-wide {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 0 var(--space-5); align-items: start;
+}
+@media (max-width: 1100px) { .split-wide { grid-template-columns: 1fr; } }
+/* Élements qui doivent tenir toute la largeur de la grille (en-tête de box, bascule
+   « mode avancé », mémoires). */
+.split-wide > .split-props-head,
+.split-wide > .cc-adv-toggle-row,
+.split-wide > .split-full { grid-column: 1 / -1; }
+/* Une section par colonne : le filet de séparation horizontal du correcteur n'a plus de sens
+   en grille multi-colonnes → il devient le filet du HAUT de chaque carte de section. */
+.split-wide > .cc-section { border-top: 1px solid var(--border-soft); padding-top: var(--space-3); }
+.split-wide > .cc-section:first-of-type { padding-top: var(--space-3); }
 .split-chip {
     display: flex; flex-direction: column; gap: var(--space-1);
     padding: var(--space-2);
@@ -179,14 +214,9 @@
 .split-chip-dot { width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; }
 .split-chip-name { flex: 1; min-width: 0; }
 
-/* Panneau de réglages (conteneur = même surface que l'éditeur multiview) */
-.split-props {
-    background: var(--bg-elev); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: var(--space-4); min-width: 0;
-}
-.split-props-head { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-3); }
+/* En-tête du bloc de réglages (quelle box on édite) — pleine largeur au-dessus de la grille. */
+.split-props-head { display: flex; align-items: center; gap: var(--space-2); margin: var(--space-3) 0 0; }
 .split-props-head h3 { margin: 0; font-size: 1em; font-weight: 600; color: var(--text-strong); }
-.split-pane[hidden] { display: none; }
 
 /* Champs (mêmes valeurs que .mw-editor .field — référence des champs du projet) */
 .split-ui .field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }

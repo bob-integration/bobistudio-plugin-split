@@ -480,34 +480,48 @@ window.MXLPlugins.split = (function () {
 <div class="split-ui">
   <div id="split-error-slot"></div>
   <div class="split-toolbar" id="split_toolbar"></div>
+
+  <!-- Étage 1 : APERÇU (compact) + cible d'édition (les 4 box et le fond) à sa droite.
+       Même patron que l'éditeur de PiP : une grille minmax(0,1fr) + colonne fixe, qui se replie
+       en une colonne sous 1100 px. L'aperçu est volontairement PLAFONNÉ en largeur : il sert à
+       viser, pas à occuper l'écran — les réglages, eux, passent en dessous sur TOUTE la largeur. -->
   <div class="split-cols">
     <div class="split-stage">
       <div class="split-canvas-wrap"><canvas id="split_canvas" tabindex="0"
            aria-label="${esc(T('canvas_aria', 'Composition des box'))}"></canvas></div>
+      <p class="cc-hint">${T('hint', 'Cliquer une box pour la sélectionner · <kbd>Maj</kbd>+clic = multi-sélection · glisser = déplacer · coin bas-droit = taille · arêtes = crop · <kbd>←↑→↓</kbd> = 1 px (contourne le magnétisme), <kbd>Maj</kbd> = 10 px.')}</p>
+    </div>
+    <aside class="split-targets">
+      <h4>${esc(T('targets', 'Box & fond'))}</h4>
       <div class="split-strip" id="split_strip"></div>
-      <div class="field" style="max-width:340px">
+      <div class="field split-bg-field">
         <label for="split_bg">${esc(T('bg', 'Fond (plein cadre)'))}</label>
         <select id="split_bg">${srcOptions(inputs[4])}</select>
       </div>
-      <p class="cc-hint">${T('hint', 'Cliquer une box pour la sélectionner · <kbd>Maj</kbd>+clic = multi-sélection · glisser = déplacer · coin bas-droit = taille · arêtes = crop · <kbd>←↑→↓</kbd> = 1 px (contourne le magnétisme), <kbd>Maj</kbd> = 10 px.')}</p>
-    </div>
-    <aside class="split-props" id="split_props"></aside>
+    </aside>
   </div>
-  <div id="split_art"></div>
-  <div id="split_look"></div>
-  <div class="cc-section" id="split_mem">
-    <h4>${esc(T('memories', 'Mémoires'))}</h4>
-    <ul class="split-mem-list" id="split_mem_list"></ul>
-    <div class="row split-mem-bar">
-      <div class="field"><label for="split_mem_name">${esc(T('mem_name', 'Nom'))}</label>
-        <input type="text" id="split_mem_name" placeholder="${esc(T('mem_name_ph', 'Nom de la mémoire'))}"></div>
-      <div class="field"><label for="split_recall_dur">${esc(T('mem_duration', 'Transition (ms)'))}</label>
-        <input type="number" id="split_recall_dur" min="0" max="10000" step="100" value="1000"></div>
-      <button type="button" class="btn btn-green" id="split_mem_save">${esc(T('mem_save', 'Enregistrer la disposition'))}</button>
-      <button type="button" class="btn" id="split_mem_import">${esc(T('mem_import', 'Importer un fichier'))}</button>
-      <input type="file" id="split_mem_file" accept="application/json,.json" hidden>
+
+  <!-- Étage 2 : TOUS les réglages, PLEINE LARGEUR, en grille responsive (patron de la
+       bibliothèque de modèles de PiP sortie de son aside). Les sections empilées du correcteur
+       de couleur restent la structure — elles se répartissent simplement en colonnes. -->
+  <div class="split-wide" id="split_props"></div>
+  <div class="split-wide">
+    <div id="split_art"></div>
+    <div id="split_look"></div>
+    <div class="cc-section split-full" id="split_mem">
+      <h4>${esc(T('memories', 'Mémoires'))}</h4>
+      <ul class="split-mem-list" id="split_mem_list"></ul>
+      <div class="row split-mem-bar">
+        <div class="field"><label for="split_mem_name">${esc(T('mem_name', 'Nom'))}</label>
+          <input type="text" id="split_mem_name" placeholder="${esc(T('mem_name_ph', 'Nom de la mémoire'))}"></div>
+        <div class="field"><label for="split_recall_dur">${esc(T('mem_duration', 'Transition (ms)'))}</label>
+          <input type="number" id="split_recall_dur" min="0" max="10000" step="100" value="1000"></div>
+        <button type="button" class="btn btn-green" id="split_mem_save">${esc(T('mem_save', 'Enregistrer la disposition'))}</button>
+        <button type="button" class="btn" id="split_mem_import">${esc(T('mem_import', 'Importer un fichier'))}</button>
+        <input type="file" id="split_mem_file" accept="application/json,.json" hidden>
+      </div>
+      <p class="cc-hint">${esc(T('mem_note', 'Le rappel utilise la courbe et le décalage réglés dans « Lumière & transitions ».'))}</p>
     </div>
-    <p class="cc-hint">${esc(T('mem_note', 'Le rappel utilise la courbe et le décalage réglés dans « Lumière & transitions ».'))}</p>
   </div>
 </div>`;
 
@@ -1071,9 +1085,14 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         drawGuides(ctx, CW, CH, css);
         redrawSidebar();
     }
+    // Pointeur → coordonnées du canvas. ★ On rapporte TOUJOURS à la résolution interne
+    // (cv.width/height) via le facteur rect→buffer : l'aperçu est désormais plafonné en largeur
+    // par la CSS, et un mapping qui supposerait « 1 px écran = 1 px canvas » se décalerait dès
+    // que la taille d'affichage diffère du buffer (redimensionnement, zoom navigateur, DPI).
     function canvasPos(e) {
         const cv = $('#split_canvas'), rect = cv.getBoundingClientRect();
-        return { px: e.clientX - rect.left, py: e.clientY - rect.top, CW: cv.width, CH: cv.height };
+        const sx = cv.width / (rect.width || 1), sy = cv.height / (rect.height || 1);
+        return { px: (e.clientX - rect.left) * sx, py: (e.clientY - rect.top) * sy, CW: cv.width, CH: cv.height };
     }
     const EDGE_PX = 7;
     const CURSOR = { move: 'move', resize: 'nwse-resize', 'crop-l': 'ew-resize', 'crop-r': 'ew-resize', 'crop-t': 'ns-resize', 'crop-b': 'ns-resize' };

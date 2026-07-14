@@ -150,5 +150,6 @@
   "plugin.split.k_gain": "Gain",
   "plugin.split.k_art_op": "Opacité",
   "plugin.split.light_err": "Réglage de lumière refusé",
-  "plugin.split.input_err": "Câblage refusé"
+  "plugin.split.input_err": "Câblage refusé",
+  "plugin.split.targets": "Box & fond"
 }

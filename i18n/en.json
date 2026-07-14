@@ -150,5 +150,6 @@
   "plugin.split.k_gain": "Gain",
   "plugin.split.k_art_op": "Opacity",
   "plugin.split.light_err": "Light setting rejected",
-  "plugin.split.input_err": "Wiring rejected"
+  "plugin.split.input_err": "Wiring rejected",
+  "plugin.split.targets": "Boxes & background"
 }
