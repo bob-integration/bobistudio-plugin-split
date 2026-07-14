@@ -317,6 +317,8 @@
     color: var(--accent); border: 1px solid var(--accent); border-radius: 999px;
     padding: 1px 8px; margin-left: 8px; vertical-align: middle;
 }
-#split_global.is-flash { outline: 2px solid var(--accent); outline-offset: 3px; }
+/* Le chip Global est un SÉLECTEUR DE CIBLE (comme une box) : sélectionné = même liseré d'accent
+   que la sélection d'une box ; « actif » = le calque n'est pas neutre (état, pas sélection). */
+.split-chip-global.is-sel { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* Fond : les champs du mode courant seulement (les autres sont masqués par bindBg). */
 .split-bg-legal { margin-top: var(--space-1); }

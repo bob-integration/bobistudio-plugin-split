@@ -30,6 +30,11 @@ window.MXLPlugins.split = (function () {
     let EL = null, VMID = null, TOAST = () => {};
     let st = null, caps = null, boxes = null, inputs = ['', '', '', '', ''];
     let sel = [], clipboard = null, advanced = false, errorMsg = null;
+    // ★ CIBLE DU PANNEAU DE RÉGLAGES (0.12.1) : une box, plusieurs box, OU le canal Global. Le
+    // Global est un ÉLÉMENT SÉLECTIONNABLE COMME UN AUTRE — il n'a donc PAS de panneau à lui :
+    // il réutilise LE panneau (mêmes cadrans, mêmes libellés, mêmes pas, mêmes steppers). Les
+    // réglages qui ne le concernent pas sont MASQUÉS (et on dit pourquoi, une fois, en tête).
+    let selGlobal = false;
     let sources = [], containers = [], memCache = [], adv = null, metricsErr = false;
     let drag = null, knobDrag = null, boxPostTimer = null, persistTimer = null, pollTimer = null, metTimer = null;
     // Snap magnétique — transposé de l'éditeur de PiP : mêmes cibles (bords + centre du cadre,
@@ -612,7 +617,6 @@ window.MXLPlugins.split = (function () {
        de couleur restent la structure — elles se répartissent simplement en colonnes. -->
   <div class="split-wide" id="split_props"></div>
   <div class="split-wide">
-    <div id="split_global"></div>
     <div id="split_art"></div>
     <div id="split_look"></div>
     <div class="cc-section split-full" id="split_mem">
@@ -677,20 +681,7 @@ window.MXLPlugins.split = (function () {
         $('#split_mem_import').onclick = () => $('#split_mem_file').click();
         $('#split_mem_file').onchange = function () { onImportMemFile(this); };
 
-        renderGlobal(); bindBg(); renderArt(); renderLook(); syncAll(); updateBudget(); renderError();
-        // Le chip « Global » amène au panneau du calque (et dit s'il est actif).
-        const gc = $('#split_global_chip');
-        if (gc) {
-            const on = !gNeutral(gGet());
-            gc.setAttribute('aria-pressed', on ? 'true' : 'false');
-            gc.classList.toggle('is-on', on);
-            const stt = $('#split_global_state');
-            if (stt) stt.textContent = on ? T('global_on', 'actif') : T('global_off', 'neutre');
-            gc.onclick = () => {
-                const p = $('#split_global');
-                if (p) { p.scrollIntoView({ behavior: 'smooth', block: 'center' }); p.classList.add('is-flash'); setTimeout(() => p.classList.remove('is-flash'), 900); }
-            };
-        }
+        bindBg(); renderArt(); renderLook(); syncAll(); updateBudget(); renderError();
     }
 
     // ─── Bande des box ──────────────────────────────────────────────────────────────
@@ -725,6 +716,7 @@ window.MXLPlugins.split = (function () {
         });
     }
     function selectBox(i, additive) {
+        selGlobal = false;                      // sélectionner une box quitte le canal Global
         if (additive) {
             sel = sel.includes(i) ? sel.filter(x => x !== i) : sel.concat([i]);
             if (!sel.length) sel = [i];
@@ -809,6 +801,7 @@ window.MXLPlugins.split = (function () {
     // bascule « mode avancé ». Bonus : plus de contenu caché derrière un onglet qu'on ne voit pas.
     function renderProps() {
         const host = $('#split_props'); if (!host) return;
+        if (selGlobal) { renderPropsGlobal(host); return; }   // même panneau, autre cible
         const i = primary();
         if (i < 0 || !boxes[i]) { host.innerHTML = `<p class="meta">${esc(T('no_sel', 'Aucune box sélectionnée.'))}</p>`; return; }
         const b = boxes[i];
@@ -968,6 +961,43 @@ ${!advanced ? '' : `<div id="split_adv">
         }
     }
 
+    // ─── LE MÊME PANNEAU, CIBLE = CANAL GLOBAL ──────────────────────────────────────
+    // ★ Aucun composant maison : ce sont les cadrans du panneau des box (knobHtml/bindKnobs),
+    // les bornes et les pas viennent de /state.caps.global_fields, les steppers −/+ globaux
+    // s'y posent tout seuls, et le double-clic sur un cadran remet la valeur par défaut (c'est
+    // le « remettre à neutre » du système — le bouton dédié de la 0.12.0 faisait DOUBLON : retiré).
+    // Les réglages qui ne s'appliquent pas au Global sont MASQUÉS — mais on DIT pourquoi, une
+    // fois, en tête de panneau (les faire disparaître sans un mot, c'est l'échec silencieux).
+    function renderPropsGlobal(host) {
+        const g = gGet();
+        const rw = rotationWarning();
+        const K = (key, label, unit, shape) => {
+            const [min, max, dflt] = cap('global_fields', key);
+            return knobHtml({ target: 'glob:' + key, label, min, max, step: stepOf(min, max),
+                              def: (dflt == null ? 0 : dflt), unit, shape }, g[key]);
+        };
+        host.innerHTML = `
+<div class="split-props-head">
+  <span class="split-chip-dot split-dot-global"></span>
+  <h3>${esc(T('global', 'Global (groupe)'))}</h3>
+  ${!gNeutral(g) ? `<span class="split-badge-on">${esc(T('global_on', 'actif'))}</span>` : ''}
+</div>
+<p class="meta split-full">${esc(T('global_scope', 'Le Global transforme le GROUPE : il se compose par-dessus les réglages de chaque box (rendu = Global ∘ box), sans en écraser aucun — les box gardent leurs positions relatives. C\'est ce qui permet de faire entrer ou sortir tout le groupe du cadre. Les attributs de BORD d\'une box (crop, adoucissement, coins, bordure, biseau, ombre, miroir, ratio) et ce qui est propre à une box (source, activation, z-ordre) ne s\'appliquent donc pas à lui : ils ne sont pas affichés ici.'))}</p>
+<div class="cc-section">
+  <h4>${esc(T('g_sec_geo', 'Transformation du groupe'))}</h4>
+  <div class="cc-knob-row">
+    ${K('dx', T('g_dx', 'Décal. X'), '', '')}
+    ${K('dy', T('g_dy', 'Décal. Y'), '', '')}
+    ${K('scale', T('g_scale', 'Échelle'), '×', '')}
+    ${K('rotation', T('g_rot', 'Rotation'), '°', 'angle')}
+    ${K('opacity', T('g_op', 'Opacité'), '%', '')}
+  </div>
+  ${rw ? `<div class="alert ${rw.cls}">${esc(rw.msg)}</div>` : ''}
+  <p class="meta">${esc(T('g_hint', 'Double-clic sur un cadran = valeur par défaut (le Global redevient neutre réglage par réglage). Il est enregistré dans les mémoires et interpolé pendant les transitions. Coût mesuré : nul — il est replié dans l\'empreinte de chaque box. Tant qu\'il n\'est pas neutre, le magnétisme du canvas est désactivé (aimanter dans un repère tourné donnerait des guides faux).'))}</p>
+</div>`;
+        bindKnobs(host);
+    }
+
     // ─── FOND : mode (noir / source / couleur) ──────────────────────────────────────
     // Les modes viennent de /state.caps.bg_modes (rien en dur). La couleur est saisie en sRGB
     // (hex) : c'est le MOTEUR qui la convertit — à SA profondeur (8/10/12 bits) et à SA
@@ -1015,34 +1045,6 @@ ${!advanced ? '' : `<div id="split_adv">
         renderShell();
     }
 
-    // ─── CANAL GLOBAL : panneau de réglages (cadrans, bornes issues de caps.global_fields) ──
-    function renderGlobal() {
-        const host = $('#split_global'); if (!host || !st) return;
-        const g = gGet(), on = !gNeutral(g);
-        host.className = 'cc-section';
-        const K = (key, label, unit, shape) => {
-            const [min, max, dflt] = cap('global_fields', key);
-            return knobHtml({ target: 'glob:' + key, label, min, max, step: stepOf(min, max),
-                              def: (dflt == null ? 0 : dflt), unit, shape }, g[key]);
-        };
-        host.innerHTML = `
-<h4>${esc(T('global_sec', 'Canal Global (transformation du groupe)'))}
-  ${on ? `<span class="split-badge-on">${esc(T('global_on', 'actif'))}</span>` : ''}</h4>
-<div class="cc-knob-row">
-  ${K('dx', T('g_dx', 'Décal. X'), '', '')}
-  ${K('dy', T('g_dy', 'Décal. Y'), '', '')}
-  ${K('scale', T('g_scale', 'Échelle'), '×', '')}
-  ${K('rotation', T('g_rot', 'Rotation'), '°', 'angle')}
-  ${K('opacity', T('g_op', 'Opacité'), '%', '')}
-</div>
-<div class="row">
-  <button type="button" class="btn" id="split_g_reset">${esc(T('g_reset', 'Remettre le Global à neutre'))}</button>
-</div>
-<p class="meta">${esc(T('global_note', 'Le Global se COMPOSE par-dessus les réglages de chaque box (rendu = Global ∘ box) : il ne remplace aucune valeur individuelle — les box gardent leurs positions relatives. C\'est ce qui permet de faire ENTRER ou SORTIR tout le groupe du cadre (les box peuvent sortir du cadre : la marge autour de l\'aperçu est là pour ça). Il est enregistré dans les mémoires et interpolé pendant les transitions. Coût mesuré : nul (il est replié dans l\'empreinte de chaque box). Quand il n\'est pas neutre, le magnétisme est désactivé (aimanter dans un repère tourné donnerait des guides faux).'))}</p>`;
-        const rb = $('#split_g_reset');
-        if (rb) rb.onclick = () => postGlobal({ dx: 0, dy: 0, scale: 1, rotation: 0, opacity: 100 });
-        bindKnobs(host);
-    }
     async function postGlobal(patch) {
         if (VMID == null) return;
         if (st) st.global = Object.assign({}, gGet(), patch);   // aperçu immédiat
@@ -1744,7 +1746,20 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         set('split_paste', !clipboard || !sel.length, T('paste_need_clip', 'Copiez d\'abord les réglages d\'une box.'));
         if (sel.length >= 2) { const b = $('#split_size_w'); if (b) b.title = T('size_w', 'Même largeur que la référence'); }
     }
-    function syncAll() { renderStrip(); renderProps(); renderGlobal(); bindBg(); updateToolbar(); drawCanvas(); }
+    function syncAll() { renderStrip(); renderProps(); renderChipGlobal(); bindBg(); updateToolbar(); drawCanvas(); }
+
+    // Le chip « Global » est un SÉLECTEUR DE CIBLE, exactement comme une box : il SÉLECTIONNE le
+    // canal (le panneau de réglages bascule dessus). Il dit aussi son état — neutre ou actif.
+    function renderChipGlobal() {
+        const gc = $('#split_global_chip'); if (!gc) return;
+        const on = !gNeutral(gGet());
+        gc.classList.toggle('is-on', on);
+        gc.classList.toggle('is-sel', selGlobal);
+        gc.setAttribute('aria-pressed', selGlobal ? 'true' : 'false');
+        const stt = $('#split_global_state');
+        if (stt) stt.textContent = on ? T('global_on', 'actif') : T('global_off', 'neutre');
+        gc.onclick = () => { selGlobal = true; syncAll(); };
+    }
     function onResize() { if (EL && $('#split_canvas')) drawCanvas(); }
 
     // ─── Mini-aperçu de la sidebar Traitements ──────────────────────────────────────

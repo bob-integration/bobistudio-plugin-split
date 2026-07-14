@@ -169,14 +169,12 @@
   "plugin.split.global_on": "active",
   "plugin.split.global_off": "neutral",
   "plugin.split.global_tip": "GLOBAL channel: a transform layer applied ON TOP of each box's own settings (group offset, scale, rotation, opacity). It does not replace the boxes' values — it composes with them. This is what makes whole-group entries and exits from frame possible.",
-  "plugin.split.global_note": "The Global COMPOSES on top of each box's settings (render = Global ∘ box): it replaces no individual value — boxes keep their relative positions. This is what lets the whole group ENTER or LEAVE the frame (boxes may go outside the frame: that is what the margin around the preview is for). It is stored in memories and interpolated during transitions. Measured cost: none (it folds into each box's stamp). While it is not neutral, snapping is disabled (snapping in a rotated frame would draw lying guides).",
   "plugin.split.global_err": "Global rejected",
   "plugin.split.g_dx": "Offset X",
   "plugin.split.g_dy": "Offset Y",
   "plugin.split.g_scale": "Scale",
   "plugin.split.g_rot": "Rotation",
   "plugin.split.g_op": "Opacity",
-  "plugin.split.g_reset": "Reset Global to neutral",
   "plugin.split.bg_mode": "Background (full frame)",
   "plugin.split.bg_src": "Background source",
   "plugin.split.bg_color": "Background colour",
@@ -190,5 +188,8 @@
   "plugin.split.bg_err": "Background rejected",
   "plugin.split.bg_w_nosrc": "Background is set to “video source” but no source is wired: the background will be BLACK. Pick a source above, or switch the background to black/colour.",
   "plugin.split.bg_w_clip": "Colour OUTSIDE the legal (broadcast) range: it was clipped to the encodable range. Uncheck “Legal range” to encode it full-range (at the risk of clipping downstream).",
-  "plugin.split.rot_anim": "ANIMATED rotation (a transition, or dragging the dial) is over budget in this format: the 2D maps are rebuilt every frame (~53 ms at 1080p). At REST, rotation costs almost nothing (C kernel)."
+  "plugin.split.rot_anim": "ANIMATED rotation (a transition, or dragging the dial) is over budget in this format: the 2D maps are rebuilt every frame (~53 ms at 1080p). At REST, rotation costs almost nothing (C kernel).",
+  "plugin.split.global_scope": "The Global transforms the GROUP: it composes on top of each box's settings (render = Global ∘ box) without overwriting any of them — boxes keep their relative positions. That is what lets the whole group enter or leave the frame. A box's EDGE attributes (crop, feather, corners, border, bevel, shadow, mirror, aspect) and what belongs to a single box (source, enable, z-order) therefore do not apply to it: they are not shown here.",
+  "plugin.split.g_sec_geo": "Group transform",
+  "plugin.split.g_hint": "Double-click a dial = default value (the Global returns to neutral, setting by setting). It is stored in memories and interpolated during transitions. Measured cost: none — it folds into each box's stamp. While it is not neutral, canvas snapping is disabled (snapping in a rotated frame would draw lying guides)."
 }

@@ -169,14 +169,12 @@
   "plugin.split.global_on": "actif",
   "plugin.split.global_off": "neutre",
   "plugin.split.global_tip": "Canal GLOBAL : un calque de transformation appliqué PAR-DESSUS les réglages de chaque box (décalage, échelle, rotation, opacité du groupe). Il ne remplace pas les valeurs des box — il s'y compose. C'est lui qui permet les entrées/sorties de champ de tout le groupe.",
-  "plugin.split.global_note": "Le Global se COMPOSE par-dessus les réglages de chaque box (rendu = Global ∘ box) : il ne remplace aucune valeur individuelle — les box gardent leurs positions relatives. C'est ce qui permet de faire ENTRER ou SORTIR tout le groupe du cadre (les box peuvent sortir du cadre : la marge autour de l'aperçu est là pour ça). Il est enregistré dans les mémoires et interpolé pendant les transitions. Coût mesuré : nul (il est replié dans l'empreinte de chaque box). Quand il n'est pas neutre, le magnétisme est désactivé (aimanter dans un repère tourné donnerait des guides faux).",
   "plugin.split.global_err": "Global refusé",
   "plugin.split.g_dx": "Décal. X",
   "plugin.split.g_dy": "Décal. Y",
   "plugin.split.g_scale": "Échelle",
   "plugin.split.g_rot": "Rotation",
   "plugin.split.g_op": "Opacité",
-  "plugin.split.g_reset": "Remettre le Global à neutre",
   "plugin.split.bg_mode": "Fond (plein cadre)",
   "plugin.split.bg_src": "Source du fond",
   "plugin.split.bg_color": "Couleur du fond",
@@ -190,5 +188,8 @@
   "plugin.split.bg_err": "Fond refusé",
   "plugin.split.bg_w_nosrc": "Fond « source vidéo » mais aucune source câblée : le fond sera NOIR. Choisissez une source ci-dessus, ou passez le fond en noir/couleur.",
   "plugin.split.bg_w_clip": "Couleur HORS de la plage légale (broadcast) : elle a été écrêtée à la plage encodable. Décochez « Plage légale » pour l'encoder en plage complète (au risque d'un écrêtage en aval).",
-  "plugin.split.rot_anim": "Rotation ANIMÉE (transition, ou curseur qu'on fait glisser) hors budget dans ce format : les cartes 2D se reconstruisent à chaque trame (~53 ms en 1080p). À l'ARRÊT, la rotation ne coûte presque rien (noyau C)."
+  "plugin.split.rot_anim": "Rotation ANIMÉE (transition, ou curseur qu'on fait glisser) hors budget dans ce format : les cartes 2D se reconstruisent à chaque trame (~53 ms en 1080p). À l'ARRÊT, la rotation ne coûte presque rien (noyau C).",
+  "plugin.split.global_scope": "Le Global transforme le GROUPE : il se compose par-dessus les réglages de chaque box (rendu = Global ∘ box), sans en écraser aucun — les box gardent leurs positions relatives. C'est ce qui permet de faire entrer ou sortir tout le groupe du cadre. Les attributs de BORD d'une box (crop, adoucissement, coins, bordure, biseau, ombre, miroir, ratio) et ce qui est propre à une box (source, activation, z-ordre) ne s'appliquent donc pas à lui : ils ne sont pas affichés ici.",
+  "plugin.split.g_sec_geo": "Transformation du groupe",
+  "plugin.split.g_hint": "Double-clic sur un cadran = valeur par défaut (le Global redevient neutre réglage par réglage). Il est enregistré dans les mémoires et interpolé pendant les transitions. Coût mesuré : nul — il est replié dans l'empreinte de chaque box. Tant qu'il n'est pas neutre, le magnétisme du canvas est désactivé (aimanter dans un repère tourné donnerait des guides faux)."
 }
