@@ -81,7 +81,49 @@ GENLOCK = _gl if isinstance(_gl, bool) else str(_gl).strip().lower() in ("1", "t
 ALIGN_BUDGET = max(0, int(CONFIG.get("align_budget", 1)))
 N_BOXES  = 4
 N_INPUTS = 5                       # slots 0..3 = boxes, 4 = fond
-INITIAL_BOX_CONFIG = CONFIG.get("box_config") or []
+
+# ═════════════════════════════════════════════════════════════════════════════════════════════
+#  ★ OPACITÉ EN POURCENT (0-100) — UNE SEULE UNITÉ, celle qu'on AFFICHE (0.12.0)
+#
+#  Le moteur parlait en fraction (0..1) : illisible à l'écran, et pénible au stepper (pas de
+#  0,01). L'unité du MOTEUR devient le POURCENT — box, ombre, habillage, canal Global — et
+#  `/state.caps` l'expose (0..100, pas de 1) : l'UI ne convertit RIEN, il n'y a pas deux vérités.
+#  La conversion % → fraction se fait à UN SEUL endroit : le point d'usage du compositing.
+#
+#  ★ LA MIGRATION N'EST PAS IDEMPOTENTE PAR NATURE : un `1.0` persisté veut dire « opaque » en
+#  ancienne unité et « 1 % » en nouvelle — aucune heuristique ne lève l'ambiguïté. On ne devine
+#  donc pas : un MARQUEUR tranche. `opacity_unit: "pct"` = déjà en pourcent ; absent = ancienne
+#  unité → ×100 UNE FOIS, au boot. Le hook de persistance réécrit le marqueur → jamais deux fois.
+OPACITY_UNIT = str(CONFIG.get("opacity_unit") or "").strip().lower()
+
+
+def _mig_op(v, dflt):
+    try:
+        f = float(v)
+    except Exception:
+        return dflt
+    return f if OPACITY_UNIT == "pct" else f * 100.0
+
+
+def _migrate_boxes_opacity(boxes):
+    if OPACITY_UNIT == "pct" or not boxes:
+        return boxes or []
+    out = []
+    for b in boxes:
+        b = dict(b or {{}})
+        if "opacity" in b:
+            b["opacity"] = _mig_op(b["opacity"], 100.0)
+        sh = dict(b.get("shadow") or {{}})
+        if "opacity" in sh:
+            sh["opacity"] = _mig_op(sh["opacity"], 50.0)
+            b["shadow"] = sh
+        out.append(b)
+    print("split: opacités migrées de la fraction (0..1) vers le POURCENT (0-100) — unité unique "
+          "moteur+UI (marqueur opacity_unit=pct persisté au prochain sync)")
+    return out
+
+
+INITIAL_BOX_CONFIG = _migrate_boxes_opacity(CONFIG.get("box_config") or [])
 # Entrées persistées par slot (state_field input_0..3 + bg_input) → re-câblage au boot
 _INIT_SLOT_SHM = [CONFIG.get("input_0"), CONFIG.get("input_1"),
                   CONFIG.get("input_2"), CONFIG.get("input_3"), CONFIG.get("bg_input")]
@@ -184,6 +226,207 @@ def _f(v, lo, hi, dflt):
     except Exception:
         return dflt
 
+
+# ═════════════════════════════════════════════════════════════════════════════════════════════
+#  CANAL GLOBAL (0.12.0) — un CALQUE DE TRANSFORMATION, pas une commodité d'édition
+#
+#  ★ NE PAS CONFONDRE AVEC LA MULTI-SÉLECTION. La multi-sélection ÉCRIT N valeurs dans N box :
+#  elle ÉCRASE les réglages individuels. Le Global, lui, est un objet À PART, persistant, qui se
+#  COMPOSE par-dessus les réglages propres de chaque box :
+#
+#        rendu(box i) = Global ∘ box_i
+#
+#  Chaque box garde SES x/y/taille/rotation/opacité ; le Global apporte SA transformation
+#  (décalage, échelle, rotation, opacité). ⇒ toute la composition sort du cadre d'un bloc,
+#  chaque box gardant sa position RELATIVE — c'est l'« animation de groupe », impossible avec
+#  une multi-édition (qui, elle, écraserait les valeurs individuelles).
+#
+#  ★ COÛT : ZÉRO PASSE SUPPLÉMENTAIRE. La transformation est REPLIÉE dans la géométrie de chaque
+#  box AVANT le rendu (quelques flottants par box et par trame, dans _plan_layers) — elle finit
+#  donc dans le STAMP de la box, comme n'importe quel réglage. Surtout PAS une seconde passe
+#  plein cadre : on a déjà mesuré ce que coûte une passe pleine trame (l'ART en source VIVE :
+#  21,7 ms/trame en 1080p, 108 % du budget 50 fps À ELLE SEULE).
+#
+#  CHAMPS RETENUS (et pourquoi PAS les autres) : dx/dy (décalage), scale (échelle), rotation,
+#  opacity — les 4 grandeurs qui ont un sens pour un GROUPE et qui se composent proprement.
+#  Volontairement ÉCARTÉS : miroir (un miroir de groupe échange la gauche et la droite des box
+#  SANS miroiter leur contenu — geste ambigu, à faire par box), adoucissement/coins/bordure/
+#  ombre (ce sont des attributs de BORD d'une box : appliqués « au groupe » ils ne voudraient
+#  rien dire tant qu'on ne compose pas le groupe dans un buffer intermédiaire — ce qui coûterait
+#  précisément la passe plein cadre qu'on s'interdit).
+# ═════════════════════════════════════════════════════════════════════════════════════════════
+POS_MIN, POS_MAX = -1.0, 2.0        # bornes x/y d'une box (hors cadre autorisé), cf. caps
+GLOBAL_NEUTRAL = {{"dx": 0.0, "dy": 0.0, "scale": 1.0, "rotation": 0.0, "opacity": 100.0}}
+
+
+# ═════════════════════════════════════════════════════════════════════════════════════════════
+#  FOND (slot 4) — TROIS MODES : `none` (noir), `source` (entrée vidéo), `color` (couleur unie).
+#
+#  ★ COÛT : la conversion RGB → YUV est faite UNE FOIS, à la sélection (cache), JAMAIS par trame.
+#  Le remplissage se réduit alors à trois affectations scalaires (memset par plan) — en mode
+#  TRANCHE il se fait bande par bande, exactement comme le fond vidéo : aucun chemin nouveau.
+#
+#  ★ COLORIMÉTRIE ET PROFONDEUR : RIEN N'EST EN DUR — TOUT SE LIT DANS LE FORMAT DÉCLARÉ.
+#  La matrice vient de CONFIG["colorimetry"] (601 / 709 / 2020 — 709 aujourd'hui, mais ça se
+#  RÈGLE), et toutes les bornes se dérivent de CONFIG["bit_depth"] par 2^(bit_depth − 8) :
+#      8 bits  : Y 16-235,  C 16-240,   neutre 128
+#      10 bits : Y 64-940,  C 64-960,   neutre 512
+#      12 bits : Y 256-3760, C 256-3840, neutre 2048
+#  (calculées, jamais tabulées : une constante 8 bits ici casserait le 10/12 bits EN SILENCE —
+#  c'est exactement le débordement uint16 qu'on vient de payer sur les blends.)
+#  Par défaut la couleur est encodée en PLAGE LIMITÉE (« legal ») : c'est ce qu'attend une chaîne
+#  broadcast, un blanc à pleine échelle est HORS GAMME et serait écrêté en aval. L'écrêtage n'est
+#  PAS silencieux : `bg.clipped` le dit, et `bg.legal=false` donne la plage COMPLÈTE en
+#  connaissance de cause. La couleur est persistée en HEX (sRGB) — jamais en YUV : si le
+#  conteneur est redéployé en 10 bits ou dans une autre colorimétrie, elle est RECONVERTIE.
+BG_MODES = ("none", "source", "color")
+
+# Matrices luma (Kr, Kb) par colorimétrie DÉCLARÉE. `_hex_to_yuv` (bordure/ombre/clé chroma) est,
+# lui, resté sur du BT.601 pleine échelle codé en dur — dette CONNUE, cf. help.md § audit.
+_KRKB = {{"601": (0.299, 0.114), "709": (0.2126, 0.0722), "2020": (0.2627, 0.0593)}}
+COLORIMETRY = str(CONFIG.get("colorimetry") or "709").strip().lower().replace("bt", "").replace(".", "")
+if COLORIMETRY not in _KRKB:
+    print(f"split: colorimétrie « {{COLORIMETRY}} » inconnue — repli sur 709 (le format déclaré "
+          f"devrait porter 601, 709 ou 2020)")
+    COLORIMETRY = "709"
+
+
+def _rgb_to_yuv(hexstr, legal=True):
+    """#RRGGBB (sRGB) → (Y, U, V, clipped) DANS LE FORMAT DÉCLARÉ : matrice = colorimétrie du
+    conteneur, échelle = sa profondeur. `clipped` = la couleur sortait de la plage encodable."""
+    h = str(hexstr or "#000000").lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    try:
+        r = int(h[0:2], 16) / 255.0; g = int(h[2:4], 16) / 255.0; b = int(h[4:6], 16) / 255.0
+    except Exception:
+        r = g = b = 0.0
+    kr, kb = _KRKB[COLORIMETRY]
+    kg = 1.0 - kr - kb
+    y = kr * r + kg * g + kb * b                 # 0..1
+    u = (b - y) / (2.0 * (1.0 - kb))             # −0,5..0,5
+    v = (r - y) / (2.0 * (1.0 - kr))
+    # Bornes de la plage, DÉRIVÉES de la profondeur (aucune table) :
+    #   limitée : Y = 16·S + 219·S·y   ·   C = neutre + 224·S·c      (S = 2^(depth−8))
+    #   complète: Y = maxv·y           ·   C = neutre + maxv·c
+    if legal:
+        fy = (16.0 + 219.0 * y) * _SCALE
+        fu = _NEUTRAL + 224.0 * _SCALE * u
+        fv = _NEUTRAL + 224.0 * _SCALE * v
+    else:
+        fy = _MAXV * y
+        fu = _NEUTRAL + _MAXV * u
+        fv = _NEUTRAL + _MAXV * v
+    vals = [int(round(c)) for c in (fy, fu, fv)]
+    clipped = any(c < 0 or c > _MAXV for c in vals)
+    return tuple(max(0, min(_MAXV, c)) for c in vals) + (clipped,)
+
+
+_bg_cache = {{}}     # (couleur, legal) -> (Y, U, V, clipped) — conversion faite UNE FOIS
+
+
+def _bg_yuv(color, legal):
+    key = (str(color), bool(legal))
+    got = _bg_cache.get(key)
+    if got is None:
+        got = _rgb_to_yuv(color, legal)
+        _bg_cache[key] = got
+    return got
+
+
+def _norm_bg(bg):
+    """Normalise le fond : mode + couleur + plage. Défaut = `none` (noir) → INCHANGÉ."""
+    bg = dict(bg or {{}})
+    mode = str(bg.get("mode") or "none").strip().lower()
+    if mode not in BG_MODES:
+        mode = "none"
+    lg = bg.get("legal", True)
+    return {{"mode": mode, "color": str(bg.get("color") or "#000000"),
+             "legal": (lg if isinstance(lg, bool)
+                       else str(lg).strip().lower() in ("1", "true", "yes", "on"))}}
+
+
+def _bg_public(bg):
+    """État fond pour /state — conversion effective ET drapeau d'écrêtage (jamais muet)."""
+    y, u, v, clipped = _bg_yuv(bg["color"], bg["legal"])
+    return dict(bg) | {{"yuv": [y, u, v], "clipped": bool(clipped and bg["mode"] == "color")}}
+
+
+def _bg_values(bg):
+    """(Y, U, V) de remplissage : couleur choisie, sinon NOIR — valeurs historiques exactes."""
+    if bg["mode"] == "color":
+        y, u, v, _c = _bg_yuv(bg["color"], bg["legal"])
+        return y, u, v
+    return 16 * _SCALE, _NEUTRAL, _NEUTRAL
+
+
+def _interp_bg(fr, to, p):
+    """Transition de fond : deux couleurs → FONDU en YUV. Modes différents (source → couleur) →
+    bascule à mi-course : il n'existe pas d'entre-deux honnête entre une vidéo et une couleur
+    (le fondu vidéo↔couleur demanderait de mélanger le grain source par trame — c'est le travail
+    du mixer, pas du split)."""
+    if fr["mode"] == "color" and to["mode"] == "color":
+        return {{"mode": "color", "legal": to["legal"],
+                 "color": _lerp_hex(fr["color"], to["color"], p)}}
+    return dict(to if p >= 0.5 else fr)
+
+
+def _norm_global(g):
+    """Normalise le canal Global (défauts = NEUTRE : le rendu est alors STRICTEMENT celui d'avant)."""
+    g = dict(g or {{}})
+    return {{
+        "dx":       _f(g.get("dx", 0.0), -2.0, 2.0, 0.0),        # décalage, en largeurs de cadre
+        "dy":       _f(g.get("dy", 0.0), -2.0, 2.0, 0.0),        # décalage, en hauteurs de cadre
+        "scale":    _f(g.get("scale", 1.0), 0.05, 4.0, 1.0),     # échelle du groupe
+        "rotation": _f(g.get("rotation", 0.0), -180.0, 180.0, 0.0),
+        "opacity":  _f(g.get("opacity", 100.0), 0.0, 100.0, 100.0),   # POURCENT (cf. OPACITÉ)
+    }}
+
+
+def _g_neutral(g):
+    """Le Global est-il NEUTRE ? Oui → aucune composition, chemin d'avant OCTET-IDENTIQUE."""
+    return (abs(g["dx"]) < 1e-9 and abs(g["dy"]) < 1e-9
+            and abs(g["scale"] - 1.0) < 1e-9 and abs(g["rotation"]) < 1e-9
+            and g["opacity"] >= 99.9999)
+
+
+def _apply_global(b, g):
+    """Compose le Global SUR une box : rendu = Global ∘ box. Renvoie une NOUVELLE box.
+
+    La transformation opère autour du CENTRE DU CADRE, en pixels (et non en coordonnées
+    normalisées) — sinon une rotation de groupe cisaillerait la scène dès que le cadre n'est
+    pas carré (16:9 : une rotation en coordonnées normalisées transforme un carré en losange).
+    L'ordre est : échelle, puis rotation, puis décalage — celui qu'attend un opérateur
+    (« je grossis le groupe, je l'incline, je le sors du cadre »).
+    Le SENS de rotation est celui d'une box (même matrice) → un groupe tourné et une box tournée
+    penchent du même côté."""
+    if _g_neutral(g):
+        return b
+    cx, cy = WIDTH / 2.0, HEIGHT / 2.0
+    vx = b["x"] * WIDTH - cx
+    vy = b["y"] * HEIGHT - cy
+    s = float(g["scale"])
+    th = math.radians(float(g["rotation"]))
+    c, sn = math.cos(th), math.sin(th)
+    rx = (vx * c - vy * sn) * s
+    ry = (vx * sn + vy * c) * s
+    nb = dict(b)
+    nb["x"] = (cx + rx) / WIDTH + float(g["dx"])
+    nb["y"] = (cy + ry) / HEIGHT + float(g["dy"])
+    nb["size"] = b.get("size", 0.45) * s
+    if b.get("size_x"): nb["size_x"] = b["size_x"] * s
+    if b.get("size_y"): nb["size_y"] = b["size_y"] * s
+    nb["rotation"] = b.get("rotation", 0.0) + float(g["rotation"])
+    nb["opacity"] = b.get("opacity", 100.0) * float(g["opacity"]) / 100.0   # % ∘ % = %
+    return _norm_box(nb)
+
+
+def _interp_global(fr, to, p):
+    """Interpole le Global d'une transition (comme une box : sinon il SAUTERAIT en plein
+    mouvement — c'est justement là qu'il sert le plus : entrées/sorties de champ de groupe)."""
+    return {{k: _lerp(float(fr.get(k, GLOBAL_NEUTRAL[k])), float(to.get(k, GLOBAL_NEUTRAL[k])), p)
+             for k in GLOBAL_NEUTRAL}}
+
 def _norm_box(b):
     """Normalise une box, défauts compris.
 
@@ -204,8 +447,14 @@ def _norm_box(b):
         bw = 0
     return {{
         "enabled": bool(b.get("enabled", False)),
-        "x":    _f(b.get("x", 0.5), 0.0, 1.0, 0.5),
-        "y":    _f(b.get("y", 0.5), 0.0, 1.0, 0.5),
+        # ★ HORS CADRE (0.12.0) : x/y ne sont plus bornés à [0,1] mais à [POS_MIN, POS_MAX]
+        # (= −1..2 : une box peut être entièrement sortie du cadre, d'un côté comme de l'autre).
+        # SANS ÇA, AUCUNE ENTRÉE NI SORTIE DE CHAMP N'EST POSSIBLE — donc pas d'animation de
+        # groupe. Le rendu était déjà correct pour une box à moitié dehors (rect visible clippé
+        # au cadre) : c'est la BORNE qui l'interdisait. Les bornes sont publiées dans /state.caps
+        # (l'UI ne code rien en dur).
+        "x":    _f(b.get("x", 0.5), POS_MIN, POS_MAX, 0.5),
+        "y":    _f(b.get("y", 0.5), POS_MIN, POS_MAX, 0.5),
         "size": _f(b.get("size", 0.45), 0.05, 1.0, 0.45),
         "crop": {{
             "t": _f(crop.get("t", 0.0), 0.0, 0.9, 0.0),
@@ -225,7 +474,7 @@ def _norm_box(b):
         }},
         # ── mode avancé ──
         "rotation": _f(b.get("rotation", 0.0), -180.0, 180.0, 0.0),   # degrés
-        "opacity":  _f(b.get("opacity", 1.0), 0.0, 1.0, 1.0),
+        "opacity":  _f(b.get("opacity", 100.0), 0.0, 100.0, 100.0),   # POURCENT (0-100)
         "feather":  _f(b.get("feather", 0.0), 0.0, 64.0, 0.0),        # px (adoucissement bords)
         "radius":   _f(b.get("radius", 0.0), 0.0, 300.0, 0.0),        # px (coins arrondis)
         "mirror_h": bool(b.get("mirror_h", False)),
@@ -239,7 +488,7 @@ def _norm_box(b):
             "dx":      _f(sh.get("dx", 8), -100.0, 100.0, 8.0),
             "dy":      _f(sh.get("dy", 8), -100.0, 100.0, 8.0),
             "blur":    _f(sh.get("blur", 8), 0.0, 64.0, 8.0),
-            "opacity": _f(sh.get("opacity", 0.5), 0.0, 1.0, 0.5),
+            "opacity": _f(sh.get("opacity", 50.0), 0.0, 100.0, 50.0),   # POURCENT (0-100)
             "color":   str(sh.get("color") or "#000000"),
         }},
         # z-ordre LIBRE (l'ATEM fige 1→2→3→4). Défaut None → l'index de la box fait foi.
@@ -254,7 +503,7 @@ def _is_adv(b):
     sh = b.get("shadow") or {{}}
     return bool(
         abs(b.get("rotation", 0.0)) > 1e-6
-        or b.get("opacity", 1.0) < 0.999
+        or b.get("opacity", 100.0) < 99.9
         or b.get("feather", 0.0) > 0.0
         or b.get("radius", 0.0) > 0.0
         or b.get("mirror_h") or b.get("mirror_v")
@@ -279,10 +528,22 @@ _init_boxes = [_norm_box(b) for b in (INITIAL_BOX_CONFIG or [])]
 while len(_init_boxes) < N_BOXES:
     _init_boxes.append(_default_boxes()[len(_init_boxes)])
 _init_inputs = [str(_INIT_SLOT_SHM[i]) if _INIT_SLOT_SHM[i] else "" for i in range(N_INPUTS)]
+_init_global = _norm_global(dict(CONFIG.get("global") or {{}}) | (
+    {{"opacity": _mig_op((CONFIG.get("global") or {{}}).get("opacity", 1.0), 100.0)}}
+    if (CONFIG.get("global") or {{}}).get("opacity") is not None else {{}}))
+_init_bg = _norm_bg(CONFIG.get("bg"))
+# Rétro-compat : un fond CÂBLÉ (bg_input) sans mode explicite = mode `source` (comportement d'avant).
+if not CONFIG.get("bg") and _INIT_SLOT_SHM[4]:
+    _init_bg["mode"] = "source"
 state = {{
     "inputs":     _init_inputs,
     "boxes":      _init_boxes[:N_BOXES],
-    # transition : None or {{start, duration_ms, from:[boxes], to:[boxes], curve, stagger_ms}}
+    # CANAL GLOBAL : calque de transformation composé SUR chaque box (cf. _apply_global).
+    "global":     _init_global,
+    # FOND : none (noir) | source (entrée vidéo) | color (couleur unie).
+    "bg":         _init_bg,
+    # transition : None or {{start, duration_ms, from:[boxes], to:[boxes], gfrom, gto, bgfrom,
+    #                        bgto, curve, stagger_ms}}
     "transition": None,
 }}
 
@@ -368,6 +629,8 @@ class ControlHandler(BaseHTTPRequestHandler):
                     # Tout ce que l'UI doit connaître est publié ici : réglages courants ET
                     # domaine des valeurs (`caps`) → l'UI n'a RIEN à coder en dur.
                     "light":      dict(LIGHT),
+                    "global":     dict(state["global"]),      # calque de transformation du GROUPE
+                    "bg":         _bg_public(state["bg"]),    # fond : mode + couleur + écrêtage
                     # NB : `transition` (plus haut) reste le BOOLÉEN historique « une transition
                     # est en cours » — ne pas le repeupler avec les réglages, des consommateurs
                     # le testent comme un drapeau. Les réglages vivent sous `transition_defaults`.
@@ -375,13 +638,31 @@ class ControlHandler(BaseHTTPRequestHandler):
                     "art":        _art_public(),
                     "caps": {{
                         "easings": list(EASINGS),
+                        # Bornes des positions : le HORS CADRE est autorisé (entrées/sorties de
+                        # champ). L'UI lit ces bornes — elle n'en code aucune.
+                        "pos": [POS_MIN, POS_MAX],
+                        "bg_modes": list(BG_MODES),
+                        # Canal GLOBAL : champ → [min, max, défaut]
+                        "global_fields": {{
+                            "dx": [-2.0, 2.0, 0.0], "dy": [-2.0, 2.0, 0.0],
+                            "scale": [0.05, 4.0, 1.0], "rotation": [-180.0, 180.0, 0.0],
+                            "opacity": [0.0, 100.0, 100.0],
+                        }},
+                        # Habillage (ART) : mêmes bornes publiées que le reste (rien en dur côté UI)
+                        "art_fields": {{
+                            "clip": [0.0, 1.0, 0.15], "gain": [0.01, 16.0, 1.0],
+                            "opacity": [0.0, 100.0, 100.0],
+                        }},
+                        # ★ L'opacité est en POURCENT (0-100) — unité UNIQUE moteur+UI (0.12.0).
+                        "opacity_unit": "pct",
                         "art_keys": ["alpha", "luma", "chroma", "none"],
                         "box_fields": {{
                             # champ : [min, max, défaut]
-                            "x": [0.0, 1.0, 0.5], "y": [0.0, 1.0, 0.5],
+                            # HORS CADRE : bornes réelles du moteur (l'UI les lit, cf. caps.pos)
+                            "x": [POS_MIN, POS_MAX, 0.5], "y": [POS_MIN, POS_MAX, 0.5],
                             "size": [0.05, 1.0, 0.45],
                             "rotation": [-180.0, 180.0, 0.0],
-                            "opacity": [0.0, 1.0, 1.0],
+                            "opacity": [0.0, 100.0, 100.0],
                             "feather": [0.0, 64.0, 0.0],
                             "radius": [0.0, 300.0, 0.0],
                             "size_x": [0.0, 1.0, 0.0], "size_y": [0.0, 1.0, 0.0],
@@ -397,7 +678,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                         }},
                         "shadow_fields": {{
                             "dx": [-100.0, 100.0, 8.0], "dy": [-100.0, 100.0, 8.0],
-                            "blur": [0.0, 64.0, 8.0], "opacity": [0.0, 1.0, 0.5],
+                            "blur": [0.0, 64.0, 8.0], "opacity": [0.0, 100.0, 50.0],
                         }},
                         "light_fields": {{"angle": [0.0, 360.0, 36.0],
                                           "altitude": [0.0, 90.0, 25.0]}},
@@ -452,6 +733,35 @@ class ControlHandler(BaseHTTPRequestHandler):
                 state["boxes"][idx] = _norm_box(b)
             self._reply(200, {{"ok": True, "box": state["boxes"][idx]}})
 
+        elif self.path == "/global":
+            # CANAL GLOBAL : calque de transformation du groupe (fusion partielle : l'UI n'envoie
+            # que le champ touché). Annule la transition en cours, comme /box.
+            with state_lock:
+                state["transition"] = None
+                g = dict(state["global"])
+                for k, v in body.items():
+                    g[k] = v
+                state["global"] = _norm_global(g)
+                out_g = dict(state["global"])
+            self._reply(200, {{"ok": True, "global": out_g}})
+
+        elif self.path == "/bg":
+            # FOND : mode (none|source|color) + couleur + plage légale. Le mode `source` suppose
+            # le slot 4 câblé — on ne le décide PAS à la place de l'exploitant : on le DIT.
+            with state_lock:
+                bg = dict(state["bg"])
+                for k in ("mode", "color", "legal"):
+                    if k in body:
+                        bg[k] = body[k]
+                state["bg"] = _norm_bg(bg)
+                out_bg = _bg_public(state["bg"])
+                wired = bool(state["inputs"][4])
+            if out_bg["mode"] == "source" and not wired:
+                out_bg["warn"] = "no_source"      # fond `source` mais slot 4 non câblé → noir
+            if out_bg.get("clipped"):
+                out_bg["warn"] = "clipped"        # couleur hors plage légale → écrêtée (dite, pas tue)
+            self._reply(200, {{"ok": True, "bg": out_bg}})
+
         elif self.path == "/light":
             # SOURCE DE LUMIÈRE globale (relief des bordures biseautées).
             with state_lock:
@@ -482,7 +792,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                     _art["key"] = kk if kk in ("alpha", "luma", "chroma", "none") else "alpha"
                 if "clip" in body:    _art["clip"] = _f(body["clip"], 0.0, 1.0, 0.15)
                 if "gain" in body:    _art["gain"] = _f(body["gain"], 0.01, 16.0, 1.0)
-                if "opacity" in body: _art["opacity"] = _f(body["opacity"], 0.0, 1.0, 1.0)
+                if "opacity" in body: _art["opacity"] = _f(body["opacity"], 0.0, 100.0, 100.0)
                 if "chroma_key" in body: _art["chroma_key"] = str(body["chroma_key"] or "#00b140")
             _bake_art()
             with _art_lock:
@@ -512,9 +822,15 @@ class ControlHandler(BaseHTTPRequestHandler):
             if curve not in EASINGS:
                 curve = TRANS["curve"]
             stagger = _f(body.get("stagger_ms", TRANS["stagger_ms"]), 0.0, 2000.0, 0.0)
+            # Une mémoire porte AUSSI le canal Global et le fond : sans eux, rappeler une
+            # mémoire « groupe hors champ » ou « fond bleu » ne restituerait rien.
+            gto = _norm_global(body["global"]) if isinstance(body.get("global"), dict) else None
+            bgto = _norm_bg(body["bg"]) if isinstance(body.get("bg"), dict) else None
             with state_lock:
                 if duration <= 0:
                     state["boxes"] = tgt
+                    if gto is not None: state["global"] = gto
+                    if bgto is not None: state["bg"] = bgto
                     state["transition"] = None
                 else:
                     state["transition"] = {{
@@ -524,6 +840,8 @@ class ControlHandler(BaseHTTPRequestHandler):
                         "stagger_ms": stagger,
                         "from": [dict(b) for b in state["boxes"]],
                         "to":   tgt,
+                        "gfrom": dict(state["global"]), "gto": gto,
+                        "bgfrom": dict(state["bg"]), "bgto": bgto,
                     }}
             self._reply(200, {{"ok": True, "curve": curve, "stagger_ms": stagger}})
 
@@ -755,7 +1073,7 @@ def _interp_box(fr, to, p):
         }},
         # ── mode avancé : tout est interpolé (sinon l'angle/l'opacité SAUTENT en plein mouvement) ──
         "rotation": _lerp(fr.get("rotation", 0.0), to.get("rotation", 0.0), p),
-        "opacity":  _lerp(fr.get("opacity", 1.0), to.get("opacity", 1.0), p),
+        "opacity":  _lerp(fr.get("opacity", 100.0), to.get("opacity", 100.0), p),
         "feather":  _lerp(fr.get("feather", 0.0), to.get("feather", 0.0), p),
         "radius":   _lerp(fr.get("radius", 0.0), to.get("radius", 0.0), p),
         # booléens/énums : pas d'entre-deux → bascule à mi-course (jamais de valeur bâtarde)
@@ -811,7 +1129,7 @@ def _ecrire_sortie(w, yuv, frame_index):
         pass
 
 
-def _plan_layers(tr, boxes):
+def _plan_layers(tr, boxes, glob=None):
     """Plan des boxes à composer, DANS L'ORDRE DE SUPERPOSITION. Renvoie [(slot, box, alpha)].
 
     ORDRE LIBRE (0.9.0) : l'ATEM fige 1→2→3→4 ; ici le champ `z` de chaque box l'emporte
@@ -819,6 +1137,16 @@ def _plan_layers(tr, boxes):
     boxes de même z gardent leur ordre d'index.
     En transition, la box interpolée porte le z choisi (bascule à mi-course : un z ne
     s'interpole pas, il commute)."""
+    # CANAL GLOBAL : replié dans la géométrie de CHAQUE box (rendu = Global ∘ box_i). Coût :
+    # quelques flottants par box — AUCUNE passe supplémentaire (cf. le bloc CANAL GLOBAL).
+    # En transition, il est INTERPOLÉ comme une box (sinon il sauterait en plein mouvement —
+    # c'est justement là qu'il sert : entrées/sorties de champ de groupe).
+    if glob is None:
+        with state_lock:
+            glob = dict(state["global"])
+    if tr is not None and tr.get("gto") is not None:
+        glob = _interp_global(tr.get("gfrom") or GLOBAL_NEUTRAL, tr["gto"],
+                              _ease(tr["_p_raw"], tr.get("curve") or "linear"))
     out_plan = []
     for i in range(N_BOXES):
         if tr is not None:
@@ -832,6 +1160,7 @@ def _plan_layers(tr, boxes):
             if not boxes[i]["enabled"]:
                 continue
             b_, alpha = boxes[i], 1.0
+        b_ = _apply_global(b_, glob)      # ← identité si le Global est neutre (octet-identique)
         out_plan.append((i, b_, alpha))
     out_plan.sort(key=lambda t: (t[1].get("z") if t[1].get("z") is not None else t[0]))
     global _n_rot
@@ -1250,7 +1579,7 @@ def _build_stamp(b, alpha):
 
     fe = float(b.get("feather", 0.0))
     rad = int(round(min(float(b.get("radius", 0.0)), dst_w / 2.0 - 1, dst_h / 2.0 - 1)))
-    op = float(b.get("opacity", 1.0)) * float(alpha)
+    op = float(b.get("opacity", 100.0)) / 100.0 * float(alpha)   # POURCENT → fraction
     bd = b.get("border") or {{}}
     b_in = float(bd.get("inner", 0.0)); b_flat = float(bd.get("w", 0) or 0)
     bevel = float(bd.get("bevel", 0.0))
@@ -1407,31 +1736,60 @@ def _build_stamp(b, alpha):
     # ── OMBRE PORTÉE : masque de la box FLOUTÉ (convolution) puis DÉCALÉ. Séparable → le flou
     #    est fait sur 2 vecteurs 1D et recombiné par produit externe (mesuré 1,0 ms au lieu de
     #    10,8 ms). Entièrement PRÉCALCULÉ : par trame il ne reste qu'un blend de ruban.
+    # ★ LE FLOU DOIT S'ÉPANDRE VERS L'EXTÉRIEUR (fix 0.12.0). Jusqu'ici le masque d'ombre était
+    # bâti sur le rect de la box LUI-MÊME : le flou ne pouvait que MANGER VERS L'INTÉRIEUR, et il
+    # était COUPÉ NET au bord (mesuré : masque encore à 77/128 sur la dernière colonne, cf. le
+    # profil du banc). Ce n'est pas une ombre, c'est un rectangle dégradé à l'intérieur de
+    # lui-même. Le masque est donc bâti sur un rect ÉLARGI d'une marge de flou : le dégradé
+    # s'éteint alors À ZÉRO dans la marge, comme une vraie ombre.
+    #
+    # Marge = SPREAD RÉEL du noyau : _blur1/_blur2 enchaînent 3 box-blurs de rayon r → l'épandage
+    # est de 3·r (et non r). Un blur de 20 déborde donc de 60 px. La marge est ancrée sur la
+    # grille chroma (paire) — l'ombre reste chroma-alignée (fix 4:2:0). Le DÉCALAGE (dx/dy) sort
+    # déjà l'ombre de la box : il est appliqué à l'origine, comme avant.
+    # Coût : le rect d'ombre grandit (mesuré au banc, cf. help.md) — c'est le prix d'une ombre
+    # correcte, et il est DIT plutôt que subi. Le rognage final au CADRE est fait au rendu
+    # (_paint_shadow_rows clippe à WIDTH/HEIGHT) : une ombre peut donc sortir du cadre, comme une
+    # box (chantier hors-cadre).
     sh = b.get("shadow") or {{}}
     shadow = None
     if sh.get("enabled") and float(sh.get("opacity", 0.0)) > 0.001:
         br = int(round(float(sh.get("blur", 8.0))))
-        amp = 256.0 * float(sh.get("opacity", 0.5)) * float(alpha)
+        amp = 256.0 * (float(sh.get("opacity", 50.0)) / 100.0) * float(alpha)
+        pad = 3 * br + 2 if br > 0 else 0        # épandage des 3 box-blurs + garde
+        if pad % 2:
+            pad += 1                             # marge PAIRE → chroma-alignée (420/422)
+        sw, shh = dst_w + 2 * pad, dst_h + 2 * pad
         if rot_loc is not None:
             # BOX TOURNÉE : l'ombre est la SILHOUETTE INCLINÉE floutée (une ombre rectangulaire
             # droite sous une box penchée trahirait immédiatement le truquage). La silhouette
-            # n'est pas séparable → flou 2D séparé en 2 passes 1D (lignes puis colonnes).
-            sil = np.clip(rot_loc[0] + 0.5, 0.0, 1.0).astype(np.float32)
+            # n'est pas séparable → flou 2D séparé en 2 passes 1D (lignes puis colonnes). Elle est
+            # posée dans le rect ÉLARGI (zéro dans la marge) → le flou s'y épand librement.
+            sil = np.zeros((shh, sw), dtype=np.float32)
+            sil[pad:pad + dst_h, pad:pad + dst_w] = np.clip(rot_loc[0] + 0.5, 0.0, 1.0)
             if br > 0:
                 sil = _blur2(sil, br)
             sa16 = (sil * amp).astype(np.uint16)
         else:
-            sm_x = _blur1(np.ones(dst_w, np.float32), br) if br > 0 else np.ones(dst_w, np.float32)
-            sm_y = _blur1(np.ones(dst_h, np.float32), br) if br > 0 else np.ones(dst_h, np.float32)
+            # SÉPARABLE : la silhouette d'un rect plein est le produit externe de 2 créneaux 1D →
+            # on floute les créneaux (posés dans un vecteur ÉLARGI), jamais une convolution 2D.
+            ix_ = np.zeros(sw, np.float32); ix_[pad:pad + dst_w] = 1.0
+            iy_ = np.zeros(shh, np.float32); iy_[pad:pad + dst_h] = 1.0
+            sm_x = _blur1(ix_, br) if br > 0 else ix_
+            sm_y = _blur1(iy_, br) if br > 0 else iy_
             # L'échelle (opacité × fondu × 256) est repliée dans les VECTEURS 1D AVANT le produit
             # externe → le masque sort déjà à l'échelle : un balayage plein rect au lieu de trois.
             sm_y = sm_y * amp
             sa16 = np.multiply.outer(sm_y, sm_x).astype(np.uint16)
         sYa, sUa, sVa = _hex_to_yuv(sh.get("color") or "#000000")
+        _sx0 = x0 + int(round(float(sh.get("dx", 8.0)))) - pad
+        _sy0 = y0 + int(round(float(sh.get("dy", 8.0)))) - pad
+        _sx0 -= _sx0 % _CW          # ancrage sur la grille CHROMA (cf. fix 4:2:0)
+        _sy0 -= _sy0 % _CH
         shadow = {{
-            "x0": x0 + int(round(float(sh.get("dx", 8.0)))),
-            "y0": y0 + int(round(float(sh.get("dy", 8.0)))),
-            "w": dst_w, "h": dst_h,
+            "x0": _sx0,
+            "y0": _sy0,
+            "w": sw, "h": shh,
             "a": sa16,
             "a2": sa16[::_CH, ::_CW].copy(),
             "yuv": (sYa, sUa, sVa),
@@ -1439,9 +1797,18 @@ def _build_stamp(b, alpha):
 
     # Rect INTÉRIEUR pleinement OPAQUE de la box (alpha == 256 partout) : tout ce qui est peint
     # dessous y est INVISIBLE → l'ombre portée n'a pas à y être calculée (cf. _paint_shadow_rows).
+    # ★ Le « trou » opaque doit lui aussi être CHROMA-ALIGNÉ (fix 4:2:0) : ses bords servent de
+    # frontières à la découpe guillotine de l'ombre. On le RÉTRÉCIT jusqu'à la grille chroma
+    # (jamais on ne l'agrandit) → il reste entièrement couvert par la box : rien de visible, et
+    # les sous-rectangles d'ombre tombent tous sur des lignes/colonnes chroma entières.
     op_rect = None
     if op >= 0.999 and marg < min(dst_w, dst_h) // 2:
-        op_rect = (x0 + marg, y0 + marg, x0 + dst_w - marg, y0 + dst_h - marg)
+        _ox0, _oy0 = x0 + marg, y0 + marg
+        _ox1, _oy1 = x0 + dst_w - marg, y0 + dst_h - marg
+        _ox0 += (-_ox0) % _CW; _oy0 += (-_oy0) % _CH        # arrondi VERS L'INTÉRIEUR
+        _ox1 -= _ox1 % _CW;    _oy1 -= _oy1 % _CH
+        if _ox1 > _ox0 and _oy1 > _oy0:
+            op_rect = (_ox0, _oy0, _ox1, _oy1)
 
     # ── FUSION du ruban de bordure et du blend alpha (une seule passe) ────────────────────────
     # Quand il n'y a PAS d'intérieur opaque exploitable (box TOURNÉE : le ruban et les bords sont
@@ -1839,7 +2206,7 @@ def _bake_art():
             a = np.clip((al / 255.0 - clip) * gain, 0.0, 1.0)
         if cfg["invert"]:
             a = 1.0 - a
-        a *= float(cfg["opacity"])
+        a *= float(cfg["opacity"]) / 100.0     # POURCENT → fraction
 
         a16 = (a * 256.0).astype(np.uint16)
         Yp = np.clip(Y * _SCALE, 0, _MAXV).astype(_NP_DT)
@@ -2047,7 +2414,7 @@ def _sl_ensure(L, need_k, deadl):
     return dw
 
 
-def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot):
+def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot, bg_fill=None, bg_is_src=True):
     """MODE TRANCHE — compose et PUBLIE la trame BANDE PAR BANDE (SLICE_H lignes/bande) :
     fond + boxes suivis CHACUN sur SON grain via get_slice, sortie committée progressivement
     (validSlices=k+1 → l'aval démarre sur la 1ʳᵉ bande). Budget par couche + backoff des
@@ -2057,7 +2424,9 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot):
     global _sl_dbg
     wait_ns = 0
     # 1) plan des couches à composer (fond, puis les boxes dans l'ordre de superposition `z`).
-    plan = [(4, None, 1.0)] + _plan_layers(tr, boxes)
+    # FOND : `source` → slot 4 lu comme une couche ; `none`/`color` → remplissage par bande
+    # (memset des 3 plans : la couleur est DÉJÀ convertie et cachée — jamais par trame).
+    plan = ([(4, None, 1.0)] if bg_is_src else []) + _plan_layers(tr, boxes)
     # 2) cible + 1ʳᵉ tranche de chaque couche (le suivi des bandes suivantes se fait au fil
     #    du compose). Cible = tête (peut être EN COURS d'écriture) ; en flow = index d'epoch.
     layers = []
@@ -2181,7 +2550,8 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot):
     oy, ou, ovv = _plane_views(vw_o)
     nb = HEIGHT // SLICE_H
     deadl = time.monotonic() + (interval * 1.5)   # garde-fou GLOBAL (borne dure de la trame)
-    black_y = 16 * _SCALE
+    fill_y, fill_u, fill_v = (bg_fill if bg_fill is not None
+                              else (16 * _SCALE, _NEUTRAL, _NEUTRAL))
     art_below = _art_below(); art_above = _art_above()
     try:
         for k in range(nb):
@@ -2193,10 +2563,12 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot):
                 ou[cb0:cb1] = bg["su"][cb0:cb1]
                 ovv[cb0:cb1] = bg["sv"][cb0:cb1]
             else:
-                # fond couleur (noir) : remplissage par bande trivial (≡ empty_frame)
-                oy[b0:b1] = black_y
-                ou[cb0:cb1] = _NEUTRAL
-                ovv[cb0:cb1] = _NEUTRAL
+                # fond UNI (noir par défaut, ou la COULEUR choisie) : remplissage par bande —
+                # 3 affectations scalaires, aucun coût mesurable, et le chemin tranche est
+                # exactement celui du fond vidéo (pas de branche nouvelle).
+                oy[b0:b1] = fill_y
+                ou[cb0:cb1] = fill_u
+                ovv[cb0:cb1] = fill_v
             if art_below:                       # ART SOUS les boxes (sur le fond)
                 _paint_art_rows(oy, ou, ovv, b0, b1)
             for L in layers:
@@ -2292,7 +2664,12 @@ while True:
         wait = next_t - now
         if wait > 0: time.sleep(wait)
         _fi_out = out._next_index()
-    elif GENLOCK:
+    elif GENLOCK and bg_is_src:
+        # ★ Le genlock se verrouille sur le FOND (slot 4) : c'est la référence de cadence. Un
+        # fond UNI (none/color) n'est pas une source → aucune référence → cadence libre (else).
+        # NB : en 0.11.x, `genlock` + fond non câblé publiait du NOIR sans composer les box (le
+        # verrou attendait une référence qui n'arrivait jamais). Un split à 4 box câblées et sans
+        # fond affichait donc du noir, en silence. Il compose désormais ses box sur le fond uni.
         ri, rw = _in_header(4)
         if ri == 0:
             # pas de fond câblé → noir continu cadencé (signal vivant)
@@ -2330,6 +2707,8 @@ while True:
             elapsed_ms = (time.time() - tr["start"]) * 1000.0
             if elapsed_ms >= tr["duration_ms"]:
                 state["boxes"] = [dict(b) for b in tr["to"]]
+                if tr.get("gto") is not None:  state["global"] = dict(tr["gto"])
+                if tr.get("bgto") is not None: state["bg"] = dict(tr["bgto"])
                 state["transition"] = None
                 boxes = [dict(b) for b in state["boxes"]]
                 tr = None
@@ -2339,6 +2718,15 @@ while True:
         tr = dict(tr)
         tr["_p_raw"] = max(0.0, min(1.0,
                            (time.time() - tr["start"]) * 1000.0 / max(1, tr["duration_ms"])))
+
+    # FOND effectif de la trame : mode + couleur (interpolés si une transition est en cours).
+    with state_lock:
+        bg_cur = dict(state["bg"])
+    if tr is not None and tr.get("bgto") is not None:
+        bg_cur = _norm_bg(_interp_bg(tr.get("bgfrom") or bg_cur, tr["bgto"],
+                                     _ease(tr["_p_raw"], tr.get("curve") or "linear")))
+    bg_y, bg_u, bg_v = _bg_values(bg_cur)
+    bg_is_src = (bg_cur["mode"] == "source")
 
     ts_in_per_slot = {{}}
     ts_cycle_start = time.time_ns()   # début du compositing (fond détecté + boxes alignées) → base transit/own
@@ -2350,7 +2738,8 @@ while True:
         # bande). Le chemin historique ci-dessous reste octet-identique (slice_mode off).
         try:
             _sl_waited = _slice_frame(_fi_out if FLOW else frame_index, _fi_out,
-                                      tr, boxes, ts_in_per_slot)
+                                      tr, boxes, ts_in_per_slot,
+                                      bg_fill=(bg_y, bg_u, bg_v), bg_is_src=bg_is_src)
         except Exception as _e:
             print(f"split: erreur slice_frame ignorée (frame {{frame_index}}) : {{_e}}")
         ts_out = time.time_ns()
@@ -2359,10 +2748,17 @@ while True:
         # MÊMES primitives par bandes que le mode tranche (bande = trame entière) : une seule
         # implémentation du compositing → les deux chemins ne peuvent plus diverger.
         # Réglages par défaut (aucun effet avancé) ⇒ strictement le rendu de 0.8.0.
-        bg_frame, ts_bg = _read_slot(4)
+        bg_frame, ts_bg = (_read_slot(4) if bg_is_src else (None, None))
         if ts_bg: ts_in_per_slot[4] = ts_bg
-        buf = np.frombuffer(bg_frame or empty_frame, dtype=np.uint8).copy()
-        oy, ou, ovv = _plane_views(buf)
+        if bg_frame:
+            buf = np.frombuffer(bg_frame, dtype=np.uint8).copy()
+            oy, ou, ovv = _plane_views(buf)
+        else:
+            # Fond UNI : noir (mode `none`, ou `source` sans flux) ou COULEUR choisie. Trois
+            # memset de plan — la conversion RGB→YUV est cachée, jamais refaite par trame.
+            buf = np.empty(V_FRAME_SIZE, dtype=np.uint8)
+            oy, ou, ovv = _plane_views(buf)
+            oy[:] = bg_y; ou[:] = bg_u; ovv[:] = bg_v
 
         if _art_below():                      # ART SOUS les boxes (décor de fond)
             _paint_art_rows(oy, ou, ovv, 0, HEIGHT)

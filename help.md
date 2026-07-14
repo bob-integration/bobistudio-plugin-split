@@ -214,3 +214,71 @@ Le rétablissement est loggé lui aussi (« slot 0 RÉTABLI après N trames »).
 - `POST /transition` — `{curve, stagger_ms}` (défauts).
 - `POST /recall` — `{boxes, duration_ms, curve, stagger_ms}`.
 - `POST /art` — `{enabled, above, image (base64), key, clip, gain, invert, opacity, chroma_key}`.
+
+## ★ Canal Global — le calque de transformation du groupe (0.12.0)
+
+**Ce n'est pas une multi-sélection.** La multi-sélection **écrit** N valeurs dans N box (elle
+écrase les réglages individuels). Le **Global** est un **objet à part**, persistant, qui se
+**compose** par-dessus les réglages propres de chaque box :
+
+> **rendu(box i) = Global ∘ box_i**
+
+Chaque box garde **ses** x/y/taille/rotation/opacité ; le Global apporte **sa** transformation
+(**décalage**, **échelle**, **rotation**, **opacité** du groupe). ⇒ toute la composition **sort du
+cadre d'un bloc**, chaque box gardant sa **position relative** : c'est l'**animation de groupe**,
+impossible avec une multi-édition. Il est **enregistré dans les mémoires** et **interpolé pendant
+les transitions**, comme une box.
+
+**Coût : nul.** Il est **replié dans l'empreinte** de chaque box (quelques flottants par trame),
+jamais en seconde passe plein cadre. Mesuré en 1080p, 4 box : socle **6,01 ms** → Global actif
+**6,23 ms**.
+
+*Écartés volontairement* : le **miroir** de groupe (il échangerait la gauche et la droite des box
+sans miroiter leur contenu — geste ambigu) et **adoucissement / coins / bordure / ombre** (ce sont
+des attributs de **bord d'une box** : les appliquer « au groupe » supposerait de composer le groupe
+dans un buffer intermédiaire, c'est-à-dire précisément la passe plein cadre qu'on s'interdit).
+
+## ★ Hors cadre (0.12.0)
+
+Les positions ne sont plus bornées au cadre : `x`/`y` vont de **−1 à 2** (bornes publiées dans
+`/state.caps.pos` — l'UI n'en code aucune). **Sans hors-cadre, aucune entrée ni sortie de champ
+n'est possible.** Le rendu clippait déjà correctement une box à moitié dehors : c'est la **borne**
+qui l'interdisait. Dans l'éditeur, le cadre est désormais **entouré d'une marge** : le hors-cadre
+est visible (voilé), et on peut y tirer une box. Glisser une box **sélectionnée** entraîne **toute
+la sélection** (en **décalage** : les écarts relatifs sont conservés) ; la **poignée de taille**
+en multi redimensionne chaque box **autour de son propre centre** (aucune ne se déplace).
+
+## ★ Fond : noir, source vidéo, ou couleur unie (0.12.0)
+
+Trois modes explicites. La couleur est saisie en **hex (sRGB)** ; c'est le **moteur** qui la
+convertit — **à sa profondeur** (8/10/12 bits) et **à sa colorimétrie déclarée** (601/709/2020,
+lues dans le format du conteneur, jamais devinées). La conversion est faite **une fois** (cache) :
+par trame il ne reste que trois `memset` de plan — le socle ne bouge pas (6,01 ms).
+Par défaut la couleur est encodée en **plage légale** (broadcast) : `16-235` en 8 bits, `64-940` en
+10 bits, `256-3760` en 12 bits (**calculé**, jamais tabulé). Une couleur hors plage est **écrêtée —
+et on le dit** (`bg.clipped` + bandeau) ; « Plage légale » se décoche pour encoder en plage complète
+en connaissance de cause. Le **Global n'affecte pas le fond** : il transforme le *groupe de box*,
+pas la toile.
+
+## ★ Opacité en pourcent (0-100) — une seule unité
+
+Le **moteur** parle en pourcent (box, ombre, habillage, Global) et `/state.caps` l'expose : l'UI ne
+convertit rien, il n'y a pas deux vérités. La migration des valeurs persistées **n'est pas
+idempotente par nature** (un `1.0` veut dire « opaque » en ancienne unité et « 1 % » en nouvelle) :
+un **marqueur** (`opacity_unit: "pct"`) tranche, et le hook de persistance le réécrit — jamais deux
+conversions.
+
+## ⚠ Audit des constantes de format (dette CONNUE, dite plutôt que tue)
+
+Le code **neuf** (fond couleur, Global, hors-cadre, opacité) ne contient **aucune** constante de
+format : tout dérive de `bit_depth`, `chroma`, `colorimetry`, `width`, `height`, `fps`, `scan`.
+Mais **deux endroits anciens mentent encore** sur le format :
+
+| Endroit | Ce qui est figé | Conséquence |
+|---|---|---|
+| `_hex_to_yuv` (couleurs de **bordure**, d'**ombre**, **clé chroma**) | matrice **BT.601 pleine échelle** codée en dur (l'échelle suit bien la profondeur) | dans un pipeline **709**, ces couleurs **dérivent** (un rouge de bordure n'est pas le rouge demandé) |
+| `_bake_art` (couche **habillage**) | même matrice **601 pleine échelle** | même dérive sur l'image d'habillage |
+
+Ce **n'est pas** corrigé ici : le faire changerait les octets de **toutes** les compositions
+existantes (la non-régression octet-identique du portage `mvk` s'appuie dessus). À traiter comme un
+chantier à part, avec une bascule explicite.

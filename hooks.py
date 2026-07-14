@@ -13,6 +13,20 @@ def sync_state(state, params, ctx):
     """
     params = dict(params)
     params["box_config"] = state.get("boxes") or []
+    # ★ Unité d'opacité : le moteur parle en POURCENT (0-100) depuis la 0.12.0. Le marqueur rend
+    # la migration IDEMPOTENTE (un 1.0 persisté est ambigu : « opaque » en ancienne unité, « 1 % »
+    # en nouvelle — seul un marqueur tranche, aucune heuristique ne le peut).
+    params["opacity_unit"] = "pct"
+    # Canal GLOBAL (calque de transformation du groupe) et FOND (mode + couleur) : persistés,
+    # sinon un redéploiement perdrait la mise en scène en silence.
+    g = state.get("global")
+    if isinstance(g, dict) and g:
+        params["global"] = {k: g[k] for k in ("dx", "dy", "scale", "rotation", "opacity") if k in g}
+    bg = state.get("bg")
+    if isinstance(bg, dict) and bg:
+        # La couleur est persistée en HEX (sRGB) — JAMAIS en YUV : reconvertie à la profondeur et
+        # à la colorimétrie du conteneur (un redéploiement en 10 bits doit rester juste).
+        params["bg"] = {k: bg[k] for k in ("mode", "color", "legal") if k in bg}
     inputs = state.get("inputs") or []
     params["bg_input"] = (inputs[4] if len(inputs) > 4 else "") or None
     light = state.get("light")

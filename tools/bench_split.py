@@ -48,20 +48,24 @@ def synth_frame(m, seed):
 
 # Mêmes réglages que le profil de référence 0.9.x (tableau du chantier) → chiffres comparables.
 _BORD = {"inner": 10.0, "bevel": 0.8, "color": "#d4af37"}
-_SHAD = {"enabled": True, "dx": 10, "dy": 12, "blur": 10, "opacity": 0.6}
+_SHAD = {"enabled": True, "dx": 10, "dy": 12, "blur": 10, "opacity": 60.0}   # % (0.12.0)
 EFFECTS = {
     "socle":         {},
     "adoucissement": {"feather": 10.0},
     "coins":         {"radius": 30.0},
     "ombre":         {"shadow": dict(_SHAD)},
     "bordure":       {"border": dict(_BORD)},
-    "opacite":       {"opacity": 0.95},
+    "opacite":       {"opacity": 95.0},
     "rotation":      {"rotation": 8.0},
-    "sans_rotation": {"feather": 10.0, "radius": 30.0, "opacity": 0.95,
+    "sans_rotation": {"feather": 10.0, "radius": 30.0, "opacity": 95.0,
                       "shadow": dict(_SHAD), "border": dict(_BORD)},
-    "tout":          {"rotation": 8.0, "feather": 10.0, "radius": 30.0, "opacity": 0.95,
+    "tout":          {"rotation": 8.0, "feather": 10.0, "radius": 30.0, "opacity": 95.0,
                       "shadow": dict(_SHAD), "border": dict(_BORD)},
 }
+
+
+GLOBALS = {"global_actif": {"dx": 0.12, "dy": -0.08, "scale": 0.8, "rotation": 6.0,
+                            "opacity": 90.0}}
 
 
 def boxes_for(m, eff):
@@ -119,6 +123,38 @@ def main():
 
     effs = args.effects.split(",") if args.effects else list(EFFECTS)
     for eff in effs:
+        # Le canal GLOBAL n'est PAS un effet de box : c'est un calque composé. On le mesure en
+        # l'appliquant au socle → son surcoût par trame doit être NUL (il se replie dans le stamp).
+        if eff in GLOBALS:
+            with_g = m._norm_global(GLOBALS[eff])
+            boxes = boxes_for(m, "socle")
+            m._stamps.clear()
+            ts = []
+            for i in range(args.frames + 3):
+                canvas = bgbuf.copy()
+                t0 = time.perf_counter()
+                oy, ou, ov = m._plane_views(canvas)
+                for slot, b, alpha in m._plan_layers(None, boxes, with_g):
+                    sy, su, sv = srcs[slot]
+                    if m._is_adv(b):
+                        st = m._stamp_for(slot, b, alpha)
+                        if st is None:
+                            continue
+                        m._paint_shadow_rows(oy, ou, ov, st, 0, m.HEIGHT)
+                        m._place_adv_rows(oy, ou, ov, sy, su, sv, st, 0, m.HEIGHT)
+                    else:
+                        g = m._box_slice_geom(b, alpha)
+                        if g is None:
+                            continue
+                        m._place_box_band(oy, ou, ov, sy, su, sv, g, 0, m.HEIGHT)
+                        m._paint_border_band(oy, ou, ov, g, 0, m.HEIGHT)
+                dt = (time.perf_counter() - t0) * 1000.0
+                if i >= 3:
+                    ts.append(dt)
+            ts.sort()
+            print("%-14s min %6.2f  med %6.2f  moy %6.2f ms" % (
+                eff, ts[0], ts[len(ts) // 2], sum(ts) / len(ts)))
+            continue
         boxes = boxes_for(m, eff)
         m._stamps.clear()
         tr = None

@@ -36,6 +36,7 @@ window.MXLPlugins.split = (function () {
     // bords + centre des autres box), seuil ∝ résolution du canvas, guides pointillés, même
     // bouton. ★ Le nudge clavier CONTOURNE le snap (c'est sa raison d'être : le pixel près).
     let snapEnabled = true, snapGuides = [];
+    const _postPend = new Set();   // box en attente d'envoi (multi-déplacement : toutes suivent)
 
     const BOX_COLORS = ['#c0504d', '#4f81bd', '#9bbb59', '#8064a2'];   // repérage des box (donnée, pas décor)
 
@@ -322,6 +323,7 @@ window.MXLPlugins.split = (function () {
     // Envoie la valeur d'un rotatif vers le bon endpoint (fusion profonde côté moteur).
     function knobPost(knob, v) {
         const [kind, path] = String(knob.dataset.target).split(':');
+        if (kind === 'glob') { postGlobal({ [path]: v }); return; }   // canal GLOBAL
         if (kind === 'light') { postLight({ [path]: v }); return; }
         if (kind === 'art') { postArt({ [path]: v }); return; }
         applySetting(path, v);              // ★ toute la sélection, pas seulement la référence
@@ -575,11 +577,33 @@ window.MXLPlugins.split = (function () {
     </div>
     <aside class="split-targets">
       <h4>${esc(T('targets', 'Box & fond'))}</h4>
+      <!-- ★ CANAL GLOBAL : un CALQUE, pas une multi-sélection. Il se COMPOSE par-dessus les
+           réglages propres de chaque box (rendu = Global ∘ box) → tout le groupe sort du cadre
+           d'un bloc SANS écraser les valeurs individuelles. C'est ce qui rend les animations de
+           groupe (entrées/sorties de champ) possibles. -->
+      <button type="button" class="split-chip split-chip-global" id="split_global_chip"
+              aria-pressed="false" title="${esc(T('global_tip', 'Canal GLOBAL : un calque de transformation appliqué PAR-DESSUS les réglages de chaque box (décalage, échelle, rotation, opacité du groupe). Il ne remplace pas les valeurs des box — il s\'y compose. C\'est lui qui permet les entrées/sorties de champ de tout le groupe.'))}">
+        <span class="split-chip-dot split-dot-global"></span>
+        <span>${esc(T('global', 'Global (groupe)'))}</span>
+        <span class="split-chip-state" id="split_global_state"></span>
+      </button>
       <div class="split-strip" id="split_strip"></div>
+      <!-- FOND : trois modes explicites (noir / source vidéo / couleur unie) -->
       <div class="field split-bg-field">
-        <label for="split_bg">${esc(T('bg', 'Fond (plein cadre)'))}</label>
+        <label for="split_bg_mode">${esc(T('bg_mode', 'Fond (plein cadre)'))}</label>
+        <select id="split_bg_mode">${bgModeOptions()}</select>
+      </div>
+      <div class="field split-bg-field" id="split_bg_src_f">
+        <label for="split_bg">${esc(T('bg_src', 'Source du fond'))}</label>
         <select id="split_bg">${srcOptions(inputs[4])}</select>
       </div>
+      <div class="field split-bg-field" id="split_bg_col_f">
+        <label for="split_bg_color">${esc(T('bg_color', 'Couleur du fond'))}</label>
+        <input type="color" id="split_bg_color" value="${esc(((st && st.bg) || {}).color || '#000000')}">
+        <label class="toggle-inline split-bg-legal"><input type="checkbox" class="ios-toggle" id="split_bg_legal">
+          <span>${esc(T('bg_legal', 'Plage légale (broadcast)'))}</span></label>
+      </div>
+      <div id="split_bg_warn"></div>
     </aside>
   </div>
 
@@ -588,6 +612,7 @@ window.MXLPlugins.split = (function () {
        de couleur restent la structure — elles se répartissent simplement en colonnes. -->
   <div class="split-wide" id="split_props"></div>
   <div class="split-wide">
+    <div id="split_global"></div>
     <div id="split_art"></div>
     <div id="split_look"></div>
     <div class="cc-section split-full" id="split_mem">
@@ -652,7 +677,20 @@ window.MXLPlugins.split = (function () {
         $('#split_mem_import').onclick = () => $('#split_mem_file').click();
         $('#split_mem_file').onchange = function () { onImportMemFile(this); };
 
-        renderArt(); renderLook(); syncAll(); updateBudget(); renderError();
+        renderGlobal(); bindBg(); renderArt(); renderLook(); syncAll(); updateBudget(); renderError();
+        // Le chip « Global » amène au panneau du calque (et dit s'il est actif).
+        const gc = $('#split_global_chip');
+        if (gc) {
+            const on = !gNeutral(gGet());
+            gc.setAttribute('aria-pressed', on ? 'true' : 'false');
+            gc.classList.toggle('is-on', on);
+            const stt = $('#split_global_state');
+            if (stt) stt.textContent = on ? T('global_on', 'actif') : T('global_off', 'neutre');
+            gc.onclick = () => {
+                const p = $('#split_global');
+                if (p) { p.scrollIntoView({ behavior: 'smooth', block: 'center' }); p.classList.add('is-flash'); setTimeout(() => p.classList.remove('is-flash'), 900); }
+            };
+        }
     }
 
     // ─── Bande des box ──────────────────────────────────────────────────────────────
@@ -744,11 +782,18 @@ window.MXLPlugins.split = (function () {
     // qui reste hors budget, c'est une rotation qui BOUGE (transition / glissement du curseur) :
     // l'empreinte 2D est alors reconstruite à chaque trame (~53 ms en 1080p). L'avertissement ne
     // parle donc plus de la rotation en soi, mais de la rotation ANIMÉE.
+    // ★ PLUS DE BAVARDAGE QUAND TOUT VA BIEN (0.12.0). Depuis le noyau C, une rotation FIXE tient
+    // largement le budget (8,4 ms en 1080p50 pour 20 ms) : annoncer « c'est confortable » revenait
+    // à s'excuser d'un problème qui n'existe plus. Le SEUL cas encore hors budget est la rotation
+    // ANIMÉE (transition / curseur qu'on fait glisser) : l'empreinte 2D est alors reconstruite à
+    // chaque trame (~53 ms en 1080p). On ne le dit donc QUE là où c'est VRAI : une box de la
+    // sélection est effectivement tournée ET le format est lourd. Sinon : rien.
     function rotationWarning() {
-        const h = (st && st.height) || 0, fps = (st && st.fps) || 25;
-        if (h >= 1080 && fps >= 50) return { cls: 'alert-warning', msg: T('rot_over', 'Rotation ANIMÉE (transition/glissement du curseur) HORS BUDGET en 1080p50 : les cartes 2D se reconstruisent à chaque trame (~53 ms). En position FIXE elle tient largement (~9 ms/trame, noyau C).') };
-        if (h >= 1080) return { cls: 'alert-info', msg: T('rot_tight', 'Rotation confortable en 1080p (~9 ms/trame, 4 box, noyau C). Seule une rotation ANIMÉE en transition reste coûteuse (reconstruction des cartes 2D).') };
-        return { cls: 'alert-info', msg: T('rot_ok', 'Rotation confortable dans ce format (~3 ms/trame en 720p, 4 box, noyau C).') };
+        const h = (st && st.height) || 0;
+        const rot = sel.some(i => boxes[i] && Math.abs(boxes[i].rotation || 0) > 0.001)
+            || Math.abs(gGet().rotation || 0) > 0.001;
+        if (!rot || h < 1080) return null;
+        return { cls: 'alert-warning', msg: T('rot_anim', 'Rotation ANIMÉE (transition, ou curseur qu\'on fait glisser) hors budget dans ce format : les cartes 2D se reconstruisent à chaque trame (~53 ms en 1080p). À l\'ARRÊT, la rotation ne coûte presque rien (noyau C).') };
     }
 
     // ─── Panneau de réglages ────────────────────────────────────────────────────────
@@ -767,7 +812,7 @@ window.MXLPlugins.split = (function () {
         const i = primary();
         if (i < 0 || !boxes[i]) { host.innerHTML = `<p class="meta">${esc(T('no_sel', 'Aucune box sélectionnée.'))}</p>`; return; }
         const b = boxes[i];
-        const rw = rotationWarning();
+        const rw = rotationWarning();   // null = rien à dire (cas nominal)
         const K = (target, label, group, key, unit, shape) => {
             const [min, max, dflt] = cap(group, key);
             const path = target.split(':')[1];
@@ -829,7 +874,7 @@ ${!advanced ? '' : `<div id="split_adv">
       ${K('box:feather', T('k_feather', 'Adoucis.'), 'box_fields', 'feather', 'px')}
       ${K('box:radius', T('k_radius', 'Coins'), 'box_fields', 'radius', 'px')}
     </div>
-    <div class="alert ${rw.cls}" id="split_rot_warn">${esc(rw.msg)}</div>
+    ${rw ? `<div class="alert ${rw.cls}" id="split_rot_warn">${esc(rw.msg)}</div>` : ''}
     <div class="split-toggles">
       ${toggleField('mirror_h', '', T('f_mirror_h', 'Miroir horizontal'))}
       ${toggleField('mirror_v', '', T('f_mirror_v', 'Miroir vertical'))}
@@ -921,6 +966,96 @@ ${!advanced ? '' : `<div id="split_adv">
             sc.disabled = !b.shadow.enabled;
             sc.title = b.shadow.enabled ? '' : T('shadow_off', 'Activez l\'ombre portée (interrupteur ci-dessus) pour régler ces valeurs.');
         }
+    }
+
+    // ─── FOND : mode (noir / source / couleur) ──────────────────────────────────────
+    // Les modes viennent de /state.caps.bg_modes (rien en dur). La couleur est saisie en sRGB
+    // (hex) : c'est le MOTEUR qui la convertit — à SA profondeur (8/10/12 bits) et à SA
+    // colorimétrie déclarée. On ne persiste jamais du YUV.
+    const bgModes = () => (caps && caps.bg_modes) || ['none', 'source', 'color'];
+    const BG_LBL = { none: ['bg_m_none', 'Noir'], source: ['bg_m_source', 'Source vidéo'],
+                     color: ['bg_m_color', 'Couleur unie'] };
+    function bgModeOptions() {
+        const cur = ((st && st.bg) || {}).mode || 'none';
+        return bgModes().map(m => {
+            const [k, fb] = BG_LBL[m] || [m, m];
+            return `<option value="${esc(m)}"${cur === m ? ' selected' : ''}>${esc(T(k, fb))}</option>`;
+        }).join('');
+    }
+    function bindBg() {
+        const bg = (st && st.bg) || { mode: 'none' };
+        const srcF = $('#split_bg_src_f'), colF = $('#split_bg_col_f');
+        if (srcF) srcF.style.display = (bg.mode === 'source') ? '' : 'none';
+        if (colF) colF.style.display = (bg.mode === 'color') ? '' : 'none';
+        const lg = $('#split_bg_legal'); if (lg) lg.checked = (bg.legal !== false);
+        const md = $('#split_bg_mode'); if (md) md.onchange = () => postBg({ mode: md.value });
+        const col = $('#split_bg_color'); if (col) col.onchange = () => postBg({ color: col.value });
+        if (lg) lg.onchange = () => postBg({ legal: lg.checked });
+        // ★ JAMAIS MUET : fond « source » sans slot câblé → l'image sera NOIRE ; couleur hors
+        // plage légale → elle a été ÉCRÊTÉE. On le dit, on ne corrige rien d'office.
+        const w = $('#split_bg_warn'); if (!w) return;
+        let html = '';
+        if (bg.mode === 'source' && !inputs[4]) {
+            html = `<div class="alert alert-warning">${esc(T('bg_w_nosrc', 'Fond « source vidéo » mais aucune source câblée : le fond sera NOIR. Choisissez une source ci-dessus, ou passez le fond en noir/couleur.'))}</div>`;
+        } else if (bg.mode === 'color' && bg.clipped) {
+            html = `<div class="alert alert-warning">${esc(T('bg_w_clip', 'Couleur HORS de la plage légale (broadcast) : elle a été écrêtée à la plage encodable. Décochez « Plage légale » pour l\'encoder en plage complète (au risque d\'un écrêtage en aval).'))}</div>`;
+        }
+        w.innerHTML = html;
+    }
+    async function postBg(patch) {
+        if (VMID == null) return;
+        try {
+            const r = await fetch(`/api/containers/${VMID}/plugin/bg`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+            });
+            const j = await r.json().catch(() => ({}));
+            if (!r.ok || j.error) showError(T('bg_err', 'Fond refusé') + ' : ' + (j.error || ('HTTP ' + r.status)));
+        } catch (e) { showError(T('bg_err', 'Fond refusé') + ' : ' + e.message); }
+        await fetchState({ rebuild: false });
+        renderShell();
+    }
+
+    // ─── CANAL GLOBAL : panneau de réglages (cadrans, bornes issues de caps.global_fields) ──
+    function renderGlobal() {
+        const host = $('#split_global'); if (!host || !st) return;
+        const g = gGet(), on = !gNeutral(g);
+        host.className = 'cc-section';
+        const K = (key, label, unit, shape) => {
+            const [min, max, dflt] = cap('global_fields', key);
+            return knobHtml({ target: 'glob:' + key, label, min, max, step: stepOf(min, max),
+                              def: (dflt == null ? 0 : dflt), unit, shape }, g[key]);
+        };
+        host.innerHTML = `
+<h4>${esc(T('global_sec', 'Canal Global (transformation du groupe)'))}
+  ${on ? `<span class="split-badge-on">${esc(T('global_on', 'actif'))}</span>` : ''}</h4>
+<div class="cc-knob-row">
+  ${K('dx', T('g_dx', 'Décal. X'), '', '')}
+  ${K('dy', T('g_dy', 'Décal. Y'), '', '')}
+  ${K('scale', T('g_scale', 'Échelle'), '×', '')}
+  ${K('rotation', T('g_rot', 'Rotation'), '°', 'angle')}
+  ${K('opacity', T('g_op', 'Opacité'), '%', '')}
+</div>
+<div class="row">
+  <button type="button" class="btn" id="split_g_reset">${esc(T('g_reset', 'Remettre le Global à neutre'))}</button>
+</div>
+<p class="meta">${esc(T('global_note', 'Le Global se COMPOSE par-dessus les réglages de chaque box (rendu = Global ∘ box) : il ne remplace aucune valeur individuelle — les box gardent leurs positions relatives. C\'est ce qui permet de faire ENTRER ou SORTIR tout le groupe du cadre (les box peuvent sortir du cadre : la marge autour de l\'aperçu est là pour ça). Il est enregistré dans les mémoires et interpolé pendant les transitions. Coût mesuré : nul (il est replié dans l\'empreinte de chaque box). Quand il n\'est pas neutre, le magnétisme est désactivé (aimanter dans un repère tourné donnerait des guides faux).'))}</p>`;
+        const rb = $('#split_g_reset');
+        if (rb) rb.onclick = () => postGlobal({ dx: 0, dy: 0, scale: 1, rotation: 0, opacity: 100 });
+        bindKnobs(host);
+    }
+    async function postGlobal(patch) {
+        if (VMID == null) return;
+        if (st) st.global = Object.assign({}, gGet(), patch);   // aperçu immédiat
+        drawCanvas();
+        try {
+            const r = await fetch(`/api/containers/${VMID}/plugin/global`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+            });
+            const j = await r.json().catch(() => ({}));
+            if (!r.ok || j.error) showError(T('global_err', 'Global refusé') + ' : ' + (j.error || ('HTTP ' + r.status)));
+            else if (j.global && st) st.global = j.global;
+        } catch (e) { showError(T('global_err', 'Global refusé') + ' : ' + e.message); }
+        drawCanvas();
     }
 
     // ─── Habillage : AVERTISSEMENTS (0.10.1) ────────────────────────────────────────
@@ -1177,8 +1312,9 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
             .sort((a, b_) => (a.z - b_.z) || (a.i - b_.i)).map(o => o.i);
     }
     function rectPx(i, CW, CH) {
-        const r = rectN(boxes[i]);
-        return { x0: r.x0 * CW, y0: r.y0 * CH, w: r.w * CW, h: r.h * CH, cx: r.cx * CW, cy: r.cy * CH };
+        const r = rectN(gTransform(boxes[i])), v = view(CW, CH);
+        return { x0: v.MX + r.x0 * v.FW, y0: v.MY + r.y0 * v.FH, w: r.w * v.FW, h: r.h * v.FH,
+                 cx: v.MX + r.cx * v.FW, cy: v.MY + r.cy * v.FH };
     }
     function pathRect(ctx, r, radPx) {
         const rad = Math.max(0, Math.min(radPx, Math.min(r.w, r.h) / 2));
@@ -1197,21 +1333,26 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         const muted = (css.getPropertyValue('--text-muted') || '#888').trim();
         const strong = (css.getPropertyValue('--text-strong') || '#fff').trim();
         const accent = (css.getPropertyValue('--accent') || '#7aa2c8').trim();
+        const V = view(CW, CH);
+        // ★ LE CADRE EST UN RECTANGLE INTÉRIEUR (marge autour) : sans cette marge, on ne pourrait
+        // ni tirer une box DEHORS, ni la voir revenir — donc aucune entrée/sortie de champ.
+        // Le FOND est peint tel qu'il sera rendu : couleur unie choisie, ou noir, ou « source ».
+        const bg = (st && st.bg) || { mode: 'none' };
+        ctx.fillStyle = (bg.mode === 'color') ? (bg.color || '#000') : '#000';
+        ctx.fillRect(V.MX, V.MY, V.FW, V.FH);
         ctx.font = '11px Inter, system-ui, sans-serif';
-        ctx.fillStyle = muted;
-        ctx.fillText(inputs[4] ? (T('bg_short', 'Fond') + ' : ' + inputs[4]) : T('bg_none', 'Fond (non câblé)'), 6, 14);
-        const scale = CW / ((st && st.width) || 1280);
+        const scale = V.FW / ((st && st.width) || 1280);
 
         zOrder().forEach(i => {
-            const b = boxes[i], r = rectPx(i, CW, CH);
+            const b = gTransform(boxes[i]), r = rectPx(i, CW, CH);
             ctx.save();
             ctx.translate(r.cx, r.cy);
             if (b.rotation) ctx.rotate(-b.rotation * Math.PI / 180);
             ctx.translate(-r.cx, -r.cy);
-            ctx.globalAlpha = (b.enabled ? 1 : 0.28) * (b.opacity == null ? 1 : b.opacity);
+            ctx.globalAlpha = (b.enabled ? 1 : 0.28) * (b.opacity == null ? 1 : b.opacity / 100);
             if (b.shadow && b.shadow.enabled && b.enabled) {
                 ctx.save();
-                ctx.globalAlpha *= b.shadow.opacity;
+                ctx.globalAlpha *= (b.shadow.opacity || 0) / 100;
                 ctx.fillStyle = b.shadow.color;
                 ctx.filter = b.shadow.blur ? `blur(${Math.max(1, b.shadow.blur * scale)}px)` : 'none';
                 pathRect(ctx, { x0: r.x0 + b.shadow.dx * scale, y0: r.y0 + b.shadow.dy * scale, w: r.w, h: r.h }, (b.radius || 0) * scale);
@@ -1233,6 +1374,22 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
             if (sel.includes(i)) { ctx.fillStyle = accent; ctx.fillRect(r.x0 + r.w - 7, r.y0 + r.h - 7, 7, 7); }
             ctx.restore();
         });
+        // Voile sur le HORS-CADRE : ce qui déborde est visible (on le manipule) mais clairement
+        // « dehors » — c'est ce qui sortira du champ. Le liseré marque le cadre de sortie.
+        ctx.save();
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.beginPath();
+        ctx.rect(0, 0, CW, CH);
+        ctx.rect(V.MX, V.MY, V.FW, V.FH);
+        ctx.fill('evenodd');
+        ctx.restore();
+        ctx.strokeStyle = muted; ctx.lineWidth = 1;
+        ctx.strokeRect(V.MX + 0.5, V.MY + 0.5, V.FW - 1, V.FH - 1);
+        ctx.fillStyle = muted;
+        const bgLbl = (bg.mode === 'color') ? (T('bg_color_lbl', 'Fond : couleur') + ' ' + (bg.color || ''))
+            : (bg.mode === 'source' ? (T('bg_short', 'Fond') + ' : ' + (inputs[4] || T('bg_unwired', 'non câblé')))
+                                    : T('bg_none_lbl', 'Fond : noir'));
+        ctx.fillText(bgLbl, V.MX + 6, V.MY + 14);
         drawGuides(ctx, CW, CH, css);
         redrawSidebar();
     }
@@ -1244,6 +1401,59 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         const cv = $('#split_canvas'), rect = cv.getBoundingClientRect();
         const sx = cv.width / (rect.width || 1), sy = cv.height / (rect.height || 1);
         return { px: (e.clientX - rect.left) * sx, py: (e.clientY - rect.top) * sy, CW: cv.width, CH: cv.height };
+    }
+    // ★ HORS CADRE (0.12.0) : le canvas ne montre plus SEULEMENT le cadre — il l'entoure d'une
+    // MARGE, sans laquelle on ne pourrait ni tirer une box dehors, ni la voir revenir (pas
+    // d'entrée ni de sortie de champ). Le cadre est donc un rectangle INTÉRIEUR au canvas ;
+    // tout le mapping écran ↔ normalisé passe par `view()`. Les BORNES, elles, viennent de
+    // `/state.caps.pos` (rien en dur).
+    const OUT_M = 0.18;                       // marge visible autour du cadre (× la taille du cadre)
+    function view(CW, CH) {
+        const FW = CW / (1 + 2 * OUT_M), FH = CH / (1 + 2 * OUT_M);
+        return { FW, FH, MX: (CW - FW) / 2, MY: (CH - FH) / 2 };
+    }
+    const posCap = () => (caps && caps.pos) || [0, 1];       // bornes x/y publiées par le moteur
+
+    // ═══ CANAL GLOBAL — calque de transformation du GROUPE (rendu = Global ∘ box) ═══════════
+    // L'aperçu applique EXACTEMENT la composition du moteur (_apply_global) : autour du centre
+    // du cadre, EN PIXELS (sinon une rotation de groupe cisaillerait la scène en 16:9), ordre
+    // échelle → rotation → décalage. Le canvas dit donc la VÉRITÉ du rendu.
+    const G_NEUTRAL = { dx: 0, dy: 0, scale: 1, rotation: 0, opacity: 100 };
+    const gGet = () => Object.assign({}, G_NEUTRAL, (st && st.global) || {});
+    const gNeutral = g => (!g.dx && !g.dy && Math.abs((g.scale == null ? 1 : g.scale) - 1) < 1e-9
+                           && !g.rotation && (g.opacity == null || g.opacity >= 100));
+    function gTransform(b) {
+        const g = gGet();
+        if (gNeutral(g)) return b;
+        const W = (st && st.width) || 1280, H = (st && st.height) || 720;
+        const cx = W / 2, cy = H / 2, th = g.rotation * Math.PI / 180;
+        const c = Math.cos(th), sn = Math.sin(th), sc = g.scale;
+        const vx = b.x * W - cx, vy = b.y * H - cy;
+        const rx = (vx * c - vy * sn) * sc, ry = (vx * sn + vy * c) * sc;
+        return Object.assign({}, b, {
+            x: (cx + rx) / W + g.dx, y: (cy + ry) / H + g.dy,
+            size: b.size * sc,
+            size_x: b.size_x ? b.size_x * sc : b.size_x,
+            size_y: b.size_y ? b.size_y * sc : b.size_y,
+            rotation: (b.rotation || 0) + g.rotation,
+            opacity: (b.opacity == null ? 100 : b.opacity) * g.opacity / 100,
+        });
+    }
+    // Glisser une box quand le Global est actif : le geste se fait dans l'espace TRANSFORMÉ, la
+    // valeur écrite est dans l'espace de la box → on ANNULE la transformation sur le déplacement
+    // (sans quoi tirer vers la droite déplacerait la box en biais dès que le groupe est incliné).
+    function gInvDelta(dxn, dyn) {
+        const g = gGet();
+        if (gNeutral(g)) return { dx: dxn, dy: dyn };
+        const W = (st && st.width) || 1280, H = (st && st.height) || 720;
+        const th = -g.rotation * Math.PI / 180, c = Math.cos(th), sn = Math.sin(th);
+        const sc = g.scale || 1;
+        const px = dxn * W, py = dyn * H;
+        return { dx: ((px * c - py * sn) / sc) / W, dy: ((px * sn + py * c) / sc) / H };
+    }
+    function toN(px, py, CW, CH) {                            // écran → normalisé (cadre)
+        const v = view(CW, CH);
+        return { nx: (px - v.MX) / v.FW, ny: (py - v.MY) / v.FH };
     }
     const EDGE_PX = 7;
     const CURSOR = { move: 'move', resize: 'nwse-resize', 'crop-l': 'ew-resize', 'crop-r': 'ew-resize', 'crop-t': 'ns-resize', 'crop-b': 'ns-resize' };
@@ -1268,7 +1478,14 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         if (!h) return;
         selectBox(h.idx, e.shiftKey);
         const b = boxes[h.idx];
-        drag = { idx: h.idx, mode: h.mode, sx: px, sy: py, bx: b.x, by: b.y, bsize: b.size };
+        // ★ MULTI-DÉPLACEMENT (0.12.0) : glisser une box SÉLECTIONNÉE entraîne TOUTE la
+        // sélection, en DELTA — chaque box garde sa position RELATIVE (même logique que les
+        // champs de géométrie en multi). On mémorise donc la position de départ de CHACUNE.
+        // Le REDIMENSIONNEMENT, lui, s'applique à chaque box AUTOUR DE SON PROPRE CENTRE
+        // (chacune grandit sur place) : c'est le geste attendu, et il ne déplace personne.
+        drag = { idx: h.idx, mode: h.mode, sx: px, sy: py, bx: b.x, by: b.y, bsize: b.size,
+                 group: sel.slice(), start: sel.map(i => ({ i, x: boxes[i].x, y: boxes[i].y,
+                                                            size: boxes[i].size })) };
         e.target.setPointerCapture(e.pointerId);
     }
     function canvasMove(e) {
@@ -1278,7 +1495,9 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
             if (cv) { const h = hitTest(px, py, CW, CH); cv.style.cursor = h ? CURSOR[h.mode] : 'default'; }
             return;
         }
-        const b = boxes[drag.idx], fw = wOf(b) * CW, fh = hOf(b) * CH;
+        const V = view(CW, CH);
+        const b = boxes[drag.idx], fw = wOf(b) * V.FW, fh = hOf(b) * V.FH;
+        const [pmin, pmax] = posCap();
         const [cmin, cmax] = cap('crop');
         const capL = v => clamp(v, cmin, Math.min(cmax, 0.92 - b.crop.r)), capR = v => clamp(v, cmin, Math.min(cmax, 0.92 - b.crop.l));
         const capT = v => clamp(v, cmin, Math.min(cmax, 0.92 - b.crop.b)), capB = v => clamp(v, cmin, Math.min(cmax, 0.92 - b.crop.t));
@@ -1286,48 +1505,85 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         snapGuides = [];
         switch (drag.mode) {
             case 'move': {
-                b.x = clamp(drag.bx + (px - drag.sx) / CW, 0, 1);
-                b.y = clamp(drag.by + (py - drag.sy) / CH, 0, 1);
-                if (snapEnabled) {   // aimantation aux bords/centre du cadre et des autres box
+                // Déplacement de la box TIRÉE (bornes = caps.pos : le hors-cadre est permis)…
+                const dn = gInvDelta((px - drag.sx) / V.FW, (py - drag.sy) / V.FH);
+                b.x = clamp(drag.bx + dn.dx, pmin, pmax);
+                b.y = clamp(drag.by + dn.dy, pmin, pmax);
+                // Snap DÉSACTIVÉ tant que le Global n'est pas neutre : aimanter dans un repère
+                // tourné/échelonné donnerait des guides qui mentent (on le DIT dans l'UI).
+                if (snapEnabled && gNeutral(gGet())) {   // aimantation aux bords/centre du cadre et des autres box
                     const r = rectPx(drag.idx, CW, CH);
                     const s = computeSnap(drag.idx, r.x0, r.y0, r.w, r.h, CW, CH);
-                    b.x = clamp(b.x + (s.x - r.x0) / CW, 0, 1);
-                    b.y = clamp(b.y + (s.y - r.y0) / CH, 0, 1);
+                    b.x = clamp(b.x + (s.x - r.x0) / V.FW, pmin, pmax);
+                    b.y = clamp(b.y + (s.y - r.y0) / V.FH, pmin, pmax);
                     snapGuides = s.guides;
+                }
+                // … puis REPORT DU MÊME DÉCALAGE sur le reste de la sélection (écarts relatifs
+                // conservés). Le décalage est celui RÉELLEMENT appliqué (snap compris).
+                if (drag.group.length > 1) {
+                    const dx = b.x - drag.bx, dy = b.y - drag.by;
+                    drag.start.forEach(s0 => {
+                        if (s0.i === drag.idx) return;
+                        const o = boxes[s0.i];
+                        o.x = clamp(s0.x + dx, pmin, pmax);
+                        o.y = clamp(s0.y + dy, pmin, pmax);
+                    });
                 }
                 break;
             }
             case 'resize': {
-                b.size = clamp(Math.abs(px - b.x * CW) * 2 / CW, smin, smax);
-                if (snapEnabled) {
+                const f0 = b.size, gsc = gGet().scale || 1;
+                b.size = clamp(Math.abs(px - (V.MX + gTransform(b).x * V.FW)) * 2 / V.FW / gsc, smin, smax);
+                if (snapEnabled && gNeutral(gGet())) {
                     const r = rectPx(drag.idx, CW, CH);
                     const s = computeSnapResize(drag.idx, r, CW, CH);
                     if (s.guides.length) { b.size = clamp(b.size * s.factor, smin, smax); snapGuides = s.guides; }
                 }
+                // MULTI : même FACTEUR d'échelle pour toutes, chacune AUTOUR DE SON CENTRE (elles
+                // grandissent sur place — aucune ne se déplace, la disposition est préservée).
+                if (drag.group.length > 1 && f0 > 0) {
+                    const k = b.size / (drag.bsize || f0);
+                    drag.start.forEach(s0 => {
+                        if (s0.i === drag.idx) return;
+                        boxes[s0.i].size = clamp(s0.size * k, smin, smax);
+                    });
+                }
                 break;
             }
-            case 'crop-l': b.crop.l = capL((px - b.x * CW) / fw + 0.5); break;
-            case 'crop-r': b.crop.r = capR(0.5 - (px - b.x * CW) / fw); break;
-            case 'crop-t': b.crop.t = capT((py - b.y * CH) / fh + 0.5); break;
-            case 'crop-b': b.crop.b = capB(0.5 - (py - b.y * CH) / fh); break;
+            case 'crop-l': b.crop.l = capL((px - (V.MX + b.x * V.FW)) / fw + 0.5); break;
+            case 'crop-r': b.crop.r = capR(0.5 - (px - (V.MX + b.x * V.FW)) / fw); break;
+            case 'crop-t': b.crop.t = capT((py - (V.MY + b.y * V.FH)) / fh + 0.5); break;
+            case 'crop-b': b.crop.b = capB(0.5 - (py - (V.MY + b.y * V.FH)) / fh); break;
         }
-        drawCanvas(); throttledPostBox(drag.idx);
+        drawCanvas();
+        if (drag.group.length > 1 && (drag.mode === 'move' || drag.mode === 'resize')) {
+            drag.group.forEach(i => throttledPostBox(i));    // toute la sélection suit, en direct
+        } else {
+            throttledPostBox(drag.idx);
+        }
     }
     function canvasUp() {
         if (!drag) return;
-        const i = drag.idx; drag = null; snapGuides = [];
-        const b = boxes[i];
-        postBox(i, { x: b.x, y: b.y, size: b.size, crop: b.crop });
+        const grp = (drag.mode === 'move' || drag.mode === 'resize') ? drag.group : [drag.idx];
+        drag = null; snapGuides = [];
+        grp.forEach(i => {
+            const b = boxes[i];
+            postBox(i, { x: b.x, y: b.y, size: b.size, crop: b.crop });   // commit de CHAQUE box
+        });
         syncAll();
     }
 
     // ─── Écritures serveur ──────────────────────────────────────────────────────────
     function throttledPostBox(i) {
+        _postPend.add(i);
         if (boxPostTimer) return;
         boxPostTimer = setTimeout(() => {
             boxPostTimer = null;
-            const b = boxes[i];
-            postBox(i, { x: b.x, y: b.y, size: b.size, crop: b.crop }, true);
+            const pend = Array.from(_postPend); _postPend.clear();
+            pend.forEach(j => {
+                const bj = boxes[j];
+                if (bj) postBox(j, { x: bj.x, y: bj.y, size: bj.size, crop: bj.crop }, true);
+            });
         }, 60);
     }
     async function postBox(i, patch, skipPersist) {
@@ -1388,6 +1644,11 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
             <option value="">${esc(T('mem_send', 'Envoyer vers…'))}</option>
             ${others.map(d => `<option value="${d.vmid}">${esc(d.hostname)} (#${d.vmid})</option>`).join('')}</select>`;
     }
+    // Une mémoire est soit une LISTE de box (format ≤ 0.11), soit {boxes, global, bg} (0.12.0 :
+    // le canal Global et le fond en font partie — sans eux, « groupe hors champ » ou « fond bleu »
+    // ne se rappelleraient pas). Les deux se lisent.
+    const memBoxes = m => (Array.isArray(m.config) ? m.config : ((m.config && m.config.boxes) || []));
+
     async function loadMemories() {
         if (VMID == null) return;
         const ul = $('#split_mem_list'); if (!ul) return;
@@ -1396,7 +1657,7 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
             memCache = mems;
             if (!mems.length) { ul.innerHTML = `<li class="meta">${esc(T('mem_empty', 'Aucune mémoire.'))}</li>`; return; }
             ul.innerHTML = mems.map(m => {
-                const nOn = (m.config || []).filter(b => b && b.enabled).length;
+                const nOn = memBoxes(m).filter(b => b && b.enabled).length;
                 return `<li class="split-mem-card"><b title="${esc(m.name)}">${esc(m.name)}</b>
                     <canvas data-mem-preview="${m.id}"></canvas>
                     <span class="meta">${nOn} ${esc(T('mem_active', 'box active(s)'))}</span>
@@ -1408,7 +1669,7 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
                         ${sendSelect(m.id)}
                     </div></li>`;
             }).join('');
-            mems.forEach(m => drawMemPreview(ul.querySelector(`canvas[data-mem-preview="${m.id}"]`), m.config));
+            mems.forEach(m => drawMemPreview(ul.querySelector(`canvas[data-mem-preview="${m.id}"]`), memBoxes(m)));
             ul.querySelectorAll('button[data-recall]').forEach(b => { b.onclick = () => recallMemory(parseInt(b.dataset.recall)); });
             ul.querySelectorAll('button[data-export]').forEach(b => { b.onclick = () => exporterMemoire(parseInt(b.dataset.export)); });
             ul.querySelectorAll('button[data-del]').forEach(b => { b.onclick = () => deleteMemory(parseInt(b.dataset.del)); });
@@ -1448,7 +1709,9 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         let data;
         try { data = JSON.parse(await file.text()); }
         catch (e) { showError(T('mem_bad_file', 'Fichier invalide (JSON)') + ' : ' + e.message); return; }
-        if (!Array.isArray(data.config)) { showError(T('mem_bad_cfg', 'Fichier invalide : champ « config » manquant.')); return; }
+        const okCfg = Array.isArray(data.config)
+            || (data.config && Array.isArray(data.config.boxes));   // format 0.12 (boxes+global+bg)
+        if (!okCfg) { showError(T('mem_bad_cfg', 'Fichier invalide : champ « config » manquant.')); return; }
         const name = (data.name || file.name.replace(/\.json$/i, '')).trim() || T('mem_imported', 'mémoire importée');
         const r = await fetch(`/api/containers/${VMID}/split/memories`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, config: data.config }),
@@ -1481,7 +1744,7 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         set('split_paste', !clipboard || !sel.length, T('paste_need_clip', 'Copiez d\'abord les réglages d\'une box.'));
         if (sel.length >= 2) { const b = $('#split_size_w'); if (b) b.title = T('size_w', 'Même largeur que la référence'); }
     }
-    function syncAll() { renderStrip(); renderProps(); updateToolbar(); drawCanvas(); }
+    function syncAll() { renderStrip(); renderProps(); renderGlobal(); bindBg(); updateToolbar(); drawCanvas(); }
     function onResize() { if (EL && $('#split_canvas')) drawCanvas(); }
 
     // ─── Mini-aperçu de la sidebar Traitements ──────────────────────────────────────

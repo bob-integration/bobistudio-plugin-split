@@ -300,3 +300,23 @@
 .cc-knob.is-mixed .cc-knob-value::placeholder { color: var(--text-muted); text-align: center; }
 /* Plusieurs pastilles dans l'en-tête = les box concernées par l'édition. */
 .split-props-head .split-chip-dot + .split-chip-dot { margin-left: -4px; }
+
+/* ── CANAL GLOBAL (0.12.0) : un CALQUE, pas une multi-sélection ────────────────────────────
+   Il apparaît comme un canal SUPPLÉMENTAIRE au-dessus des 4 box (colonne « Box & fond ») :
+   c'est un objet à part entière (persistant, mémorisable, interpolé en transition), et son
+   état — neutre ou actif — se lit d'un coup d'œil. */
+.split-chip-global { width: 100%; margin-bottom: var(--space-2); }
+.split-chip-global.is-on { border-color: var(--accent); }
+.split-dot-global {
+    background: conic-gradient(from 0deg, var(--accent), var(--text-muted), var(--accent));
+}
+.split-chip-state { margin-left: auto; font-size: 0.78em; color: var(--text-muted); }
+.split-chip-global.is-on .split-chip-state { color: var(--accent); font-weight: 600; }
+.split-badge-on {
+    font-size: 0.72em; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase;
+    color: var(--accent); border: 1px solid var(--accent); border-radius: 999px;
+    padding: 1px 8px; margin-left: 8px; vertical-align: middle;
+}
+#split_global.is-flash { outline: 2px solid var(--accent); outline-offset: 3px; }
+/* Fond : les champs du mode courant seulement (les autres sont masqués par bindBg). */
+.split-bg-legal { margin-top: var(--space-1); }

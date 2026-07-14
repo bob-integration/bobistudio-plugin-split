@@ -15,20 +15,23 @@
 # Usage : python3 check_bitexact.py --ref /sb/script_ref.py --new /sb/script.py [--iters 40]
 import argparse, os, sys, json
 
+SHADOW = False
+
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from bench_split import load_plugin, synth_frame, compose
 
 
-def rand_box(rng, hard):
+def rand_box(rng, hard, pct=False):
+    """pct=True → opacités en POURCENT (moteur ≥ 0.12.0) ; sinon en fraction (0.9.x/0.11.x)."""
     b = {"enabled": True,
          "x": float(rng.uniform(-0.1, 1.1) if hard else rng.uniform(0.2, 0.8)),
          "y": float(rng.uniform(-0.1, 1.1) if hard else rng.uniform(0.2, 0.8)),
          "size": float(rng.uniform(0.1, 0.9)),
          "crop": {k: float(rng.uniform(0, 0.4)) for k in "tblr"},
          "rotation": float(rng.choice([0.0, 0.0, rng.uniform(-180, 180)])),
-         "opacity": float(rng.choice([1.0, 1.0, rng.uniform(0.0, 1.0)])),
+         "opacity": float(rng.choice([1.0, 1.0, rng.uniform(0.0, 1.0)])) * (100.0 if pct else 1.0),
          "feather": float(rng.choice([0.0, rng.uniform(0, 64)])),
          "radius": float(rng.choice([0.0, rng.uniform(0, 120)])),
          "mirror_h": bool(rng.integers(0, 2)), "mirror_v": bool(rng.integers(0, 2)),
@@ -43,7 +46,7 @@ def rand_box(rng, hard):
                     "bevel_pos": float(rng.uniform(0, 1))},
          "shadow": {"enabled": bool(rng.integers(0, 2)), "dx": float(rng.uniform(-40, 40)),
                     "dy": float(rng.uniform(-40, 40)), "blur": float(rng.uniform(0, 30)),
-                    "opacity": float(rng.uniform(0, 1)), "color": "#101010"},
+                    "opacity": float(rng.uniform(0, 1)) * (100.0 if pct else 1.0), "color": "#101010"},
          "z": float(rng.integers(0, 4))}
     return b
 
@@ -88,7 +91,12 @@ def main():
     ap.add_argument("--iters", type=int, default=30)
     ap.add_argument("--depth", type=int, default=8)
     ap.add_argument("--res", default="1080")
+    ap.add_argument("--shadow", action="store_true",
+                    help="ombre ACTIVE (comparaison kernel vs repli seulement : le masque a "
+                         "changé en 0.12.0 — le flou s'épand vers l'extérieur)")
     args = ap.parse_args()
+    global SHADOW
+    SHADOW = args.shadow
     w, h = (1280, 720) if args.res == "720" else (1920, 1080)
 
     mods = {}
@@ -107,11 +115,23 @@ def main():
     for it in range(args.iters):
         chroma = ("422", "420", "444")[it % 3]
         hard = bool(it % 2)
-        boxes = [rand_box(rng, hard) for _ in range(4)]
+        # ⚠ UNITÉS : le moteur ≥ 0.12.0 parle en POURCENT ; la 0.9.x en fraction. On tire UNE
+        # géométrie et on l'exprime dans l'unité de chaque moteur → la comparaison reste juste.
+        # ⚠ OMBRE : son masque a changé (le flou s'épand désormais VERS L'EXTÉRIEUR — la 0.9.x le
+        # rognait au bord). Elle est donc EXCLUE de la comparaison à la REF (divergence VOULUE),
+        # mais comparée entre kernel et repli (qui doivent, eux, être identiques).
+        st0 = rng.bit_generator.state
+        boxes_pct = [rand_box(rng, hard, pct=True) for _ in range(4)]
+        rng.bit_generator.state = st0
+        boxes_frac = [rand_box(rng, hard, pct=False) for _ in range(4)]
+        if not SHADOW:
+            for bb in boxes_pct + boxes_frac:
+                bb["shadow"]["enabled"] = False
         trans = (it % 4 == 3)
         outs = {}
         for name in ("REF", "NUMPY", "MVK"):
             m = mods[name][chroma]
+            boxes = boxes_frac if name == "REF" else boxes_pct
             srcs = {i: synth_frame(m, 10 + i) for i in range(4)}
             bg = synth_frame(m, 1)
             bgbuf = np.concatenate([p.ravel().view(np.uint8) for p in bg])
@@ -130,6 +150,12 @@ def main():
                     bad += 1
                     print("  ÉCART mode tranche it=%d : max|Δ|=%d" % (it, dsl))
         for name in ("REF", "NUMPY"):
+            # ⚠ La REF (0.9.x) BORNE les positions à [0,1] : une box HORS CADRE (scénario `hard`,
+            # nominal depuis la 0.12.0) n'y est donc pas au même endroit. La comparaison à la REF
+            # n'a de sens que sur des boxes DANS le cadre ; le hors-cadre est validé entre kernel
+            # et repli, et entre trame entière et mode tranche.
+            if name == "REF" and hard:
+                continue
             d = int(np.abs(outs["MVK"].astype(np.int32) - outs[name].astype(np.int32)).max())
             worst[name] = max(worst[name], d)
             if name == "NUMPY" and d:
