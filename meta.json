@@ -1,7 +1,11 @@
 {
-  "version": "0.7.3",
-  "date": "2026-07-12",
+  "version": "0.8.0",
+  "date": "2026-07-14",
   "changes": {
+    "Sources ENTRELACÉES NATIVES (0.8.0)": [
+      "Même défaut que le mixer : un grain-CHAMP (source entrelacée native, ½ canvas) était rejeté par la garde format-fixe → couche/PiP noire.",
+      "FIX : détection de l'entrelacement dans le flow_def (reader.format()), tissage des 2 grains-champs (index PAIR = 1er champ ; tff → lignes paires, bff → impaires) en trame pleine, dans lire_frame_yuv ET dans le chemin tranche (repli whole-frame pour ces couches). Sortie inchangée."
+    ],
     "Masquage UI mode tranche (0.7.3)": [
       "Clés du mode tranche (slice_mode, slice_lines, cadence) marquées hidden:true dans le config_schema : plus rendues dans la palette ni le panneau ⚙ — pilotage par le réglage global Réglages → Vidéo « Mode tranche » (slice_mode_global). Les clés restent dans le schéma : coercion, déploiement et API inchangés."
     ],

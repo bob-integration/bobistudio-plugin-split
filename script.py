@@ -413,14 +413,60 @@ def _in_header(idx):
     except Exception: return 0, 0
 
 
+# ─── Sources ENTRELACÉES NATIVES (modèle SDK MXL : 1 grain = 1 CHAMP, ½ hauteur) ───────────
+# Le split compose sur un canvas de TRAME. Une source entrelacée livre des grains de
+# V_FRAME_SIZE/2 octets : on TISSE les 2 grains-champs de la dernière trame complète (index
+# PAIR = 1er champ ; tff → lignes paires, bff → impaires — convention unique du projet, cf.
+# recorder/2110_io). Sans ça le grain-champ était REJETÉ (taille ≠ canvas) → entrée noire.
+_IL_SRC = {{}}   # nom de flux -> "tff"/"bff" (None = progressif)
+
+def _il_order(r):
+    key = getattr(r, "name", None) or id(r)
+    if key in _IL_SRC:
+        return _IL_SRC[key]
+    fo = None
+    try:
+        f = r.format()
+        if f and f.get("interlaced"):
+            fo = str(f.get("field_order") or "tff").lower()
+    except Exception:
+        pass
+    _IL_SRC[key] = fo
+    return fo
+
+def _weave_fields(first_b, second_b, bff):
+    """Tisse 2 grains-champs en une trame planar pleine (Y puis U puis V)."""
+    planes = [(Y_SIZE // 2, WIDTH * _BPS),
+              (UV_SIZE // 2, UV_W * _BPS), (UV_SIZE // 2, UV_W * _BPS)]
+    out = bytearray(); off = 0
+    for (psz, rb) in planes:
+        a = np.frombuffer(first_b,  dtype=np.uint8, count=psz, offset=off).reshape(-1, rb)
+        b = np.frombuffer(second_b, dtype=np.uint8, count=psz, offset=off).reshape(-1, rb)
+        fr = np.empty((a.shape[0] * 2, rb), dtype=np.uint8)
+        if bff: fr[1::2] = a; fr[0::2] = b
+        else:   fr[0::2] = a; fr[1::2] = b
+        out += fr.tobytes(); off += psz
+    return bytes(out)
+
 def lire_frame_yuv(r):
     """Lit la frame la plus récente du Reader. Renvoie (bytes, ts_in_ns TAI) ou (None, None).
-    Garde format-fixe : un grain de taille ≠ canvas est ignoré (le composite suppose WxH/chroma/depth)."""
+    Garde format-fixe : un grain de taille ≠ canvas est ignoré (le composite suppose WxH/chroma/depth).
+    Source ENTRELACÉE (grain = champ) → tissage des 2 champs en une trame pleine."""
     if r is None: return None, None
     try:
         got = r.get_latest()
         if got is None: return None, None
-        if len(got[2]) != V_FRAME_SIZE: return None, None   # format ≠ canvas → ignoré
+        n = len(got[2])
+        if n == V_FRAME_SIZE // 2:
+            fo = _il_order(r)
+            if fo is None: return None, None
+            fi = (got[0] - 1) // 2
+            if fi < 0: return None, None
+            g0 = r.get(2 * fi); g1 = r.get(2 * fi + 1)
+            if (g0 is None or g1 is None
+                    or len(g0[2]) != n or len(g1[2]) != n): return None, None
+            return _weave_fields(bytes(g0[2]), bytes(g1[2]), fo == "bff"), r.last_write_time()
+        if n != V_FRAME_SIZE: return None, None   # format ≠ canvas → ignoré
         return bytes(got[2]), r.last_write_time()
     except Exception:
         return None, None
@@ -840,8 +886,21 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot):
                 got = rd.get_slice(hi, 1, timeout_ns=2_000_000)
             if got is None:
                 got = rd.get_latest()      # flux whole-frame / tête pas prête → grain complet
+            if (got is not None and len(got[2]) == V_FRAME_SIZE // 2
+                    and _il_order(rd) is not None):
+                # Source ENTRELACÉE (grain = champ) : le producteur committe par CHAMPS → pas de
+                # suivi par tranches possible ; repli whole-frame TISSÉ (cf. lire_frame_yuv).
+                fr, ts = lire_frame_yuv(rd)
+                if fr is None:
+                    continue
+                if ts: ts_in_per_slot[slot] = ts
+                sy, su, sv = _plane_views(np.frombuffer(fr, dtype=np.uint8))
+                layers.append({{"slot": slot, "rd": rd, "fi": int(got[0]), "sy": sy, "su": su,
+                                "sv": sv, "total": 1, "valid": 1, "islh": HEIGHT, "g": g,
+                                "budget": int(interval * 1e9)}})
+                continue
             if got is None or len(got[2]) != V_FRAME_SIZE:
-                continue   # garde format-fixe : grain ≠ canvas (champ entrelacé compris) → ignoré
+                continue   # garde format-fixe : grain ≠ canvas → ignoré
             ts = rd.last_write_time()
             if ts:
                 ts_in_per_slot[slot] = ts
