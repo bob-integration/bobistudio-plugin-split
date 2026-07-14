@@ -15,7 +15,7 @@
 # Template str.format : SEULS {config} / {hostname} / {plugin_version} sont des
 # placeholders. TOUTE autre accolade littérale doit être doublée {{ }}.
 # ─────────────────────────────────────────────────────────────────────────────
-import time, threading, json, signal
+import time, threading, json, signal, math, base64, io
 from collections import deque
 import numpy as np
 import bobimxl   # migration MXL Phase 1 : 5 entrées Reader + 1 sortie Writer (planar, genlock fond)
@@ -149,28 +149,92 @@ def _hex_to_yuv(h):
     return max(0, min(_MAXV, y)), max(0, min(_MAXV, u)), max(0, min(_MAXV, v))
 
 
+def _f(v, lo, hi, dflt):
+    """float borné, tolérant (valeur absente/illisible → défaut)."""
+    try:
+        return max(lo, min(hi, float(v)))
+    except Exception:
+        return dflt
+
 def _norm_box(b):
-    """Normalize one box dict, filling defaults."""
+    """Normalise une box, défauts compris.
+
+    Deux étages :
+    — SOCLE (historique) : enabled/x/y/size/crop/border{{w,color}} — inchangé, mêmes bornes.
+    — MODE AVANCÉ (0.9.0) : rotation, opacité, adoucissement (feather), coins arrondis, miroir,
+      ratio libre, ombre portée, bordure 3D (biseau + éclairage), z-ordre libre. TOUS les
+      réglages avancés sont NEUTRES par défaut → `_is_adv()` est faux → le compositing emprunte
+      le chemin historique OCTET-IDENTIQUE (aucun surcoût pour qui ne s'en sert pas).
+    """
     b = dict(b or {{}})
     crop = dict(b.get("crop") or {{}})
     bd = dict(b.get("border") or {{}})
+    sh = dict(b.get("shadow") or {{}})
     try:
         bw = max(0, min(40, int(float(bd.get("w", 0) or 0))))
     except Exception:
         bw = 0
     return {{
         "enabled": bool(b.get("enabled", False)),
-        "x":    max(0.0, min(1.0, float(b.get("x", 0.5)))),
-        "y":    max(0.0, min(1.0, float(b.get("y", 0.5)))),
-        "size": max(0.05, min(1.0, float(b.get("size", 0.45)))),
+        "x":    _f(b.get("x", 0.5), 0.0, 1.0, 0.5),
+        "y":    _f(b.get("y", 0.5), 0.0, 1.0, 0.5),
+        "size": _f(b.get("size", 0.45), 0.05, 1.0, 0.45),
         "crop": {{
-            "t": max(0.0, min(0.9, float(crop.get("t", 0.0)))),
-            "b": max(0.0, min(0.9, float(crop.get("b", 0.0)))),
-            "l": max(0.0, min(0.9, float(crop.get("l", 0.0)))),
-            "r": max(0.0, min(0.9, float(crop.get("r", 0.0)))),
+            "t": _f(crop.get("t", 0.0), 0.0, 0.9, 0.0),
+            "b": _f(crop.get("b", 0.0), 0.0, 0.9, 0.0),
+            "l": _f(crop.get("l", 0.0), 0.0, 0.9, 0.0),
+            "r": _f(crop.get("r", 0.0), 0.0, 0.9, 0.0),
         }},
-        "border": {{"w": bw, "color": str(bd.get("color") or "#ffffff")}},
+        # ── bordure : socle (w/color) + étage 3D (ATEM : intérieur/extérieur, biseau, lumière) ──
+        "border": {{
+            "w":       bw,                                   # socle : trait plat (compat 0.8.0)
+            "color":   str(bd.get("color") or "#ffffff"),
+            "outer":   _f(bd.get("outer", 0), 0.0, 40.0, 0.0),   # largeur EXTÉRIEURE (px)
+            "inner":   _f(bd.get("inner", 0), 0.0, 40.0, 0.0),   # largeur INTÉRIEURE (px)
+            "bevel":   _f(bd.get("bevel", 0), -1.0, 1.0, 0.0),   # <0 rentrant, >0 sortant
+            "bevel_soft": _f(bd.get("bevel_soft", 0.3), 0.0, 1.0, 0.3),   # adoucissement
+            "bevel_pos":  _f(bd.get("bevel_pos", 0.5), 0.0, 1.0, 0.5),    # position du biseau
+        }},
+        # ── mode avancé ──
+        "rotation": _f(b.get("rotation", 0.0), -180.0, 180.0, 0.0),   # degrés
+        "opacity":  _f(b.get("opacity", 1.0), 0.0, 1.0, 1.0),
+        "feather":  _f(b.get("feather", 0.0), 0.0, 64.0, 0.0),        # px (adoucissement bords)
+        "radius":   _f(b.get("radius", 0.0), 0.0, 300.0, 0.0),        # px (coins arrondis)
+        "mirror_h": bool(b.get("mirror_h", False)),
+        "mirror_v": bool(b.get("mirror_v", False)),
+        # ratio libre : aspect="free" → size_x/size_y indépendants (l'ATEM impose "keep")
+        "aspect": ("free" if str(b.get("aspect") or "keep") == "free" else "keep"),
+        "size_x": _f(b.get("size_x", 0.0), 0.0, 1.0, 0.0),   # 0 = suit `size`
+        "size_y": _f(b.get("size_y", 0.0), 0.0, 1.0, 0.0),
+        "shadow": {{
+            "enabled": bool(sh.get("enabled", False)),
+            "dx":      _f(sh.get("dx", 8), -100.0, 100.0, 8.0),
+            "dy":      _f(sh.get("dy", 8), -100.0, 100.0, 8.0),
+            "blur":    _f(sh.get("blur", 8), 0.0, 64.0, 8.0),
+            "opacity": _f(sh.get("opacity", 0.5), 0.0, 1.0, 0.5),
+            "color":   str(sh.get("color") or "#000000"),
+        }},
+        # z-ordre LIBRE (l'ATEM fige 1→2→3→4). Défaut None → l'index de la box fait foi.
+        "z": (None if b.get("z") is None else _f(b.get("z"), -99.0, 99.0, 0.0)),
     }}
+
+
+def _is_adv(b):
+    """La box demande-t-elle le compositing AVANCÉ ? Faux → chemin historique (octet-identique).
+    Garde-fou de perf : un réglage neutre ne doit RIEN coûter."""
+    bd = b.get("border") or {{}}
+    sh = b.get("shadow") or {{}}
+    return bool(
+        abs(b.get("rotation", 0.0)) > 1e-6
+        or b.get("opacity", 1.0) < 0.999
+        or b.get("feather", 0.0) > 0.0
+        or b.get("radius", 0.0) > 0.0
+        or b.get("mirror_h") or b.get("mirror_v")
+        or (b.get("aspect") == "free" and (b.get("size_x") or b.get("size_y")))
+        or (sh.get("enabled") and sh.get("opacity", 0.0) > 0.0)
+        or bd.get("outer", 0.0) > 0.0 or bd.get("inner", 0.0) > 0.0
+        or abs(bd.get("bevel", 0.0)) > 1e-6
+    )
 
 def _default_boxes():
     base = [
@@ -190,9 +254,25 @@ _init_inputs = [str(_INIT_SLOT_SHM[i]) if _INIT_SLOT_SHM[i] else "" for i in ran
 state = {{
     "inputs":     _init_inputs,
     "boxes":      _init_boxes[:N_BOXES],
-    # transition : None or {{start, duration_ms, from:[boxes], to:[boxes]}}
+    # transition : None or {{start, duration_ms, from:[boxes], to:[boxes], curve, stagger_ms}}
     "transition": None,
 }}
+
+# ─── SOURCE DE LUMIÈRE (globale) : direction + hauteur. C'est elle qui donne le RELIEF aux
+# bordures biseautées (un cadre plat ≠ un cadre 3D). Réglage unique pour toutes les boxes
+# (comme l'ATEM : une seule lumière éclaire la scène — 4 lumières incohérentes = décor faux).
+_lc = CONFIG.get("light") or {{}}
+LIGHT = {{"angle":    _f(_lc.get("angle", 36.0), 0.0, 360.0, 36.0),      # direction (°)
+          "altitude": _f(_lc.get("altitude", 25.0), 0.0, 90.0, 25.0)}}   # hauteur (°)
+
+# ─── Réglages de transition par défaut (surchargeables par /recall) ───
+EASINGS = ("linear", "ease_in", "ease_out", "ease_in_out",
+           "cubic_in", "cubic_out", "cubic_in_out", "sine_in_out", "expo_out")
+_tc = CONFIG.get("transition") or {{}}
+TRANS = {{"curve":      (str(_tc.get("curve") or "ease_in_out")),
+          "stagger_ms": _f(_tc.get("stagger_ms", 0), 0.0, 2000.0, 0.0)}}
+if TRANS["curve"] not in EASINGS:
+    TRANS["curve"] = "ease_in_out"
 
 metrics_lock = threading.Lock()
 metrics = {{"fps": 0.0, "frame_index": 0, "inputs_latency_ms": {{}}, "own_latency_ms": None, "inputs_skew_ms": {{}},
@@ -251,6 +331,45 @@ class ControlHandler(BaseHTTPRequestHandler):
                     "height":     HEIGHT,
                     "fps":        FPS,
                     "plugin_version": PLUGIN_VERSION,
+                    # ── CONTRAT UI (0.9.0) ────────────────────────────────────────────────
+                    # Tout ce que l'UI doit connaître est publié ici : réglages courants ET
+                    # domaine des valeurs (`caps`) → l'UI n'a RIEN à coder en dur.
+                    "light":      dict(LIGHT),
+                    # NB : `transition` (plus haut) reste le BOOLÉEN historique « une transition
+                    # est en cours » — ne pas le repeupler avec les réglages, des consommateurs
+                    # le testent comme un drapeau. Les réglages vivent sous `transition_defaults`.
+                    "transition_defaults": dict(TRANS),
+                    "art":        _art_public(),
+                    "caps": {{
+                        "easings": list(EASINGS),
+                        "art_keys": ["alpha", "luma", "chroma", "none"],
+                        "box_fields": {{
+                            # champ : [min, max, défaut]
+                            "x": [0.0, 1.0, 0.5], "y": [0.0, 1.0, 0.5],
+                            "size": [0.05, 1.0, 0.45],
+                            "rotation": [-180.0, 180.0, 0.0],
+                            "opacity": [0.0, 1.0, 1.0],
+                            "feather": [0.0, 64.0, 0.0],
+                            "radius": [0.0, 300.0, 0.0],
+                            "size_x": [0.0, 1.0, 0.0], "size_y": [0.0, 1.0, 0.0],
+                            "z": [-99.0, 99.0, None],
+                        }},
+                        "box_flags": ["enabled", "mirror_h", "mirror_v"],
+                        "box_enums": {{"aspect": ["keep", "free"]}},
+                        "crop": [0.0, 0.9, 0.0],
+                        "border_fields": {{
+                            "w": [0, 40, 0], "outer": [0.0, 40.0, 0.0],
+                            "inner": [0.0, 40.0, 0.0], "bevel": [-1.0, 1.0, 0.0],
+                            "bevel_soft": [0.0, 1.0, 0.3], "bevel_pos": [0.0, 1.0, 0.5],
+                        }},
+                        "shadow_fields": {{
+                            "dx": [-100.0, 100.0, 8.0], "dy": [-100.0, 100.0, 8.0],
+                            "blur": [0.0, 64.0, 8.0], "opacity": [0.0, 1.0, 0.5],
+                        }},
+                        "light_fields": {{"angle": [0.0, 360.0, 36.0],
+                                          "altitude": [0.0, 90.0, 25.0]}},
+                        "stagger_ms": [0.0, 2000.0, 0.0],
+                    }},
                 }}
                 # state_field par slot (pour la topologie / câblage générique)
                 for i in range(N_BOXES):
@@ -278,7 +397,10 @@ class ControlHandler(BaseHTTPRequestHandler):
             self._reply(200, {{"ok": True}})
 
         elif self.path == "/box":
-            # Live PATCH of a box (cancels any running transition).
+            # PATCH live d'une box (annule la transition en cours). FUSION PROFONDE : l'UI peut
+            # n'envoyer QUE le champ modifié ({{idx, rotation}}, {{idx, shadow:{{blur}}}}…) — les
+            # sous-dicts (crop/border/shadow) sont fusionnés, jamais remplacés. _norm_box borne
+            # et complète tout le reste.
             try: idx = int(body.get("idx"))
             except Exception:
                 self._reply(400, {{"error": "idx requis"}}); return
@@ -287,37 +409,56 @@ class ControlHandler(BaseHTTPRequestHandler):
             with state_lock:
                 state["transition"] = None
                 b = dict(state["boxes"][idx])
-                if "x" in body:
-                    try: b["x"] = max(0.0, min(1.0, float(body["x"])))
-                    except Exception: pass
-                if "y" in body:
-                    try: b["y"] = max(0.0, min(1.0, float(body["y"])))
-                    except Exception: pass
-                if "size" in body:
-                    try: b["size"] = max(0.05, min(1.0, float(body["size"])))
-                    except Exception: pass
-                if "enabled" in body:
-                    b["enabled"] = bool(body["enabled"])
-                if "crop" in body and isinstance(body["crop"], dict):
-                    crop = dict(b["crop"])
-                    for k in ("t", "b", "l", "r"):
-                        if k in body["crop"]:
-                            try: crop[k] = max(0.0, min(0.9, float(body["crop"][k])))
-                            except Exception: pass
-                    b["crop"] = crop
-                if "border" in body and isinstance(body["border"], dict):
-                    bd = dict(b.get("border") or {{}})
-                    if "w" in body["border"]:
-                        try: bd["w"] = max(0, min(40, int(float(body["border"]["w"]))))
-                        except Exception: pass
-                    if "color" in body["border"]:
-                        bd["color"] = str(body["border"]["color"] or "#ffffff")
-                    b["border"] = bd
+                for k, v in body.items():
+                    if k == "idx":
+                        continue
+                    if k in ("crop", "border", "shadow") and isinstance(v, dict):
+                        sub = dict(b.get(k) or {{}}); sub.update(v); b[k] = sub
+                    else:
+                        b[k] = v
                 state["boxes"][idx] = _norm_box(b)
-            self._reply(200, {{"ok": True}})
+            self._reply(200, {{"ok": True, "box": state["boxes"][idx]}})
+
+        elif self.path == "/light":
+            # SOURCE DE LUMIÈRE globale (relief des bordures biseautées).
+            with state_lock:
+                if "angle" in body:    LIGHT["angle"] = _f(body["angle"], 0.0, 360.0, LIGHT["angle"])
+                if "altitude" in body: LIGHT["altitude"] = _f(body["altitude"], 0.0, 90.0, LIGHT["altitude"])
+            _stamps.clear()      # la lumière est dans la clé de cache → rebake des rubans
+            self._reply(200, {{"ok": True, "light": dict(LIGHT)}})
+
+        elif self.path == "/transition":
+            # Réglages de transition par défaut : courbe d'accélération + décalage inter-boxes.
+            c = str(body.get("curve") or TRANS["curve"])
+            if c not in EASINGS:
+                self._reply(400, {{"error": "courbe inconnue", "easings": list(EASINGS)}}); return
+            TRANS["curve"] = c
+            if "stagger_ms" in body:
+                TRANS["stagger_ms"] = _f(body["stagger_ms"], 0.0, 2000.0, TRANS["stagger_ms"])
+            self._reply(200, {{"ok": True, "transition": dict(TRANS)}})
+
+        elif self.path == "/art":
+            # COUCHE ART (habillage) : image importée (base64) + incrustation luma/chroma/alpha.
+            # Le « cuisson » (décodage + clé) est faite UNE FOIS ici, hors trame.
+            with _art_lock:
+                for k in ("enabled", "above", "invert"):
+                    if k in body: _art[k] = bool(body[k])
+                if "image" in body:  _art["image"] = str(body["image"] or "")
+                if "key" in body:
+                    kk = str(body["key"] or "alpha")
+                    _art["key"] = kk if kk in ("alpha", "luma", "chroma", "none") else "alpha"
+                if "clip" in body:    _art["clip"] = _f(body["clip"], 0.0, 1.0, 0.15)
+                if "gain" in body:    _art["gain"] = _f(body["gain"], 0.01, 16.0, 1.0)
+                if "opacity" in body: _art["opacity"] = _f(body["opacity"], 0.0, 1.0, 1.0)
+                if "chroma_key" in body: _art["chroma_key"] = str(body["chroma_key"] or "#00b140")
+            _bake_art()
+            with _art_lock:
+                self._reply(200, {{"ok": not _art["err"], "error": _art["err"],
+                                   "loaded": _art.get("baked") is not None}})
 
         elif self.path == "/recall":
-            # Recall a memory : tween current boxes -> target boxes over duration_ms.
+            # Rappel de mémoire : tween boxes courantes -> boxes cibles sur duration_ms, avec
+            # COURBE d'accélération (0.8.0 : linéaire pur) et DÉCALAGE inter-boxes (stagger).
             targets = body.get("boxes")
             if not isinstance(targets, list) or not targets:
                 self._reply(400, {{"error": "boxes requis"}}); return
@@ -329,6 +470,10 @@ class ControlHandler(BaseHTTPRequestHandler):
             try: duration = max(0, int(duration))
             except Exception:
                 self._reply(400, {{"error": "duration_ms invalide"}}); return
+            curve = str(body.get("curve") or TRANS["curve"])
+            if curve not in EASINGS:
+                curve = TRANS["curve"]
+            stagger = _f(body.get("stagger_ms", TRANS["stagger_ms"]), 0.0, 2000.0, 0.0)
             with state_lock:
                 if duration <= 0:
                     state["boxes"] = tgt
@@ -337,10 +482,12 @@ class ControlHandler(BaseHTTPRequestHandler):
                     state["transition"] = {{
                         "start": time.time(),
                         "duration_ms": duration,
+                        "curve": curve,
+                        "stagger_ms": stagger,
                         "from": [dict(b) for b in state["boxes"]],
                         "to":   tgt,
                     }}
-            self._reply(200, {{"ok": True}})
+            self._reply(200, {{"ok": True, "curve": curve, "stagger_ms": stagger}})
 
         else:
             self._reply(404, {{"error": "not found"}})
@@ -472,121 +619,106 @@ def lire_frame_yuv(r):
         return None, None
 
 
-# ─── Compositing : crop-aware PiP box over background ────────
-def composite_box_yuv(bgd_yuv, src_yuv, alpha, cx, cy, size, crop, border=None):
-    """Composite a PiP box (cropped source) onto bgd_yuv in YUV420.
-    cx,cy = box center (normalized); size = scale (aspect preserved); crop = {{t,b,l,r}}
-    fractions removed from the source before placing. alpha in [0,1]."""
-    if alpha <= 0.001 or src_yuv is None:
-        return bgd_yuv
-    cl = max(0.0, min(0.9, crop.get("l", 0.0))); cr = max(0.0, min(0.9, crop.get("r", 0.0)))
-    ct = max(0.0, min(0.9, crop.get("t", 0.0))); cb = max(0.0, min(0.9, crop.get("b", 0.0)))
-    if cl + cr >= 0.95: cl = cr = 0.0
-    if ct + cb >= 0.95: ct = cb = 0.0
-
-    # Full box rect (preserves output aspect), then visible (cropped) rect.
-    full_w = WIDTH * size; full_h = HEIGHT * size
-    dst_w = max(2, int(full_w * (1.0 - cl - cr)))
-    dst_h = max(2, int(full_h * (1.0 - ct - cb)))
-    if dst_w % 2: dst_w -= 1
-    if dst_h % 2: dst_h -= 1
-    if dst_w < 2 or dst_h < 2:
-        return bgd_yuv
-
-    # Visible rect center : full rect centered at (cx,cy), shifted by asymmetric crop.
-    vis_cx = cx * WIDTH + (cl - cr) * 0.5 * full_w
-    vis_cy = cy * HEIGHT + (ct - cb) * 0.5 * full_h
-    x0 = int(vis_cx - dst_w / 2); y0 = int(vis_cy - dst_h / 2)
-    if x0 % 2: x0 -= 1
-    if y0 % 2: y0 -= 1
-
-    # Source region (in source pixels) after crop.
-    sxr0 = cl * WIDTH;  sxr1 = (1.0 - cr) * WIDTH
-    syr0 = ct * HEIGHT; syr1 = (1.0 - cb) * HEIGHT
-
-    # Clip to output bounds.
-    out_x0 = max(0, x0); out_y0 = max(0, y0)
-    out_x1 = min(WIDTH,  x0 + dst_w); out_y1 = min(HEIGHT, y0 + dst_h)
-    if out_x1 <= out_x0 or out_y1 <= out_y0:
-        return bgd_yuv
-    src_x_off = out_x0 - x0; src_y_off = out_y0 - y0
-    vis_w = out_x1 - out_x0; vis_h = out_y1 - out_y0
-
-    src_y = np.frombuffer(src_yuv[:Y_SIZE], dtype=_NP_DT).reshape(HEIGHT, WIDTH)
-    src_u = np.frombuffer(src_yuv[Y_SIZE:Y_SIZE+UV_SIZE], dtype=_NP_DT).reshape(UV_H, UV_W)
-    src_v = np.frombuffer(src_yuv[Y_SIZE+UV_SIZE:], dtype=_NP_DT).reshape(UV_H, UV_W)
-
-    # Nearest-neighbor sample maps from the cropped source region to the full dst box.
-    ix = (sxr0 + (np.arange(dst_w) + 0.5) / dst_w * (sxr1 - sxr0)).astype(np.int32)
-    iy = (syr0 + (np.arange(dst_h) + 0.5) / dst_h * (syr1 - syr0)).astype(np.int32)
-    ix = np.clip(ix, 0, WIDTH - 1); iy = np.clip(iy, 0, HEIGHT - 1)
-    k_y_full = src_y[iy[:, None], ix[None, :]]
-    ix2 = (sxr0 / _CW + (np.arange(dst_w // _CW) + 0.5) / (dst_w // _CW) * ((sxr1 - sxr0) / _CW)).astype(np.int32)
-    iy2 = (syr0 / _CH + (np.arange(dst_h // _CH) + 0.5) / (dst_h // _CH) * ((syr1 - syr0) / _CH)).astype(np.int32)
-    ix2 = np.clip(ix2, 0, UV_W - 1); iy2 = np.clip(iy2, 0, UV_H - 1)
-    k_u_full = src_u[iy2[:, None], ix2[None, :]]
-    k_v_full = src_v[iy2[:, None], ix2[None, :]]
-
-    k_y = k_y_full[src_y_off:src_y_off+vis_h, src_x_off:src_x_off+vis_w]
-    k_u = k_u_full[src_y_off//_CH:(src_y_off+vis_h)//_CH, src_x_off//_CW:(src_x_off+vis_w)//_CW]
-    k_v = k_v_full[src_y_off//_CH:(src_y_off+vis_h)//_CH, src_x_off//_CW:(src_x_off+vis_w)//_CW]
-
-    bgd_y = np.frombuffer(bgd_yuv[:Y_SIZE], dtype=_NP_DT).reshape(HEIGHT, WIDTH).copy()
-    bgd_u = np.frombuffer(bgd_yuv[Y_SIZE:Y_SIZE+UV_SIZE], dtype=_NP_DT).reshape(UV_H, UV_W).copy()
-    bgd_v = np.frombuffer(bgd_yuv[Y_SIZE+UV_SIZE:], dtype=_NP_DT).reshape(UV_H, UV_W).copy()
-
-    reg_y = bgd_y[out_y0:out_y1, out_x0:out_x1].astype(np.float32)
-    bgd_y[out_y0:out_y1, out_x0:out_x1] = (reg_y * (1.0 - alpha) +
-                                           k_y.astype(np.float32) * alpha).astype(_NP_DT)
-    reg_u = bgd_u[out_y0//_CH:out_y1//_CH, out_x0//_CW:out_x1//_CW].astype(np.float32)
-    bgd_u[out_y0//_CH:out_y1//_CH, out_x0//_CW:out_x1//_CW] = (reg_u * (1.0 - alpha) +
-                                           k_u.astype(np.float32) * alpha).astype(_NP_DT)
-    reg_v = bgd_v[out_y0//_CH:out_y1//_CH, out_x0//_CW:out_x1//_CW].astype(np.float32)
-    bgd_v[out_y0//_CH:out_y1//_CH, out_x0//_CW:out_x1//_CW] = (reg_v * (1.0 - alpha) +
-                                           k_v.astype(np.float32) * alpha).astype(_NP_DT)
-
-    # Bordure pleine (opaque) le long du rect visible de la box, vers l'intérieur.
-    bw = 0
-    if border:
-        try: bw = int(border.get("w") or 0)
-        except Exception: bw = 0
-    if bw > 0:
-        Yb, Ub, Vb = _hex_to_yuv(border.get("color"))
-        bw = min(bw, max(0, (out_y1 - out_y0) // 2), max(0, (out_x1 - out_x0) // 2))
-        if bw > 0:
-            bgd_y[out_y0:out_y0+bw, out_x0:out_x1] = Yb
-            bgd_y[out_y1-bw:out_y1, out_x0:out_x1] = Yb
-            bgd_y[out_y0:out_y1, out_x0:out_x0+bw] = Yb
-            bgd_y[out_y0:out_y1, out_x1-bw:out_x1] = Yb
-            cbw_y = max(1, bw // _CH); cbw_x = max(1, bw // _CW)
-            uy0, uy1, ux0, ux1 = out_y0//_CH, out_y1//_CH, out_x0//_CW, out_x1//_CW
-            for plane, val in ((bgd_u, Ub), (bgd_v, Vb)):
-                plane[uy0:uy0+cbw_y, ux0:ux1] = val
-                plane[uy1-cbw_y:uy1, ux0:ux1] = val
-                plane[uy0:uy1, ux0:ux0+cbw_x] = val
-                plane[uy0:uy1, ux1-cbw_x:ux1] = val
-    return bgd_y.tobytes() + bgd_u.tobytes() + bgd_v.tobytes()
-
-
-# ─── Transition interpolation ───────────────────────────────
+# ─── Transitions : courbes d'accélération + interpolation ────────────────────────────────────
+# 0.8.0 : interpolation strictement LINÉAIRE (mouvement mécanique) et bordure NON interpolée
+# (elle SAUTAIT à la cible pendant que la géométrie glissait). 0.9.0 : jeu de courbes standard
+# + interpolation de TOUS les paramètres (géométrie, bordure, rotation, opacité, ombre, coins…)
+# — un réglage qui n'est pas interpolé produit un saut visible en cours de transition.
 def _lerp(a, b, p): return a + (b - a) * p
 
+def _ease(p, curve):
+    """Courbe d'accélération sur p∈[0,1]. Jeu volontairement restreint aux courbes utiles en
+    habillage (pas de rebond/élastique : hors sujet broadcast)."""
+    if p <= 0.0: return 0.0
+    if p >= 1.0: return 1.0
+    if curve == "ease_in":       return p * p                      # quadratique entrante
+    if curve == "ease_out":      return 1.0 - (1.0 - p) ** 2       # quadratique sortante
+    if curve == "ease_in_out":   return 2 * p * p if p < 0.5 else 1.0 - ((-2 * p + 2) ** 2) / 2
+    if curve == "cubic_in":      return p ** 3
+    if curve == "cubic_out":     return 1.0 - (1.0 - p) ** 3
+    if curve == "cubic_in_out":  return 4 * p ** 3 if p < 0.5 else 1.0 - ((-2 * p + 2) ** 3) / 2
+    if curve == "sine_in_out":   return -(math.cos(math.pi * p) - 1.0) / 2.0
+    if curve == "expo_out":      return 1.0 - math.pow(2.0, -10.0 * p)
+    return p                                                        # "linear" (défaut)
+
+
+def _lerp_hex(c0, c1, p):
+    """Interpolation de couleur en RGB (les couleurs de bordure/ombre glissent au lieu de sauter)."""
+    def _rgb(h):
+        h = str(h or "#ffffff").lstrip("#")
+        if len(h) == 3: h = "".join(c * 2 for c in h)
+        try: return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        except Exception: return 255, 255, 255
+    r0, g0, b0 = _rgb(c0); r1, g1, b1 = _rgb(c1)
+    return "#%02x%02x%02x" % (int(round(_lerp(r0, r1, p))),
+                              int(round(_lerp(g0, g1, p))),
+                              int(round(_lerp(b0, b1, p))))
+
+
 def _interp_box(fr, to, p):
-    """Geometry interpolation + alpha from enable crossfade. Returns (box, alpha) or None."""
+    """Interpole TOUTE la box (0.9.0) + alpha du fondu d'apparition/disparition.
+    Renvoie (box, alpha) ou None si la box est absente des deux côtés."""
     fe = fr["enabled"]; te = to["enabled"]
     if not fe and not te:
         return None
     if fe and te:       alpha = 1.0
-    elif fe and not te: alpha = 1.0 - p   # fade out
-    else:               alpha = p         # fade in
+    elif fe and not te: alpha = 1.0 - p   # fondu sortant
+    else:               alpha = p         # fondu entrant
+
+    fb = fr.get("border") or {{}}; tb = to.get("border") or {{}}
+    fs = fr.get("shadow") or {{}}; ts = to.get("shadow") or {{}}
     box = {{
+        "enabled": True,
         "x":    _lerp(fr["x"], to["x"], p),
         "y":    _lerp(fr["y"], to["y"], p),
         "size": _lerp(fr["size"], to["size"], p),
         "crop": {{k: _lerp(fr["crop"][k], to["crop"][k], p) for k in ("t", "b", "l", "r")}},
-        "border": dict(to.get("border") or {{}}),   # bordure : on suit la cible (pas d'interpolation)
+        # ── bordure : INTERPOLÉE (0.8.0 sautait à la cible) ──
+        "border": {{
+            "w":          _lerp(float(fb.get("w", 0) or 0), float(tb.get("w", 0) or 0), p),
+            "color":      _lerp_hex(fb.get("color"), tb.get("color"), p),
+            "outer":      _lerp(fb.get("outer", 0.0), tb.get("outer", 0.0), p),
+            "inner":      _lerp(fb.get("inner", 0.0), tb.get("inner", 0.0), p),
+            "bevel":      _lerp(fb.get("bevel", 0.0), tb.get("bevel", 0.0), p),
+            "bevel_soft": _lerp(fb.get("bevel_soft", 0.3), tb.get("bevel_soft", 0.3), p),
+            "bevel_pos":  _lerp(fb.get("bevel_pos", 0.5), tb.get("bevel_pos", 0.5), p),
+        }},
+        # ── mode avancé : tout est interpolé (sinon l'angle/l'opacité SAUTENT en plein mouvement) ──
+        "rotation": _lerp(fr.get("rotation", 0.0), to.get("rotation", 0.0), p),
+        "opacity":  _lerp(fr.get("opacity", 1.0), to.get("opacity", 1.0), p),
+        "feather":  _lerp(fr.get("feather", 0.0), to.get("feather", 0.0), p),
+        "radius":   _lerp(fr.get("radius", 0.0), to.get("radius", 0.0), p),
+        # booléens/énums : pas d'entre-deux → bascule à mi-course (jamais de valeur bâtarde)
+        "mirror_h": (to if p >= 0.5 else fr).get("mirror_h", False),
+        "mirror_v": (to if p >= 0.5 else fr).get("mirror_v", False),
+        "aspect":   (to if p >= 0.5 else fr).get("aspect", "keep"),
+        "size_x":   _lerp(fr.get("size_x", 0.0) or fr["size"], to.get("size_x", 0.0) or to["size"], p),
+        "size_y":   _lerp(fr.get("size_y", 0.0) or fr["size"], to.get("size_y", 0.0) or to["size"], p),
+        "shadow": {{
+            "enabled": bool(fs.get("enabled") or ts.get("enabled")),
+            "dx":      _lerp(fs.get("dx", 8.0), ts.get("dx", 8.0), p),
+            "dy":      _lerp(fs.get("dy", 8.0), ts.get("dy", 8.0), p),
+            "blur":    _lerp(fs.get("blur", 8.0), ts.get("blur", 8.0), p),
+            # une ombre qui s'allume/s'éteint fond son opacité (0 → cible) au lieu d'apparaître sec
+            "opacity": _lerp(fs.get("opacity", 0.0) if fs.get("enabled") else 0.0,
+                             ts.get("opacity", 0.0) if ts.get("enabled") else 0.0, p),
+            "color":   _lerp_hex(fs.get("color") or "#000000", ts.get("color") or "#000000", p),
+        }},
+        "z": (to if p >= 0.5 else fr).get("z"),
     }}
     return box, alpha
+
+
+def _box_progress(p_raw, i, curve, stagger_ms, duration_ms):
+    """Progression de la box `i` : DÉCALAGE (stagger) puis courbe. Les boxes arrivent l'une
+    après l'autre (i·stagger) au lieu de bouger toutes ensemble. Le décalage est compté DANS la
+    durée totale : la dernière box finit à `duration_ms` (sinon un stagger allongerait la
+    transition et désynchroniserait le rappel de mémoire du réalisateur)."""
+    if stagger_ms <= 0 or duration_ms <= 0:
+        return _ease(p_raw, curve)
+    span = max(1.0, duration_ms - stagger_ms * (N_BOXES - 1))
+    t = p_raw * duration_ms - i * stagger_ms
+    return _ease(max(0.0, min(1.0, t / span)), curve)
 
 
 # ─── Output shm ─────────────────────────────────────────────
@@ -602,10 +734,49 @@ def _ouvrir_sortie(name):
 def _ecrire_sortie(w, yuv, frame_index):
     try:
         _i, gi, vw = w.open_grain(index=frame_index)
-        vw[:len(yuv)] = np.frombuffer(yuv, dtype=np.uint8)
+        arr = yuv if isinstance(yuv, np.ndarray) else np.frombuffer(yuv, dtype=np.uint8)
+        vw[:len(arr)] = arr
         w.commit(gi)
     except Exception:
         pass
+
+
+def _plan_layers(tr, boxes):
+    """Plan des boxes à composer, DANS L'ORDRE DE SUPERPOSITION. Renvoie [(slot, box, alpha)].
+
+    ORDRE LIBRE (0.9.0) : l'ATEM fige 1→2→3→4 ; ici le champ `z` de chaque box l'emporte
+    (défaut : l'index de la box → comportement historique à l'octet près). Tri STABLE : deux
+    boxes de même z gardent leur ordre d'index.
+    En transition, la box interpolée porte le z choisi (bascule à mi-course : un z ne
+    s'interpole pas, il commute)."""
+    out_plan = []
+    for i in range(N_BOXES):
+        if tr is not None:
+            p_i = _box_progress(tr["_p_raw"], i, tr.get("curve") or "linear",
+                                tr.get("stagger_ms") or 0.0, tr.get("duration_ms") or 0)
+            res = _interp_box(tr["from"][i], tr["to"][i], p_i)
+            if res is None:
+                continue
+            b_, alpha = res
+        else:
+            if not boxes[i]["enabled"]:
+                continue
+            b_, alpha = boxes[i], 1.0
+        out_plan.append((i, b_, alpha))
+    out_plan.sort(key=lambda t: (t[1].get("z") if t[1].get("z") is not None else t[0]))
+    global _n_rot
+    _n_rot = sum(1 for _, b_, _a in out_plan if abs(b_.get("rotation", 0.0)) > 1e-6)
+    return out_plan
+
+
+def _art_above():
+    with _art_lock:
+        return bool(_art["enabled"] and _art.get("baked") is not None and _art["above"])
+
+
+def _art_below():
+    with _art_lock:
+        return bool(_art["enabled"] and _art.get("baked") is not None and not _art["above"])
 
 
 # ─── MODE TRANCHE : composition bandée (fond + boxes suivis par tranches) ───────────────────
@@ -647,7 +818,7 @@ def _arith(idx):
 
 def _box_slice_geom(b, alpha):
     """MODE TRANCHE — géométrie pré-calculée d'une box pour le placement PAR BANDE. Reprend À
-    L'IDENTIQUE les calculs (arrondis compris) de composite_box_yuv → résultat octet-identique
+    L'IDENTIQUE les calculs (arrondis compris) du compositing 0.8.0 → résultat octet-identique
     au chemin historique. Les mappings nearest ligne/colonne sont DÉJÀ clippés au rect visible.
     Renvoie None si la box est invisible (alpha≈0, trop petite ou hors cadre)."""
     if alpha <= 0.001:
@@ -690,7 +861,7 @@ def _box_slice_geom(b, alpha):
     bd = b.get("border") or {{}}
     try: bw = int(bd.get("w") or 0)
     except Exception: bw = 0
-    if bw > 0:   # même clamp que composite_box_yuv (vers l'intérieur du rect visible)
+    if bw > 0:   # même clamp qu'en 0.8.0 (vers l'intérieur du rect visible)
         bw = min(bw, max(0, (out_y1 - out_y0) // 2), max(0, (out_x1 - out_x0) // 2))
     return {{"x0": out_x0, "y0": out_y0, "x1": out_x1, "y1": out_y1, "alpha": float(alpha),
              "iy": iy_v, "ix": ix_v, "iy2": iy2_v, "ix2": ix2_v,
@@ -718,7 +889,7 @@ def _band_need_row(g, b0, b1):
 
 
 def _place_box_band(oy, ou, ov, sy, su, sv, g, b0, b1):
-    """Blende les lignes [b0,b1) ∩ box sur la sortie — MÊMES valeurs que composite_box_yuv
+    """Blende les lignes [b0,b1) ∩ box sur la sortie — MÊMES valeurs qu'en 0.8.0
     (mapping nearest identique, blend float32 identique), restreint à la bande. Vue STRIDÉE
     zéro-copie si le mapping est à pas constant (ratio entier), sinon gather CHAÎNÉ
     lignes→colonnes (JAMAIS np.ix_ 2D, prohibitif à bande×box — mesuré multiview)."""
@@ -762,7 +933,7 @@ def _place_box_band(oy, ou, ov, sy, su, sv, g, b0, b1):
 
 def _paint_border_band(oy, ou, ov, g, b0, b1):
     """Bordure pleine (opaque) de la box g, restreinte aux lignes [b0,b1) — mêmes rects que
-    composite_box_yuv (haut/bas/côtés vers l'intérieur, chroma cbw), clippés à la bande."""
+    qu'en 0.8.0 (haut/bas/côtés vers l'intérieur, chroma cbw), clippés à la bande."""
     bw = g["bw"]
     if bw <= 0:
         return
@@ -788,6 +959,855 @@ def _paint_border_band(oy, ou, ov, g, b0, b1):
         if a < b:
             plane[a:b, ux0:ux0 + cbw_x] = val
             plane[a:b, ux1 - cbw_x:ux1] = val
+
+
+# ═════════════════════════════════════════════════════════════════════════════════════════════
+#  MODE AVANCÉ (0.9.0) — rotation, feather, coins arrondis, opacité, miroir, ratio libre,
+#  ombre portée, bordure 3D (biseau + source de lumière).
+#
+#  ★ LA CONTRAINTE QUI DÉCIDE DE TOUT : LE COÛT (banc mesuré sur nœud 30, yuv422p 8 bits).
+#  Ces effets sont des rééchantillonnages/convolutions par trame — en numpy naïf, ils font
+#  décrocher le plugin. La clé mesurée est double :
+#
+#  1) CACHE STATIQUE (motif éprouvé du projet : fond des VU-mètres, chrome du multiview). Tant
+#     qu'une box ne CHANGE PAS de réglage, sa rotation, son masque de coins, son ombre floutée
+#     et son ruban de bordure sont IDENTIQUES d'une trame à l'autre → on les précalcule une fois
+#     dans un « STAMP » (empreinte) et on ne refait le travail qu'au changement (clé de cache).
+#     Par trame il ne reste qu'un GATHER + un BLEND.
+#
+#  2) CONSTRUCTION SÉPARABLE. Le piège : une TRANSITION change la géométrie à CHAQUE trame → le
+#     cache se reconstruirait à chaque trame. Mesuré : une construction naïve (mgrid + trig 2D)
+#     coûte 14,5 ms/box en 1080p → 58 ms pour 4 boxes = transition impossible. Or tout le stamp,
+#     SAUF la rotation, est une fonction de la DISTANCE AUX BORDS → séparable en 2 rampes 1D
+#     (produit externe) + 4 petits patchs de coins. Mesuré : 0,8 ms (alpha) + 1,0 ms (ombre)
+#     au lieu de 14,5 → une transition avec tous les effets tient le budget.
+#
+#  Coût par trame MESURÉ (1080p, 4 boxes, Y+U+V, budget 40 ms @25 / 20 ms @50) :
+#     réglages par défaut (aucun effet)      →  5,5 ms   (chemin historique, INCHANGÉ)
+#     tous les effets actifs (cache chaud)   → 16,2 ms   (40 % @25fps, 81 % @50fps)
+#  Le plafond connu est le 1080p50 avec rotation ET transition sur les 4 boxes simultanément
+#  (la carte d'index 2D de la rotation doit être refaite : +2,8 ms/box) — cf. help.md.
+# ═════════════════════════════════════════════════════════════════════════════════════════════
+
+_stamps = {{}}         # idx box -> (clé, stamp) — cache statique, invalidé par la clé
+_stamp_stats = {{"builds": 0, "hits": 0, "build_ms": 0.0}}
+_over_warned = [False]   # alerte « hors budget » loggée une fois par franchissement
+_n_rot = 0               # boxes TOURNÉES sur la dernière trame (poste de coût n°1)
+
+
+def _blur1(v, r):
+    """Flou ~gaussien d'un vecteur 1D : 3 box-blurs successifs (théorème central limite).
+    SÉPARABLE : le flou d'un rectangle plein est le produit externe de 2 rampes 1D floutées —
+    c'est ce qui rend l'ombre portée quasi gratuite à construire (mesuré : 1,0 ms au lieu de
+    10,8 ms pour une convolution 2D)."""
+    r = max(1, int(r))
+    for _ in range(3):
+        c = np.cumsum(np.pad(v, (r, r)), dtype=np.float32)
+        v = (c[2 * r:] - c[:-2 * r]) / (2 * r)
+    return v
+
+
+def _blur2(m, r):
+    """Flou ~gaussien 2D d'un masque NON séparable (silhouette d'une box tournée) : 3 box-blurs
+    séparés en 2 passes 1D (lignes puis colonnes) via cumsum — jamais de convolution 2D."""
+    r = max(1, int(r))
+    for _ in range(3):
+        c = np.cumsum(np.pad(m, ((r, r), (0, 0))), axis=0, dtype=np.float32)
+        m = (c[2 * r:] - c[:-2 * r]) / (2 * r)
+        c = np.cumsum(np.pad(m, ((0, 0), (r, r))), axis=1, dtype=np.float32)
+        m = (c[:, 2 * r:] - c[:, :-2 * r]) / (2 * r)
+    return m
+
+
+def _edge_ramp(n, fe):
+    """Rampe 1D de distance au bord, normalisée par le feather (0 au bord → 1 à `fe` px)."""
+    i = np.arange(n, dtype=np.float32)
+    d = np.minimum(i, n - 1 - i)
+    if fe <= 0.0:
+        return np.ones(n, dtype=np.float32)
+    return np.clip(d / fe, 0.0, 1.0)
+
+
+def _build_alpha(dst_w, dst_h, fe, rad, op):
+    """Masque alpha d'une box : feather × coins arrondis × opacité. Renvoie
+    (a16, a16_chroma, marge, alpha_scalaire). SÉPARABLE (produit externe de 2 rampes + 4 patchs
+    de coins R×R) → aucun balayage 2D coûteux.
+
+    Trois régimes, du moins cher au plus cher — c'est ici que se joue le coût par trame :
+      • PLEINEMENT OPAQUE (rien d'activé) → PAS DE MASQUE (None) : la box se COPIE. Une box
+        seulement TOURNÉE ne paie pas le feather qu'elle n'utilise pas.
+      • OPACITÉ UNIFORME (opacité globale, sans feather ni coins) → alpha SCALAIRE : le blend
+        n'a pas à LIRE un masque plein rect (une passe mémoire de moins par plan).
+      • MASQUE 2D (feather et/ou coins) → seul un RUBAN de `marge` px est mélangé, l'intérieur
+        est copié (cf. _blend_rows)."""
+    if fe <= 0.0 and rad <= 0 and op >= 0.999:
+        return None, None, 0, None                      # opaque : aucun masque
+    if fe <= 0.0 and rad <= 0:
+        return None, None, -1, op                       # opacité uniforme : alpha scalaire
+    a = np.multiply.outer(_edge_ramp(dst_h, fe), _edge_ramp(dst_w, fe))
+    if rad > 0:
+        j, i = np.mgrid[0:rad, 0:rad].astype(np.float32)   # patchs R×R seulement (jamais 2D plein)
+        d = np.sqrt((rad - 1 - i) ** 2 + (rad - 1 - j) ** 2)
+        soft = max(1.0, fe if fe > 0 else 1.0)
+        cmask = np.clip((rad - d) / soft + (0.0 if fe > 0 else 1.0), 0.0, 1.0).astype(np.float32)
+        a[:rad, :rad] *= cmask
+        a[:rad, dst_w - rad:] *= cmask[:, ::-1]
+        a[dst_h - rad:, :rad] *= cmask[::-1, :]
+        a[dst_h - rad:, dst_w - rad:] *= cmask[::-1, ::-1]
+    if op < 0.999:
+        a *= op
+    a16 = (a * 256.0).astype(np.uint16)        # blend ENTIER (mesuré plus rapide que le float32)
+    a16_2 = a16[::_CH, ::_CW].copy()
+    # Marge « non opaque » : au-delà, alpha == 256 partout → COPIE DIRECTE (aucun blend).
+    m = int(math.ceil(fe)) + rad + 1
+    if op < 0.999:
+        m = max(dst_w, dst_h)                  # opacité globale → tout le rect est mélangé
+    marg = max(0, min(m, dst_w // 2, dst_h // 2))
+    return a16, a16_2, marg, None
+
+
+def _build_alpha_rot(aw, ah, rot_loc, fe, rad, op, bw_tot):
+    """Masque alpha d'une box TOURNÉE, dans son AABB. Le masque est calculé en coordonnées
+    LOCALES à la box → feather et coins arrondis TOURNENT AVEC ELLE. Hors du quadrilatère
+    incliné, alpha = 0 (on voit le fond).
+
+    Les bords obliques sont ANTIALIASÉS par construction : alpha = clip(distance_au_bord + ½),
+    ce qui donne une transition d'un pixel — sans quoi une box tournée aurait des marches
+    d'escalier sur ses bords."""
+    dedge, ul, vl, s, c, bw, bh = rot_loc
+    if fe > 0.0:
+        a = np.clip(dedge / fe, 0.0, 1.0)
+    else:
+        a = np.clip(dedge + 0.5, 0.0, 1.0)          # anticrénelage 1 px du bord oblique
+    if rad > 0:
+        # coins arrondis EN LOCAL : distance au centre de l'arc de coin
+        cx = np.maximum(0.0, np.abs(ul) - (bw / 2.0 - rad))
+        cy = np.maximum(0.0, np.abs(vl) - (bh / 2.0 - rad))
+        rr = np.sqrt(cx * cx + cy * cy)
+        soft = max(1.0, fe if fe > 0 else 1.0)
+        a *= np.clip((rad - rr) / soft + (0.0 if fe > 0 else 1.0), 0.0, 1.0)
+    if op < 0.999:
+        a *= op
+    a16 = (a * 256.0).astype(np.uint16)
+    a16_2 = a16[::_CH, ::_CW].copy()
+    # Marge opaque : le quad tourné contient son CERCLE INSCRIT (rayon min(bw,bh)/2 − marge de
+    # bord) ; le carré axis-aligned centré de demi-côté r/√2 tient dans ce cercle → on peut y
+    # COPIER directement (alpha=256, hors bordure). Marge conservatrice commune aux 2 axes.
+    edge_m = math.ceil(fe) + rad + math.ceil(bw_tot) + 2
+    r = min(bw, bh) / 2.0 - edge_m
+    if op >= 0.999 and r > 8:
+        hs = r / 1.4143
+        m = int(math.ceil(max(aw / 2.0 - hs, ah / 2.0 - hs)))
+        marg = max(0, min(m, aw // 2, ah // 2))
+    else:
+        marg = max(aw, ah)                          # pas d'intérieur sûr → blend plein AABB
+    return a16, a16_2, marg, None
+
+
+def _adv_key(b, alpha):
+    """Clé de cache du stamp : TOUT ce dont dépend le précalcul. La position (x,y) n'en fait
+    PAS partie — une box qui se contente de TRANSLATER réutilise son stamp tel quel (la carte
+    d'échantillonnage ne dépend que de la taille, du crop, de la rotation et du miroir)."""
+    bd = b.get("border") or {{}}; sh = b.get("shadow") or {{}}
+    cr = b.get("crop") or {{}}
+    return (
+        round(b.get("size", 0.0), 5), b.get("aspect"),
+        round(b.get("size_x", 0.0), 5), round(b.get("size_y", 0.0), 5),
+        round(cr.get("t", 0), 5), round(cr.get("b", 0), 5),
+        round(cr.get("l", 0), 5), round(cr.get("r", 0), 5),
+        round(b.get("rotation", 0.0), 3), bool(b.get("mirror_h")), bool(b.get("mirror_v")),
+        round(b.get("opacity", 1.0), 4), round(b.get("feather", 0.0), 2),
+        round(b.get("radius", 0.0), 2), round(float(alpha), 4),
+        round(float(bd.get("w", 0) or 0), 2), str(bd.get("color")),
+        round(bd.get("outer", 0.0), 2), round(bd.get("inner", 0.0), 2),
+        round(bd.get("bevel", 0.0), 3), round(bd.get("bevel_soft", 0.3), 3),
+        round(bd.get("bevel_pos", 0.5), 3),
+        bool(sh.get("enabled")), round(sh.get("dx", 0.0), 2), round(sh.get("dy", 0.0), 2),
+        round(sh.get("blur", 0.0), 2), round(sh.get("opacity", 0.0), 3), str(sh.get("color")),
+        round(LIGHT["angle"], 2), round(LIGHT["altitude"], 2),
+    )
+
+
+def _build_stamp(b, alpha):
+    """Précalcule l'EMPREINTE (stamp) d'une box : cartes d'échantillonnage + masque alpha +
+    ruban de bordure 3D + masque d'ombre. Appelé UNIQUEMENT au changement de réglage (clé de
+    cache) — jamais dans le régime établi. Tout est construit de façon SÉPARABLE.
+
+    Renvoie None si la box est invisible (trop petite, hors cadre, alpha nul)."""
+    if alpha <= 0.001:
+        return None
+    crop = b.get("crop") or {{}}
+    cl = _f(crop.get("l", 0.0), 0.0, 0.9, 0.0); cr_ = _f(crop.get("r", 0.0), 0.0, 0.9, 0.0)
+    ct = _f(crop.get("t", 0.0), 0.0, 0.9, 0.0); cb = _f(crop.get("b", 0.0), 0.0, 0.9, 0.0)
+    if cl + cr_ >= 0.95: cl = cr_ = 0.0
+    if ct + cb >= 0.95: ct = cb = 0.0
+
+    # ── Géométrie. RATIO LIBRE (aspect="free") : size_x/size_y indépendants → la box s'ÉTIRE
+    #    (l'ATEM impose le ratio d'origine ; on autorise les deux).
+    if b.get("aspect") == "free":
+        sx = b.get("size_x") or b.get("size", 0.45)
+        sy = b.get("size_y") or b.get("size", 0.45)
+    else:
+        sx = sy = b.get("size", 0.45)
+    full_w = WIDTH * float(sx); full_h = HEIGHT * float(sy)
+    dst_w = max(2, int(full_w * (1.0 - cl - cr_)))
+    dst_h = max(2, int(full_h * (1.0 - ct - cb)))
+    if dst_w % 2: dst_w -= 1
+    if dst_h % 2: dst_h -= 1
+    if dst_w < 2 or dst_h < 2:
+        return None
+    vis_cx = b["x"] * WIDTH + (cl - cr_) * 0.5 * full_w
+    vis_cy = b["y"] * HEIGHT + (ct - cb) * 0.5 * full_h
+    x0 = int(vis_cx - dst_w / 2); y0 = int(vis_cy - dst_h / 2)
+    if x0 % 2: x0 -= 1
+    if y0 % 2: y0 -= 1
+
+    sxr0 = cl * WIDTH;  sxr1 = (1.0 - cr_) * WIDTH
+    syr0 = ct * HEIGHT; syr1 = (1.0 - cb) * HEIGHT
+
+    rot = float(b.get("rotation", 0.0))
+    mh = bool(b.get("mirror_h")); mv = bool(b.get("mirror_v"))
+
+    # ── Cartes d'échantillonnage (nearest). Deux régimes :
+    #    • SANS rotation → 1D séparables (ix/iy), comme le chemin historique : quasi gratuit.
+    #    • AVEC rotation → carte d'index PLAT 2D (np.take), construite par BROADCAST float32
+    #      (pas de mgrid : mesuré 2,8 ms/box en 1080p au lieu de 14,5 ms).
+    #    Le MIROIR est un simple retournement des rampes (jamais un flip du buffer : gratuit).
+    u = (np.arange(dst_w, dtype=np.float32) + 0.5) / dst_w        # 0..1 sur la box
+    v = (np.arange(dst_h, dtype=np.float32) + 0.5) / dst_h
+    if mh: u = u[::-1].copy()
+    if mv: v = v[::-1].copy()
+
+    fe = float(b.get("feather", 0.0))
+    rad = int(round(min(float(b.get("radius", 0.0)), dst_w / 2.0 - 1, dst_h / 2.0 - 1)))
+    op = float(b.get("opacity", 1.0)) * float(alpha)
+    bd = b.get("border") or {{}}
+    b_in = float(bd.get("inner", 0.0)); b_flat = float(bd.get("w", 0) or 0)
+    bevel = float(bd.get("bevel", 0.0))
+    bw_tot = b_in + b_flat
+
+    flat = flat2 = None
+    ix = iy = ix2 = iy2 = None
+    row_need = None
+    rot_loc = None          # (dedge, sgn_x, sgn_y) en coordonnées LOCALES à la box (cas tourné)
+
+    if abs(rot) > 1e-6:
+        # ─────────── BOX TOURNÉE ───────────
+        # ★ La rotation fait basculer LA TUILE ENTIÈRE (cadre compris), pas seulement le contenu
+        # à l'intérieur d'un rectangle resté droit : hors du quadrilatère incliné, on voit le
+        # FOND. Le stamp est donc posé sur la BOÎTE ENGLOBANTE (AABB) du quad tourné, et chaque
+        # pixel est ramené en coordonnées LOCALES à la box par la rotation inverse — ce sont ces
+        # coordonnées locales qui pilotent l'échantillonnage ET les masques (feather, coins,
+        # bordure), de sorte que tout tourne AVEC la box.
+        th = math.radians(rot); s, c = math.sin(th), math.cos(th)
+        aw = int(math.ceil(abs(dst_w * c) + abs(dst_h * s))) + 2
+        ah = int(math.ceil(abs(dst_w * s) + abs(dst_h * c))) + 2
+        aw -= aw % 2; ah -= ah % 2
+        aw = min(aw, WIDTH * 3); ah = min(ah, HEIGHT * 3)
+        X = (np.arange(aw, dtype=np.float32) - (aw - 1) / 2.0)
+        Y = (np.arange(ah, dtype=np.float32) - (ah - 1) / 2.0)
+        # rotation INVERSE : (X,Y) écran → (ul,vl) local box (centré, en px)
+        ul = np.add.outer(Y * s, X * c)
+        vl = np.add.outer(Y * c, -X * s)
+        hw = dst_w / 2.0; hh = dst_h / 2.0
+        # distance SIGNÉE aux bords de la box, en local (>0 dedans, <0 dehors)
+        dxl = hw - np.abs(ul); dyl = hh - np.abs(vl)
+        dedge = np.minimum(dxl, dyl)
+        # échantillonnage : local normalisé → région source croppée
+        fu = ul / dst_w + 0.5; fv = vl / dst_h + 0.5
+        if mh: fu = 1.0 - fu
+        if mv: fv = 1.0 - fv
+        mx = np.clip(sxr0 + fu * (sxr1 - sxr0), 0, WIDTH - 1)
+        my = np.clip(syr0 + fv * (syr1 - syr0), 0, HEIGHT - 1)
+        myi = my.astype(np.int32); mxi = mx.astype(np.int32)
+        flat = (myi.astype(np.int64) * WIDTH + mxi).ravel()
+        my2 = np.clip(myi[::_CH, ::_CW] // _CH, 0, UV_H - 1)
+        mx2 = np.clip(mxi[::_CH, ::_CW] // _CW, 0, UV_W - 1)
+        flat2 = (my2.astype(np.int64) * UV_W + mx2).ravel()
+        if SLICE_ON:
+            # MODE TRANCHE : la rotation échantillonne EN DIAGONALE → une bande de sortie peut
+            # réclamer des lignes source bien plus basses. Max par ligne, cumulé (conservateur).
+            row_need = np.maximum.accumulate(myi.max(axis=1)).astype(np.int32)
+        # le stamp couvre l'AABB ; on recentre le rect de destination dessus
+        x0 += (dst_w - aw) // 2
+        y0 += (dst_h - ah) // 2
+        if x0 % 2: x0 -= 1
+        if y0 % 2: y0 -= 1
+        rot_loc = (dedge, ul, vl, s, c, dst_w, dst_h)   # …, largeur/hauteur RÉELLES de la box
+        dst_w, dst_h = aw, ah          # ← le stamp vit désormais dans l'AABB
+    else:
+        # ─────────── BOX DROITE : cartes 1D séparables (chemin historique, quasi gratuit) ──────
+        u = (np.arange(dst_w, dtype=np.float32) + 0.5) / dst_w
+        v = (np.arange(dst_h, dtype=np.float32) + 0.5) / dst_h
+        if mh: u = u[::-1].copy()      # MIROIR = retournement de rampe (jamais un flip de buffer)
+        if mv: v = v[::-1].copy()
+        ix = np.clip((sxr0 + u * (sxr1 - sxr0)).astype(np.int32), 0, WIDTH - 1)
+        iy = np.clip((syr0 + v * (syr1 - syr0)).astype(np.int32), 0, HEIGHT - 1)
+        u2 = (np.arange(dst_w // _CW, dtype=np.float32) + 0.5) / max(1, dst_w // _CW)
+        v2 = (np.arange(dst_h // _CH, dtype=np.float32) + 0.5) / max(1, dst_h // _CH)
+        if mh: u2 = u2[::-1].copy()
+        if mv: v2 = v2[::-1].copy()
+        ix2 = np.clip((sxr0 / _CW + u2 * ((sxr1 - sxr0) / _CW)).astype(np.int32), 0, UV_W - 1)
+        iy2 = np.clip((syr0 / _CH + v2 * ((syr1 - syr0) / _CH)).astype(np.int32), 0, UV_H - 1)
+
+    # ── Masque ALPHA : feather × coins arrondis × opacité × fondu de transition.
+    if rot_loc is not None:
+        a16, a16_2, marg, a_scalar = _build_alpha_rot(dst_w, dst_h, rot_loc, fe, rad, op, bw_tot)
+    else:
+        a16, a16_2, marg, a_scalar = _build_alpha(dst_w, dst_h, fe, rad, op)
+
+    # ── BORDURE 3D : largeur intérieure/extérieure, biseau (rentrant/sortant), adoucissement,
+    #    position, et SOURCE DE LUMIÈRE (direction + hauteur) → relief. Le ruban est une
+    #    fonction de la distance au bord ⇒ SÉPARABLE (minimum externe de 2 rampes).
+    b_out = float(bd.get("outer", 0.0))   # (bd / b_in / b_flat / bevel / bw_tot : définis + haut)
+    ring_a = ring_y = ring_u = ring_v = None
+    if bw_tot > 0.0 or b_out > 0.0:
+        Yb, Ub, Vb = _hex_to_yuv(bd.get("color"))
+        inner_w = max(0.0, bw_tot)
+        # ★ Le ruban ne fait que `bw_tot` px de large : construire des tableaux PLEIN RECT pour
+        # lui, c'est calculer des dizaines de milliers de pixels dont on sait déjà qu'ils valent
+        # zéro. On n'évalue donc QUE les 4 bandes du ruban (le reste reste à zéro, jamais lu) —
+        # mesuré : construction de la bordure 3D 38,1 → 12,3 ms pour 4 boxes en 1080p.
+        ring_a = np.zeros((dst_h, dst_w), dtype=np.uint16)
+        ring_y = np.zeros((dst_h, dst_w), dtype=_NP_DT)
+        m = max(1, min(int(math.ceil(inner_w)) + 2, dst_h // 2, dst_w // 2))
+        la = math.radians(LIGHT["angle"]); lalt = math.radians(LIGHT["altitude"])
+        lx = math.cos(la) * math.cos(lalt); ly = -math.sin(la) * math.cos(lalt)
+        lz = max(0.05, math.sin(lalt))
+        sgn = 1.0 if bevel > 0 else -1.0
+        pos = float(bd.get("bevel_pos", 0.5)); soft = max(0.05, float(bd.get("bevel_soft", 0.3)))
+        if rot_loc is not None:
+            # BOX TOURNÉE : le ruban suit les bords OBLIQUES (distance locale), et la normale du
+            # biseau est TOURNÉE elle aussi — sinon le relief resterait éclairé comme si la box
+            # était droite (cadre incohérent avec la lumière de la scène).
+            dedge_l, ul, vl, s_, c_, _bw, _bh = rot_loc
+            dxl = _bw / 2.0 - np.abs(ul); dyl = _bh / 2.0 - np.abs(vl)
+            near_x_l = np.less(dyl, dxl)                  # bord le plus proche = haut/bas
+            nlx = np.where(near_x_l, 0.0, np.sign(ul)).astype(np.float32)
+            nly = np.where(near_x_l, np.sign(vl), 0.0).astype(np.float32)
+            gx = (nlx * c_ - nly * s_).astype(np.float32)   # normale locale → repère ÉCRAN
+            gy = (nlx * s_ + nly * c_).astype(np.float32)
+            de = dedge_l
+            ring = np.clip(inner_w - de, 0.0, 1.0) * (de > 0)
+            if abs(bevel) > 1e-6:
+                shade = np.clip((lx * gx + ly * gy) * sgn * abs(bevel) + lz, 0.0, 1.0)
+                t = np.clip((de - pos * inner_w) / (soft * max(1.0, inner_w)) + 0.5, 0.0, 1.0)
+                prof = 0.35 + 0.65 * (1.0 - np.abs(2.0 * t - 1.0))
+                lit = np.clip(shade * prof * 2.0, 0.0, 1.6)
+                ring_y[:] = np.clip(Yb * lit, 16 * _SCALE, _MAXV).astype(_NP_DT)
+            else:
+                ring_y[:] = Yb
+            ring_a[:] = (ring * 256.0).astype(np.uint16)
+            m = max(dst_w, dst_h)     # ruban oblique → pas de bande axis-aligned exploitable
+        else:
+            ax = np.arange(dst_w, dtype=np.float32); ay = np.arange(dst_h, dtype=np.float32)
+            ex_f = np.minimum(ax, dst_w - 1 - ax); ey_f = np.minimum(ay, dst_h - 1 - ay)
+            sx_f = np.where(ax < dst_w / 2.0, 1.0, -1.0).astype(np.float32)
+            sy_f = np.where(ay < dst_h / 2.0, 1.0, -1.0).astype(np.float32)
+            for (r0, r1, c0, c1) in _ring_slices(dst_h, dst_w, m):
+                ey_s = ey_f[r0:r1]; ex_s = ex_f[c0:c1]
+                dedge = np.minimum.outer(ey_s, ex_s)          # distance au bord (séparable)
+                ring = np.clip(inner_w - dedge, 0.0, 1.0) if inner_w > 0 else np.zeros_like(dedge)
+                if abs(bevel) > 1e-6:
+                    # Relief : la normale du biseau pointe vers l'extérieur du bord LE PLUS
+                    # PROCHE, et on l'éclaire avec la source de lumière (direction + hauteur) →
+                    # un bord clair, l'opposé sombre. C'est CE gradient qui distingue un cadre 3D
+                    # d'un trait plat. Normale ANALYTIQUE (pas de np.gradient 2D) :
+                    # dedge = min(ey,ex) ⇒ gradient ±1 sur l'axe du bord le plus proche, 0 sinon.
+                    near_x = np.less.outer(ey_s, ex_s)
+                    gx = np.where(near_x, 0.0, sx_f[c0:c1][None, :]).astype(np.float32)
+                    gy = np.where(near_x, sy_f[r0:r1][:, None], 0.0).astype(np.float32)
+                    shade = np.clip((lx * gx + ly * gy) * sgn * abs(bevel) + lz, 0.0, 1.0)
+                    # position + adoucissement du biseau : profil sur l'épaisseur du ruban
+                    t = np.clip((dedge - pos * inner_w) / (soft * max(1.0, inner_w)) + 0.5, 0.0, 1.0)
+                    prof = 0.35 + 0.65 * (1.0 - np.abs(2.0 * t - 1.0))
+                    lit = np.clip(shade * prof * 2.0, 0.0, 1.6)
+                    ring_y[r0:r1, c0:c1] = np.clip(Yb * lit, 16 * _SCALE, _MAXV).astype(_NP_DT)
+                else:
+                    ring_y[r0:r1, c0:c1] = Yb
+                ring_a[r0:r1, c0:c1] = (ring * 256.0).astype(np.uint16)
+        ring_u = np.full((dst_h // _CH, dst_w // _CW), Ub, dtype=_NP_DT)
+        ring_v = np.full((dst_h // _CH, dst_w // _CW), Vb, dtype=_NP_DT)
+        ring_a2 = ring_a[::_CH, ::_CW].copy()
+        ring_marg = m
+    else:
+        ring_a2 = None
+        ring_marg = 0
+
+    # ── OMBRE PORTÉE : masque de la box FLOUTÉ (convolution) puis DÉCALÉ. Séparable → le flou
+    #    est fait sur 2 vecteurs 1D et recombiné par produit externe (mesuré 1,0 ms au lieu de
+    #    10,8 ms). Entièrement PRÉCALCULÉ : par trame il ne reste qu'un blend de ruban.
+    sh = b.get("shadow") or {{}}
+    shadow = None
+    if sh.get("enabled") and float(sh.get("opacity", 0.0)) > 0.001:
+        br = int(round(float(sh.get("blur", 8.0))))
+        amp = 256.0 * float(sh.get("opacity", 0.5)) * float(alpha)
+        if rot_loc is not None:
+            # BOX TOURNÉE : l'ombre est la SILHOUETTE INCLINÉE floutée (une ombre rectangulaire
+            # droite sous une box penchée trahirait immédiatement le truquage). La silhouette
+            # n'est pas séparable → flou 2D séparé en 2 passes 1D (lignes puis colonnes).
+            sil = np.clip(rot_loc[0] + 0.5, 0.0, 1.0).astype(np.float32)
+            if br > 0:
+                sil = _blur2(sil, br)
+            sa16 = (sil * amp).astype(np.uint16)
+        else:
+            sm_x = _blur1(np.ones(dst_w, np.float32), br) if br > 0 else np.ones(dst_w, np.float32)
+            sm_y = _blur1(np.ones(dst_h, np.float32), br) if br > 0 else np.ones(dst_h, np.float32)
+            # L'échelle (opacité × fondu × 256) est repliée dans les VECTEURS 1D AVANT le produit
+            # externe → le masque sort déjà à l'échelle : un balayage plein rect au lieu de trois.
+            sm_y = sm_y * amp
+            sa16 = np.multiply.outer(sm_y, sm_x).astype(np.uint16)
+        sYa, sUa, sVa = _hex_to_yuv(sh.get("color") or "#000000")
+        shadow = {{
+            "x0": x0 + int(round(float(sh.get("dx", 8.0)))),
+            "y0": y0 + int(round(float(sh.get("dy", 8.0)))),
+            "w": dst_w, "h": dst_h,
+            "a": sa16,
+            "a2": sa16[::_CH, ::_CW].copy(),
+            "yuv": (sYa, sUa, sVa),
+        }}
+
+    # Rect INTÉRIEUR pleinement OPAQUE de la box (alpha == 256 partout) : tout ce qui est peint
+    # dessous y est INVISIBLE → l'ombre portée n'a pas à y être calculée (cf. _paint_shadow_rows).
+    op_rect = None
+    if op >= 0.999 and marg < min(dst_w, dst_h) // 2:
+        op_rect = (x0 + marg, y0 + marg, x0 + dst_w - marg, y0 + dst_h - marg)
+
+    # ── FUSION du ruban de bordure et du blend alpha (une seule passe) ────────────────────────
+    # Quand il n'y a PAS d'intérieur opaque exploitable (box TOURNÉE : le ruban et les bords sont
+    # obliques ; ou opacité globale), le compositing ferait DEUX balayages pleins du rect : un
+    # pour peindre la bordure dans le calque source, un pour le fondre sur la sortie. On les
+    # PRÉ-FUSIONNE ici, hors trame :
+    #     sortie = out·(1−a) + [src·(1−ring) + couleur·ring]·a
+    #            = out·(1−a) + src·[(1−ring)·a] + [couleur·ring·a]
+    #              └ inv_a ┘         └── A1 ──┘   └────── C2 ──────┘   (précalculés)
+    # → il ne reste qu'UNE passe par plan. Mesuré : box tournée avec bordure, ~30 % de moins.
+    fused = None
+    if (ring_a is not None) and marg >= min(dst_w, dst_h) // 2:
+        _a = a16 if a16 is not None else np.full((dst_h, dst_w), 256, np.uint16)
+        _a2 = a16_2 if a16_2 is not None else np.full((dst_h // _CH, dst_w // _CW), 256, np.uint16)
+        A1 = ((_a.astype(np.uint32) * (256 - ring_a)) >> 8).astype(np.uint16)
+        A1_2 = ((_a2.astype(np.uint32) * (256 - ring_a2)) >> 8).astype(np.uint16)
+        ar = ((_a.astype(np.uint32) * ring_a) >> 8).astype(np.uint16)
+        ar2 = ((_a2.astype(np.uint32) * ring_a2) >> 8).astype(np.uint16)
+        fused = {{
+            "inv_a": (256 - _a).astype(np.uint16),
+            "inv_a2": (256 - _a2).astype(np.uint16),
+            "A1": A1, "A1_2": A1_2,
+            "C2y": ((ring_y.astype(np.uint32) * ar) >> 8).astype(np.uint32),
+            "C2u": ((ring_u.astype(np.uint32) * ar2) >> 8).astype(np.uint32),
+            "C2v": ((ring_v.astype(np.uint32) * ar2) >> 8).astype(np.uint32),
+        }}
+
+    return {{
+        "x0": x0, "y0": y0, "w": dst_w, "h": dst_h,
+        "flat": flat, "flat2": flat2, "ix": ix, "iy": iy, "ix2": ix2, "iy2": iy2,
+        "row_need": row_need,
+        "a": a16, "a2": a16_2, "marg": marg, "a_scalar": a_scalar, "fused": fused,
+        "opaque": (op >= 0.999 and marg == 0),
+        "op_rect": op_rect, "op_marg": marg,
+        "ring_a": ring_a, "ring_a2": ring_a2, "ring_y": ring_y, "ring_u": ring_u,
+        "ring_v": ring_v, "ring_marg": ring_marg,
+        "shadow": shadow, "alpha": float(alpha),
+    }}
+
+
+def _stamp_for(idx, b, alpha):
+    """Stamp de la box `idx`, depuis le CACHE (reconstruit seulement si la clé a changé)."""
+    key = _adv_key(b, alpha)
+    cur = _stamps.get(idx)
+    if cur is not None and cur[0] == key:
+        _stamp_stats["hits"] += 1
+        st = cur[1]
+    else:
+        t0 = time.monotonic()
+        st = _build_stamp(b, alpha)
+        _stamp_stats["builds"] += 1
+        _stamp_stats["build_ms"] += (time.monotonic() - t0) * 1000.0
+        _stamps[idx] = (key, st)
+    if st is None:
+        return None
+    # La POSITION ne fait pas partie de la clé (translation pure = stamp réutilisé tel quel) :
+    # on la réapplique ici, à coût nul.
+    if b.get("aspect") == "free":
+        sx = b.get("size_x") or b.get("size", 0.45); sy = b.get("size_y") or b.get("size", 0.45)
+    else:
+        sx = sy = b.get("size", 0.45)
+    crop = b.get("crop") or {{}}
+    cl = _f(crop.get("l", 0.0), 0.0, 0.9, 0.0); cr_ = _f(crop.get("r", 0.0), 0.0, 0.9, 0.0)
+    ct = _f(crop.get("t", 0.0), 0.0, 0.9, 0.0); cb = _f(crop.get("b", 0.0), 0.0, 0.9, 0.0)
+    if cl + cr_ >= 0.95: cl = cr_ = 0.0
+    if ct + cb >= 0.95: ct = cb = 0.0
+    full_w = WIDTH * float(sx); full_h = HEIGHT * float(sy)
+    vis_cx = b["x"] * WIDTH + (cl - cr_) * 0.5 * full_w
+    vis_cy = b["y"] * HEIGHT + (ct - cb) * 0.5 * full_h
+    x0 = int(vis_cx - st["w"] / 2); y0 = int(vis_cy - st["h"] / 2)
+    if x0 % 2: x0 -= 1
+    if y0 % 2: y0 -= 1
+    if x0 != st["x0"] or y0 != st["y0"]:
+        dx = x0 - st["x0"]; dy = y0 - st["y0"]
+        if st["shadow"] is not None:
+            st["shadow"]["x0"] += dx
+            st["shadow"]["y0"] += dy
+        if st.get("op_rect") is not None:
+            ox0, oy0, ox1, oy1 = st["op_rect"]
+            st["op_rect"] = (ox0 + dx, oy0 + dy, ox1 + dx, oy1 + dy)
+        st["x0"] = x0; st["y0"] = y0
+    if st["x0"] + st["w"] <= 0 or st["y0"] + st["h"] <= 0 or st["x0"] >= WIDTH or st["y0"] >= HEIGHT:
+        return None
+    return st
+
+
+def _blend_rows(dst, y_a, y_b, x_a, x_b, k, a16, marg, a_scalar=None):
+    """Compose `k` sur `dst[y_a:y_b, x_a:x_b]`. TROIS RÉGIMES (du moins cher au plus cher) —
+    c'est le cœur du coût par trame :
+      • marg == 0 (masque None)  → COPIE DIRECTE : la box est opaque, rien à mélanger.
+      • a_scalar (marg == -1)    → blend à alpha CONSTANT : pas de masque à lire.
+      • masque 2D                → seul le RUBAN de `marg` px est mélangé, l'intérieur est COPIÉ.
+        (mesuré : blend plein rect 7,2 ms/box en 1080p, ruban ~0,1 ms)."""
+    h = y_b - y_a; w = x_b - x_a
+    if h <= 0 or w <= 0:
+        return
+    if a_scalar is not None:                        # opacité uniforme → alpha scalaire
+        av = int(round(max(0.0, min(1.0, a_scalar)) * 256.0))
+        if av >= 256:
+            dst[y_a:y_b, x_a:x_b] = k
+            return
+        rr = dst[y_a:y_b, x_a:x_b].astype(np.uint16)
+        dst[y_a:y_b, x_a:x_b] = ((rr * (256 - av) + k.astype(np.uint16) * av) >> 8).astype(_NP_DT)
+        return
+    if a16 is None or marg <= 0:                    # box pleinement opaque → copie directe
+        dst[y_a:y_b, x_a:x_b] = k
+        return
+    if marg >= min(w, h) // 2 + 1:                  # ruban plus large que la box → blend plein
+        rr = dst[y_a:y_b, x_a:x_b].astype(np.uint16)
+        dst[y_a:y_b, x_a:x_b] = ((rr * (256 - a16) + k.astype(np.uint16) * a16) >> 8).astype(_NP_DT)
+        return
+    # intérieur (alpha=256) : copie directe ; RUBAN de bord : blend
+    for (ra, rb, ca, cb_) in _ring_slices(h, w, marg):
+        sub_k = k[ra:rb, ca:cb_]; sub_a = a16[ra:rb, ca:cb_]
+        reg = dst[y_a + ra:y_a + rb, x_a + ca:x_a + cb_]
+        rr = reg.astype(np.uint16)
+        reg[:] = ((rr * (256 - sub_a) + sub_k.astype(np.uint16) * sub_a) >> 8).astype(_NP_DT)
+    dst[y_a + marg:y_b - marg, x_a + marg:x_b - marg] = k[marg:h - marg, marg:w - marg]
+
+
+def _ring_slices(h, w, m):
+    """Les 4 bandes du RUBAN de bord d'un rect h×w d'épaisseur m (haut, bas, gauche, droite)."""
+    return ((0, m, 0, w), (h - m, h, 0, w), (m, h - m, 0, m), (m, h - m, w - m, w))
+
+
+def _adv_need_row(st, b0, b1):
+    """MODE TRANCHE — dernière ligne SOURCE requise par la bande [b0,b1) pour le stamp `st`,
+    ou -1 si la box n'intersecte pas la bande. AVEC ROTATION l'échantillonnage est DIAGONAL :
+    on utilise le max par ligne précalculé (`row_need`), sinon on lirait des lignes source non
+    encore committées (déchirure)."""
+    y0, y1 = st["y0"], st["y0"] + st["h"]
+    a = max(y0, b0); b = min(y1, b1)
+    if a >= b:
+        return -1
+    lb = b - y0
+    if st["row_need"] is not None:
+        return int(st["row_need"][min(lb - 1, st["h"] - 1)])
+    need = int(st["iy"][min(lb - 1, st["h"] - 1)])
+    if st["iy2"] is not None:
+        lcb = (b - y0) // _CH
+        if lcb > 0:
+            need = max(need, (int(st["iy2"][min(lcb - 1, st["iy2"].size - 1)]) + 1) * _CH - 1)
+    return need
+
+
+def _paint_shadow_rows(oy, ou, ov, st, b0, b1):
+    """OMBRE PORTÉE — assombrit le FOND (sous la box) sur les lignes [b0,b1). Masque flouté
+    PRÉCALCULÉ → il ne reste qu'un blend. Peinte AVANT la box (z : sous elle)."""
+    sh = st.get("shadow")
+    if sh is None:
+        return
+    x0, y0, w, h = sh["x0"], sh["y0"], sh["w"], sh["h"]
+    Ys, Us, Vs = sh["yuv"]
+
+    # ★ L'ombre est ENTIÈREMENT RECOUVERTE par la box là où celle-ci est opaque : la peindre y
+    # serait du travail jeté. On découpe donc le rect d'ombre en BANDES autour du rect opaque de
+    # la box (découpe guillotine). Une ombre typique (box opaque, léger décalage) se réduit ainsi
+    # à deux fines bandes en L au lieu d'un rect plein. Box semi-transparente (op_rect=None) →
+    # aucune découpe : l'ombre DOIT transparaître (correction avant optimisation).
+    opr = st.get("op_rect")
+    for (rx0, ry0, rx1, ry1) in _sub_rects(x0, y0, x0 + w, y0 + h, opr):
+        ya = max(ry0, b0, 0); yb = min(ry1, b1, HEIGHT)
+        xa = max(rx0, 0); xb = min(rx1, WIDTH)
+        if ya >= yb or xa >= xb:
+            continue
+        ra, rb = ya - y0, yb - y0
+        ca, cb_ = xa - x0, xb - x0
+        a = sh["a"][ra:rb, ca:cb_]
+        reg = oy[ya:yb, xa:xb]
+        if reg.shape != a.shape:
+            continue
+        reg[:] = ((reg.astype(np.uint16) * (256 - a) + int(Ys) * a) >> 8).astype(_NP_DT)
+        cya, cyb = ya // _CH, yb // _CH
+        cxa, cxb = xa // _CW, xb // _CW
+        if cyb <= cya or cxb <= cxa:
+            continue
+        a2 = sh["a2"][(ya - y0) // _CH:(ya - y0) // _CH + (cyb - cya),
+                      (xa - x0) // _CW:(xa - x0) // _CW + (cxb - cxa)]
+        for plane, val in ((ou, int(Us)), (ov, int(Vs))):
+            r2 = plane[cya:cyb, cxa:cxb]
+            if r2.shape != a2.shape:
+                continue
+            r2[:] = ((r2.astype(np.uint16) * (256 - a2) + val * a2) >> 8).astype(_NP_DT)
+
+
+def _sub_rects(x0, y0, x1, y1, hole):
+    """Découpe le rect [x0,x1)×[y0,y1) en bandes NON CHEVAUCHANTES excluant `hole` (découpe
+    guillotine : haut, bas, gauche, droite). `hole` None ou disjoint → le rect entier."""
+    if hole is None:
+        return [(x0, y0, x1, y1)]
+    hx0, hy0, hx1, hy1 = hole
+    hx0 = max(hx0, x0); hy0 = max(hy0, y0); hx1 = min(hx1, x1); hy1 = min(hy1, y1)
+    if hx0 >= hx1 or hy0 >= hy1:
+        return [(x0, y0, x1, y1)]          # pas de recouvrement
+    out = []
+    if hy0 > y0: out.append((x0, y0, x1, hy0))          # bande haute
+    if hy1 < y1: out.append((x0, hy1, x1, y1))          # bande basse
+    if hx0 > x0: out.append((x0, hy0, hx0, hy1))        # bande gauche
+    if hx1 < x1: out.append((hx1, hy0, x1, hy1))        # bande droite
+    return out
+
+
+def _place_adv_rows(oy, ou, ov, sy, su, sv, st, b0, b1):
+    """MODE AVANCÉ — compose la box (rotation/miroir/ratio libre + feather/coins/opacité +
+    bordure 3D) sur les lignes [b0,b1). Fonctionne à l'identique en TRAME ENTIÈRE (b0=0,
+    b1=HEIGHT) et en MODE TRANCHE (une bande) : une seule implémentation, donc pas de dérive
+    entre les deux chemins.
+
+    Par trame il ne reste que : un GATHER (carte d'index CACHÉE) + un blend de RUBAN."""
+    x0, y0, w, h = st["x0"], st["y0"], st["w"], st["h"]
+    ya = max(y0, b0, 0); yb = min(y0 + h, b1, HEIGHT)
+    xa = max(x0, 0); xb = min(x0 + w, WIDTH)
+    if ya >= yb or xa >= xb:
+        return
+    ra, rb = ya - y0, yb - y0          # lignes locales (dans la box)
+    ca, cb_ = xa - x0, xb - x0         # colonnes locales
+
+    # ── 1) GATHER du source (rotation/miroir = carte d'index PLAT CACHÉE ; sinon 1D séparable)
+    if st["flat"] is not None:
+        fl = st["flat"].reshape(h, w)[ra:rb, ca:cb_]
+        k = np.take(sy.ravel(), fl)
+    else:
+        k = sy[st["iy"][ra:rb]][:, st["ix"][ca:cb_]]
+
+    # ── 1bis) CHEMIN FUSIONNÉ (box tournée / opacité globale avec bordure) : bordure + blend en
+    #    UNE passe, à partir des cartes pré-fusionnées (cf. _build_stamp). Évite le double
+    #    balayage plein rect.
+    fu = st.get("fused")
+    if fu is not None:
+        reg = oy[ya:yb, xa:xb]
+        reg[:] = (((reg.astype(np.uint32) * fu["inv_a"][ra:rb, ca:cb_]) >> 8)
+                  + ((k.astype(np.uint32) * fu["A1"][ra:rb, ca:cb_]) >> 8)
+                  + fu["C2y"][ra:rb, ca:cb_]).clip(0, _MAXV).astype(_NP_DT)
+        cya, cyb = ya // _CH, yb // _CH
+        cxa, cxb = xa // _CW, xb // _CW
+        if cyb <= cya or cxb <= cxa:
+            return
+        cra = (ya - y0) // _CH; cca = (xa - x0) // _CW
+        crb = cra + (cyb - cya); ccb = cca + (cxb - cxa)
+        ch2, cw2 = h // _CH, w // _CW
+        if crb > ch2 or ccb > cw2:
+            return
+        for splane, oplane, c2 in ((su, ou, fu["C2u"]), (sv, ov, fu["C2v"])):
+            if st["flat2"] is not None:
+                kc = np.take(splane.ravel(), st["flat2"].reshape(ch2, cw2)[cra:crb, cca:ccb])
+            else:
+                kc = splane[st["iy2"][cra:crb]][:, st["ix2"][cca:ccb]]
+            r2 = oplane[cya:cyb, cxa:cxb]
+            if r2.shape != kc.shape:
+                continue
+            r2[:] = (((r2.astype(np.uint32) * fu["inv_a2"][cra:crb, cca:ccb]) >> 8)
+                     + ((kc.astype(np.uint32) * fu["A1_2"][cra:crb, cca:ccb]) >> 8)
+                     + c2[cra:crb, cca:ccb]).clip(0, _MAXV).astype(_NP_DT)
+        return
+
+    # ── 2) BORDURE 3D : peinte DANS le calque `k` avant le blend (ruban seulement)
+    if st["ring_a"] is not None:
+        rs = st["ring_a"][ra:rb, ca:cb_]
+        ry = st["ring_y"][ra:rb, ca:cb_]
+        nz = st["ring_marg"]
+        if nz > 0:
+            # `k` sort de np.take / d'un gather fancy → c'est DÉJÀ un tableau neuf : pas de
+            # .copy() ici (une copie plein rect par box et par trame, pour rien).
+            hh, ww = k.shape
+            mm = min(nz, max(1, hh // 2), max(1, ww // 2))
+            if mm >= min(hh, ww) // 2 + 1:
+                k[:] = ((k.astype(np.uint16) * (256 - rs) + ry.astype(np.uint16) * rs) >> 8).astype(_NP_DT)
+            else:
+                for (p, q, r_, s_) in _ring_slices(hh, ww, mm):
+                    sa = rs[p:q, r_:s_]
+                    kk = k[p:q, r_:s_]
+                    kk[:] = ((kk.astype(np.uint16) * (256 - sa)
+                              + ry[p:q, r_:s_].astype(np.uint16) * sa) >> 8).astype(_NP_DT)
+
+    # ── 3) BLEND sur la sortie (alpha = feather × coins × opacité × fondu), ruban seulement
+    _a = st["a"][ra:rb, ca:cb_] if st["a"] is not None else None
+    _blend_rows(oy, ya, yb, xa, xb, k, _a, st["marg"], st["a_scalar"])
+
+    # ── 4) CHROMA (mêmes opérations, plans sous-échantillonnés)
+    cya, cyb = ya // _CH, yb // _CH
+    cxa, cxb = xa // _CW, xb // _CW
+    if cyb <= cya or cxb <= cxa:
+        return
+    cra = (ya - y0) // _CH; cca = (xa - x0) // _CW
+    crb = cra + (cyb - cya); ccb = cca + (cxb - cxa)
+    ch2, cw2 = h // _CH, w // _CW
+    if crb > ch2 or ccb > cw2:
+        return
+    for splane, oplane, ringp in ((su, ou, st["ring_u"]), (sv, ov, st["ring_v"])):
+        if st["flat2"] is not None:
+            fl2 = st["flat2"].reshape(ch2, cw2)[cra:crb, cca:ccb]
+            kc = np.take(splane.ravel(), fl2)
+        else:
+            kc = splane[st["iy2"][cra:crb]][:, st["ix2"][cca:ccb]]
+        if st["ring_a2"] is not None and ringp is not None:
+            rs2 = st["ring_a2"][cra:crb, cca:ccb]
+            kc = kc.copy()
+            kc[:] = ((kc.astype(np.uint16) * (256 - rs2)
+                      + ringp[cra:crb, cca:ccb].astype(np.uint16) * rs2) >> 8).astype(_NP_DT)
+        a2 = st["a2"][cra:crb, cca:ccb] if st["a2"] is not None else None
+        if a2 is not None and kc.shape != a2.shape:
+            continue
+        m2 = st["marg"] // max(1, _CH) if st["marg"] > 0 else st["marg"]
+        _blend_rows(oplane, cya, cyb, cxa, cxb, kc, a2, m2, st["a_scalar"])
+
+
+# ═══ COUCHE « ART » (habillage graphique) — la fonction phare du SuperSource ═════════════════
+# Un décor/logo/cadre posé AU-DESSUS ou EN DESSOUS des boxes, avec incrustation LUMA ou CHROMA
+# (seuil/clip, gain, inversion) → un décor de plateau avec des « trous » où se logent les caméras.
+#
+# ★ POURQUOI UNE IMAGE IMPORTÉE ET NON UNE 6ᵉ ENTRÉE VIDÉO (l'ATEM prend une source vidéo) :
+#   c'est un ARBITRAGE MESURÉ, pas une facilité. L'incrustation d'une source VIVANTE impose de
+#   recalculer le masque de clé à CHAQUE TRAME sur le cadre PLEIN — banc nœud 30, 1080p, Y+U+V :
+#       ART = 6ᵉ entrée vidéo live   → 21,7 ms/trame   (108 % du budget 50 fps À ELLE SEULE)
+#       ART = image importée         →  0,9 ms/trame   (clé PRÉCALCULÉE une fois à l'import)
+#   Une entrée vidéo consommerait donc tout le budget de trame avant même de composer les boxes.
+#   L'image importée est en outre le cas d'usage réel de l'habillage (décor/logo fixe), et c'est
+#   le motif déjà éprouvé du multiview (overlays PIL → YUV, cachés). Le jour où l'ART vivant
+#   sera nécessaire, il faudra le noyau C (mvk) — chantier en soi, cf. help.md.
+_art_lock = threading.Lock()
+_art = {{"enabled": False, "above": True, "image": "", "key": "alpha", "clip": 0.15,
+         "gain": 1.0, "invert": False, "opacity": 1.0, "chroma_key": "#00b140",
+         "baked": None, "err": ""}}
+
+
+def _art_public():
+    """État ART pour /state — SANS le blob base64 (une image 1080p en base64 pèse ~1 Mo : la
+    renvoyer à chaque poll de /state saturerait l'UI). `has_image` suffit à l'UI."""
+    with _art_lock:
+        return {{k: _art[k] for k in ("enabled", "above", "key", "clip", "gain", "invert",
+                                      "opacity", "chroma_key", "err")}} | {{
+            "has_image": bool(_art["image"]),
+            "loaded": _art.get("baked") is not None,
+        }}
+
+
+def _bake_art():
+    """Décode l'image ART (base64 PNG/JPEG) → plans YUV + masque alpha PRÉCALCULÉ selon le mode
+    d'incrustation. Fait UNE FOIS à l'import/au changement de réglage (jamais par trame)."""
+    with _art_lock:
+        cfg = dict(_art)
+    if not cfg["enabled"] or not cfg["image"]:
+        with _art_lock:
+            _art["baked"] = None; _art["err"] = ""
+        return
+    try:
+        from PIL import Image
+        raw = cfg["image"]
+        if "," in raw[:64] and raw.strip().startswith("data:"):
+            raw = raw.split(",", 1)[1]
+        im = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGBA")
+        if im.size != (WIDTH, HEIGHT):
+            im = im.resize((WIDTH, HEIGHT), Image.LANCZOS)
+        arr = np.asarray(im).astype(np.float32)
+        r, g, b, al = arr[..., 0], arr[..., 1], arr[..., 2], arr[..., 3]
+        Y = (0.299 * r + 0.587 * g + 0.114 * b)
+        U = (-0.169 * r - 0.331 * g + 0.5 * b + 128.0)
+        V = (0.5 * r - 0.419 * g - 0.081 * b + 128.0)
+
+        mode = cfg["key"]
+        clip = float(cfg["clip"]); gain = max(0.01, float(cfg["gain"]))
+        if mode == "luma":
+            a = np.clip((Y / 255.0 - clip) * gain, 0.0, 1.0)
+        elif mode == "chroma":
+            kr, kg, kb = _hex_to_yuv(cfg["chroma_key"])   # échelle _SCALE
+            ku = kr and 0  # (silence lint) — on n'utilise que U/V de la clé
+            _, kU, kV = _hex_to_yuv(cfg["chroma_key"])
+            du = (U - float(kU) / _SCALE); dv = (V - float(kV) / _SCALE)
+            dist = np.sqrt(du * du + dv * dv) / 128.0
+            a = np.clip((dist - clip) * gain, 0.0, 1.0)   # proche de la clé → transparent
+        else:                                             # "alpha" : canal alpha du PNG
+            a = np.clip((al / 255.0 - clip) * gain, 0.0, 1.0)
+        if cfg["invert"]:
+            a = 1.0 - a
+        a *= float(cfg["opacity"])
+
+        a16 = (a * 256.0).astype(np.uint16)
+        Yp = np.clip(Y * _SCALE, 0, _MAXV).astype(_NP_DT)
+        Up = np.clip(U * _SCALE, 0, _MAXV).astype(_NP_DT)[::_CH, ::_CW].copy()
+        Vp = np.clip(V * _SCALE, 0, _MAXV).astype(_NP_DT)[::_CH, ::_CW].copy()
+        a16_2 = a16[::_CH, ::_CW].copy()
+        # ★ Décomposition OPAQUE / PARTIEL : un décor est fait de grandes zones pleines et de
+        #   grands trous. Les zones OPAQUES se COPIENT (np.copyto), seule la frange PARTIELLE se
+        #   mélange → mesuré 0,9 ms au lieu de 5,1 ms (blend plein cadre) en 1080p.
+        opaque = a16 >= 255
+        part = (a16 > 0) & ~opaque
+        rows_o = np.nonzero(opaque.any(axis=1))[0]
+        rows_p = np.nonzero(part.any(axis=1))[0]
+        baked = {{
+            "y": Yp, "u": Up, "v": Vp, "a": a16, "a2": a16_2,
+            "opaque": opaque, "opaque2": opaque[::_CH, ::_CW].copy(),
+            "oy0": int(rows_o[0]) if rows_o.size else 0,
+            "oy1": int(rows_o[-1]) + 1 if rows_o.size else 0,
+            "py0": int(rows_p[0]) if rows_p.size else 0,
+            "py1": int(rows_p[-1]) + 1 if rows_p.size else 0,
+        }}
+        with _art_lock:
+            _art["baked"] = baked; _art["err"] = ""
+        print(f"split: ART cuit ({{mode}}) — opaque[{{baked['oy0']}}:{{baked['oy1']}}] "
+              f"partiel[{{baked['py0']}}:{{baked['py1']}}]")
+    except Exception as e:
+        with _art_lock:
+            _art["baked"] = None; _art["err"] = str(e)
+        print(f"split: ART illisible — {{e}}")
+
+
+def _paint_art_rows(oy, ou, ov, b0, b1):
+    """Compose la couche ART sur les lignes [b0,b1). Tout est PRÉCALCULÉ (clé comprise) : il ne
+    reste qu'une COPIE sur les zones opaques + un blend sur la frange partielle."""
+    with _art_lock:
+        bk = _art.get("baked")
+    if bk is None:
+        return
+    # zones OPAQUES → copie directe
+    ya = max(bk["oy0"], b0); yb = min(bk["oy1"], b1)
+    if ya < yb:
+        np.copyto(oy[ya:yb], bk["y"][ya:yb], where=bk["opaque"][ya:yb])
+        cya, cyb = ya // _CH, yb // _CH
+        if cyb > cya:
+            for plane, src in ((ou, bk["u"]), (ov, bk["v"])):
+                np.copyto(plane[cya:cyb], src[cya:cyb], where=bk["opaque2"][cya:cyb])
+    # frange PARTIELLE → blend
+    ya = max(bk["py0"], b0); yb = min(bk["py1"], b1)
+    if ya < yb:
+        a = bk["a"][ya:yb]
+        reg = oy[ya:yb]
+        reg[:] = ((reg.astype(np.uint16) * (256 - a) + bk["y"][ya:yb].astype(np.uint16) * a) >> 8).astype(_NP_DT)
+        cya, cyb = ya // _CH, yb // _CH
+        if cyb > cya:
+            a2 = bk["a2"][cya:cyb]
+            for plane, src in ((ou, bk["u"]), (ov, bk["v"])):
+                r2 = plane[cya:cyb]
+                if r2.shape != a2.shape:
+                    continue
+                r2[:] = ((r2.astype(np.uint16) * (256 - a2)
+                          + src[cya:cyb].astype(np.uint16) * a2) >> 8).astype(_NP_DT)
 
 
 def _sl_ensure(L, need_k, deadl):
@@ -832,32 +1852,24 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot):
     Renvoie le cumul des attentes get_slice (à EXCLURE de own_latency_ms)."""
     global _sl_dbg
     wait_ns = 0
-    p = None
-    if tr is not None:
-        p = max(0.0, min(1.0, (time.time() - tr["start"]) * 1000.0 / tr["duration_ms"]))
-    # 1) plan des couches à composer (z-ordre : fond puis boxes 0→3), géométrie comprise.
-    plan = [(4, None, 1.0)]
-    for i in range(N_BOXES):
-        if tr is not None:
-            res = _interp_box(tr["from"][i], tr["to"][i], p)
-            if res is None:
-                continue
-            b_, alpha = res
-        else:
-            if not boxes[i]["enabled"]:
-                continue
-            b_, alpha = boxes[i], 1.0
-        plan.append((i, b_, alpha))
+    # 1) plan des couches à composer (fond, puis les boxes dans l'ordre de superposition `z`).
+    plan = [(4, None, 1.0)] + _plan_layers(tr, boxes)
     # 2) cible + 1ʳᵉ tranche de chaque couche (le suivi des bandes suivantes se fait au fil
     #    du compose). Cible = tête (peut être EN COURS d'écriture) ; en flow = index d'epoch.
     layers = []
     dormant = 0
     for slot, b_, alpha in plan:
-        g = None
+        g = None; st = None
         if slot != 4:
-            g = _box_slice_geom(b_, alpha)
-            if g is None:
-                continue
+            # MODE AVANCÉ → stamp caché ; sinon géométrie historique (octet-identique).
+            if _is_adv(b_):
+                st = _stamp_for(slot, b_, alpha)
+                if st is None:
+                    continue
+            else:
+                g = _box_slice_geom(b_, alpha)
+                if g is None:
+                    continue
         rd = ensure_input(slot)
         if rd is None:
             continue     # fond absent → bandes noires ; box absente → non composée (historique)
@@ -896,7 +1908,7 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot):
                 if ts: ts_in_per_slot[slot] = ts
                 sy, su, sv = _plane_views(np.frombuffer(fr, dtype=np.uint8))
                 layers.append({{"slot": slot, "rd": rd, "fi": int(got[0]), "sy": sy, "su": su,
-                                "sv": sv, "total": 1, "valid": 1, "islh": HEIGHT, "g": g,
+                                "sv": sv, "total": 1, "valid": 1, "islh": HEIGHT, "g": g, "st": st,
                                 "budget": int(interval * 1e9)}})
                 continue
             if got is None or len(got[2]) != V_FRAME_SIZE:
@@ -922,7 +1934,7 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot):
                 valid = total
             layers.append({{"slot": slot, "rd": rd, "fi": fi, "sy": sy, "su": su, "sv": sv,
                             "total": total, "valid": valid,
-                            "islh": max(1, HEIGHT // total), "g": g,
+                            "islh": max(1, HEIGHT // total), "g": g, "st": st,
                             "budget": int(interval * 1e9)}})
         except Exception:
             continue
@@ -934,6 +1946,7 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot):
     nb = HEIGHT // SLICE_H
     deadl = time.monotonic() + (interval * 1.5)   # garde-fou GLOBAL (borne dure de la trame)
     black_y = 16 * _SCALE
+    art_below = _art_below(); art_above = _art_above()
     try:
         for k in range(nb):
             b0 = k * SLICE_H; b1 = b0 + SLICE_H
@@ -948,9 +1961,21 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot):
                 oy[b0:b1] = black_y
                 ou[cb0:cb1] = _NEUTRAL
                 ovv[cb0:cb1] = _NEUTRAL
+            if art_below:                       # ART SOUS les boxes (sur le fond)
+                _paint_art_rows(oy, ou, ovv, b0, b1)
             for L in layers:
-                g = L["g"]
-                if g is None:
+                g = L["g"]; st = L["st"]
+                if g is None and st is None:
+                    continue
+                if st is not None:
+                    # MODE AVANCÉ. L'ombre portée ne lit PAS la source (masque précalculé) →
+                    # peinte sans attendre la moindre tranche ; la box, elle, attend ses lignes.
+                    _paint_shadow_rows(oy, ou, ovv, st, b0, b1)
+                    need = _adv_need_row(st, b0, b1)
+                    if need < 0:
+                        continue
+                    wait_ns += _sl_ensure(L, min(L["total"], need // L["islh"] + 1), deadl)
+                    _place_adv_rows(oy, ou, ovv, L["sy"], L["su"], L["sv"], st, b0, b1)
                     continue
                 need = _band_need_row(g, b0, b1)
                 if need < 0:
@@ -958,12 +1983,27 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot):
                 wait_ns += _sl_ensure(L, min(L["total"], need // L["islh"] + 1), deadl)
                 _place_box_band(oy, ou, ovv, L["sy"], L["su"], L["sv"], g, b0, b1)
                 _paint_border_band(oy, ou, ovv, g, b0, b1)
+            if art_above:                       # ART AU-DESSUS des boxes (habillage à trous)
+                _paint_art_rows(oy, ou, ovv, b0, b1)
             if k < nb - 1:
                 out.commit(gi_o, valid_slices=k + 1)   # réveille l'aval sur la bande
     finally:
         out.commit(gi_o, valid_slices=None)   # commit final TOUJOURS (grain jamais partiel)
     return wait_ns
 
+
+# ─── ART persisté (deploy_config.art) : cuit UNE FOIS au boot ───
+_ac = CONFIG.get("art") or {{}}
+if _ac:
+    with _art_lock:
+        for k in ("enabled", "above", "invert"):
+            if k in _ac: _art[k] = bool(_ac[k])
+        for k in ("image", "key", "chroma_key"):
+            if k in _ac: _art[k] = str(_ac[k] or "")
+        for k in ("clip", "gain", "opacity"):
+            if k in _ac: _art[k] = _f(_ac[k], 0.0, 16.0, _art[k])
+        if not _art["key"]: _art["key"] = "alpha"
+    _bake_art()
 
 out = _ouvrir_sortie(SHM_OUT)
 if SLICE_ON:
@@ -1057,6 +2097,12 @@ while True:
                 state["transition"] = None
                 boxes = [dict(b) for b in state["boxes"]]
                 tr = None
+    if tr is not None:
+        # progression BRUTE (linéaire) de la transition — la courbe d'accélération et le
+        # décalage inter-boxes (stagger) sont appliqués PAR BOX dans _box_progress.
+        tr = dict(tr)
+        tr["_p_raw"] = max(0.0, min(1.0,
+                           (time.time() - tr["start"]) * 1000.0 / max(1, tr["duration_ms"])))
 
     ts_in_per_slot = {{}}
     ts_cycle_start = time.time_ns()   # début du compositing (fond détecté + boxes alignées) → base transit/own
@@ -1073,28 +2119,39 @@ while True:
             print(f"split: erreur slice_frame ignorée (frame {{frame_index}}) : {{_e}}")
         ts_out = time.time_ns()
     else:
-        # Background (slot 4, full frame).
+        # ── Composition TRAME ENTIÈRE (chemin historique). Depuis 0.9.0 elle s'appuie sur les
+        # MÊMES primitives par bandes que le mode tranche (bande = trame entière) : une seule
+        # implémentation du compositing → les deux chemins ne peuvent plus diverger.
+        # Réglages par défaut (aucun effet avancé) ⇒ strictement le rendu de 0.8.0.
         bg_frame, ts_bg = lire_frame_yuv(ensure_input(4))
         if ts_bg: ts_in_per_slot[4] = ts_bg
-        yuv = bg_frame or empty_frame
+        buf = np.frombuffer(bg_frame or empty_frame, dtype=np.uint8).copy()
+        oy, ou, ovv = _plane_views(buf)
 
-        # Compose each box (order 0->3).
-        if tr is not None:
-            p = max(0.0, min(1.0, (time.time() - tr["start"]) * 1000.0 / tr["duration_ms"]))
-        for i in range(N_BOXES):
-            if tr is not None:
-                res = _interp_box(tr["from"][i], tr["to"][i], p)
-                if res is None: continue
-                b, alpha = res
+        if _art_below():                      # ART SOUS les boxes (décor de fond)
+            _paint_art_rows(oy, ou, ovv, 0, HEIGHT)
+
+        for slot, b, alpha in _plan_layers(tr, boxes):
+            f, ts = lire_frame_yuv(ensure_input(slot))
+            if ts: ts_in_per_slot[slot] = ts
+            if not f:
+                continue
+            sy, su, sv = _plane_views(np.frombuffer(f, dtype=np.uint8))
+            if _is_adv(b):
+                st = _stamp_for(slot, b, alpha)
+                if st is None: continue
+                _paint_shadow_rows(oy, ou, ovv, st, 0, HEIGHT)     # ombre SOUS la box
+                _place_adv_rows(oy, ou, ovv, sy, su, sv, st, 0, HEIGHT)
             else:
-                if not boxes[i]["enabled"]: continue
-                b, alpha = boxes[i], 1.0
-            f, ts = lire_frame_yuv(ensure_input(i))
-            if ts: ts_in_per_slot[i] = ts
-            if f:
-                yuv = composite_box_yuv(yuv, f, alpha, b["x"], b["y"], b["size"], b["crop"], b.get("border"))
+                g = _box_slice_geom(b, alpha)                       # chemin 0.8.0 inchangé
+                if g is None: continue
+                _place_box_band(oy, ou, ovv, sy, su, sv, g, 0, HEIGHT)
+                _paint_border_band(oy, ou, ovv, g, 0, HEIGHT)
 
-        _ecrire_sortie(out, yuv, frame_index)
+        if _art_above():                      # ART AU-DESSUS des boxes (habillage à trous)
+            _paint_art_rows(oy, ou, ovv, 0, HEIGHT)
+
+        _ecrire_sortie(out, buf, frame_index)
         ts_out = time.time_ns()
 
     with state_lock:
@@ -1139,6 +2196,36 @@ while True:
             metrics["frame_index"] = frame_index
             metrics["inputs_latency_ms"] = {{k: v.avg() for k, v in lat_in.items()}}
             metrics["own_latency_ms"] = own_lat.avg()
+            # ── MODE AVANCÉ : santé du CACHE STATIQUE. `builds` qui grimpe en régime établi =
+            # une clé de cache qui bouge sans raison → le précalcul serait refait par trame
+            # (c'est LE mode de défaillance de perf du mode avancé). `hit_rate` doit valoir ~1
+            # hors transition. `budget_pct` = coût propre / budget de trame.
+            _tot = _stamp_stats["builds"] + _stamp_stats["hits"]
+            _own = own_lat.avg()
+            _pct = (round(_own / (interval * 1000.0) * 100.0, 1)) if _own is not None else None
+            metrics["adv"] = {{
+                "stamp_builds": _stamp_stats["builds"],
+                "stamp_hits": _stamp_stats["hits"],
+                "stamp_hit_rate": (round(_stamp_stats["hits"] / _tot, 3) if _tot else None),
+                "stamp_build_ms_total": round(_stamp_stats["build_ms"], 1),
+                "art": (_art.get("key") if _art.get("baked") is not None else None),
+                "budget_pct": _pct,
+                "over_budget": bool(_pct is not None and _pct > 100.0),
+                "rotated_boxes": _n_rot,
+            }}
+            # ★ JAMAIS EN SILENCE : si le compositing dépasse le budget de trame, le split
+            # décroche (fps < consigne) — l'exploitant doit savoir POURQUOI. La rotation est de
+            # loin le poste le plus lourd en numpy (rééchantillonnage 2D sur la boîte englobante) :
+            # on la nomme. Alerte loggée UNE FOIS par franchissement (pas à chaque trame).
+            if _pct is not None and _pct > 100.0:
+                if not _over_warned[0]:
+                    _over_warned[0] = True
+                    print(f"split: ATTENTION — compositing à {{_pct}} % du budget de trame "
+                          f"({{interval * 1000.0:.0f}} ms @ {{FPS}} fps) : le split va décrocher. "
+                          f"Boxes tournées : {{_n_rot}}. La ROTATION est le poste le plus coûteux "
+                          f"(numpy) — la désactiver, réduire la résolution ou baisser la cadence.")
+            elif _pct is not None and _pct < 90.0:
+                _over_warned[0] = False
             if _sl_dbg:
                 # Observabilité mode tranche (sémantique commune multiview/mixer) :
                 # — DERNIÈRE trame (instantané) : layers (≡ tiles/inputs), valid0, waits,

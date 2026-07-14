@@ -14,8 +14,8 @@
     "mode": "split",
     "desc_i18n": "settings.js.skh_desc_split"
   },
-  "version": "0.8.0",
-  "description": "SuperSource : 4 PiP (position/taille/crop) composités sur 1 fond → 1 sortie. Géométrie + mémoires/transitions pilotées en live. (v0.2.0 : marqueur `variant` exposé sur :8080 pour tester le multi-versions.)",
+  "version": "0.9.0",
+  "description": "SuperSource : 4 PiP (position/taille/crop) composités sur 1 fond → 1 sortie, + couche ART (habillage importé, incrustation luma/chroma/alpha, au-dessus ou en dessous). Mode avancé par box : rotation, opacité, adoucissement des bords, coins arrondis, ombre portée, miroir, ratio libre, z-ordre libre, bordure 3D (biseau + source de lumière). Transitions à courbes d'accélération, décalage inter-boxes, tous les paramètres interpolés. Réglages avancés neutres par défaut → chemin de composition historique inchangé.",
   "nav": {
     "section": "traitements",
     "label": "Traitements",
@@ -61,7 +61,26 @@
     "input_1": null,
     "input_2": null,
     "input_3": null,
-    "bg_input": null
+    "bg_input": null,
+    "light": {
+      "angle": 36.0,
+      "altitude": 25.0
+    },
+    "transition": {
+      "curve": "ease_in_out",
+      "stagger_ms": 0
+    },
+    "art": {
+      "enabled": false,
+      "above": true,
+      "image": "",
+      "key": "alpha",
+      "clip": 0.0,
+      "gain": 1.0,
+      "invert": false,
+      "opacity": 1.0,
+      "chroma_key": "#00b140"
+    }
   },
   "wiring": {
     "produces": [
@@ -111,7 +130,10 @@
       "/state",
       "/input",
       "/box",
-      "/recall"
+      "/recall",
+      "/art",
+      "/light",
+      "/transition"
     ],
     "atem": {
       "CSBP": "/box"
@@ -120,7 +142,10 @@
       "source": "plugin_store",
       "scope": "container",
       "endpoint": "/recall"
-    }
+    },
+    "read_endpoints": [
+      "/state"
+    ]
   },
   "store": {
     "scope": "container"
@@ -191,6 +216,82 @@
           "label": "Flow (tissu en tranches)"
         }
       ]
+    },
+    {
+      "key": "light_angle",
+      "type": "number",
+      "label_i18n": "split.cfg.light_angle",
+      "help_i18n": "split.cfg.light_angle_help",
+      "min": 0,
+      "max": 360,
+      "default": 36,
+      "scope": "system"
+    },
+    {
+      "key": "light_altitude",
+      "type": "number",
+      "label_i18n": "split.cfg.light_altitude",
+      "help_i18n": "split.cfg.light_altitude_help",
+      "min": 0,
+      "max": 90,
+      "default": 25,
+      "scope": "system"
+    },
+    {
+      "key": "transition_curve",
+      "type": "select",
+      "label_i18n": "split.cfg.curve",
+      "help_i18n": "split.cfg.curve_help",
+      "default": "ease_in_out",
+      "scope": "user",
+      "options": [
+        {
+          "value": "linear",
+          "label_i18n": "split.easing.linear"
+        },
+        {
+          "value": "ease_in",
+          "label_i18n": "split.easing.ease_in"
+        },
+        {
+          "value": "ease_out",
+          "label_i18n": "split.easing.ease_out"
+        },
+        {
+          "value": "ease_in_out",
+          "label_i18n": "split.easing.ease_in_out"
+        },
+        {
+          "value": "cubic_in",
+          "label_i18n": "split.easing.cubic_in"
+        },
+        {
+          "value": "cubic_out",
+          "label_i18n": "split.easing.cubic_out"
+        },
+        {
+          "value": "cubic_in_out",
+          "label_i18n": "split.easing.cubic_in_out"
+        },
+        {
+          "value": "sine_in_out",
+          "label_i18n": "split.easing.sine_in_out"
+        },
+        {
+          "value": "expo_out",
+          "label_i18n": "split.easing.expo_out"
+        }
+      ]
+    },
+    {
+      "key": "transition_stagger_ms",
+      "type": "number",
+      "label_i18n": "split.cfg.stagger",
+      "help_i18n": "split.cfg.stagger_help",
+      "min": 0,
+      "max": 2000,
+      "default": 0,
+      "scope": "user"
     }
   ]
 }
