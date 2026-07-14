@@ -1,7 +1,14 @@
 {
-  "version": "0.9.3",
+  "version": "0.9.4",
   "date": "2026-07-14",
   "changes": {
+    "Édition MULTI-BOX (0.9.4)": [
+      "BUG : la multi-sélection valait pour le canvas et la barre d'outils, mais le panneau de réglages n'écrivait QUE dans la box de référence — on sélectionnait 3 box, on tournait un cadran, une seule bougeait. Tout réglage passe désormais par applySetting(), qui écrit dans TOUTES les box sélectionnées : un POST /box CIBLÉ par box, avec le SEUL champ touché (fusion profonde côté moteur — l'état complet d'une box n'est jamais réécrit).",
+      "★ DELTA vs ABSOLU, choix assumé et prévisible : la GÉOMÉTRIE (x, y, taille, largeur/hauteur libres, z-ordre) est reportée en DÉCALAGE — appliquer une valeur absolue identique à N box les empilerait au même endroit et écraserait leurs tailles/ordres respectifs ; chaque box garde donc sa disposition relative (uniformiser une taille reste possible : c'est l'outil dédié « même taille que la référence » de la barre). L'APPARENCE (crop, rotation, opacité, adoucissement, coins, bordure, biseau, ombre, miroir, ratio, couleurs) est UNIFORMISÉE (absolu) : c'est ce qu'on attend d'une multi-édition d'aspect.",
+      "VALEURS DIVERGENTES : un réglage dont les box sélectionnées n'ont pas la même valeur ne ment plus en affichant celle de la référence — champ VIDE + placeholder « — », libellé marqué « ≠ », cadran grisé (posé sur la valeur de référence, qui n'est qu'un point de départ), interrupteur en état indéterminé, select « valeurs multiples ». ★ Et surtout : RIEN n'est écrasé tant que l'utilisateur ne touche pas ce réglage précis — seuls les réglages réellement modifiés sont poussés.",
+      "L'EN-TÊTE DIT CE QU'ON ÉDITE : « Box 2 » en mono-sélection, « 3 box sélectionnées » (+ pastilles des box concernées + rappel de la box de référence) en multi, avec la note expliquant décalage vs uniformisation. C'était la racine de la surprise : rien n'indiquait la cible de l'édition.",
+      "Ce qui n'a pas de sens en multi reste MONO-BOX et le DIT (infobulle) : la source d'une box et son activation individuelle, dans la colonne « Box & fond »."
+    ],
     "Mise en page : aperçu compact + réglages pleine largeur (0.9.3)": [
       "RETOUR UTILISATEUR : « trop à défiler pour voir tous les réglages ». Les réglages étaient coincés dans une colonne latérale étroite (aside) → défilement sans fin.",
       "RESTRUCTURATION, en transposant le PRÉCÉDENT du projet (la bibliothèque de modèles de PiP, sortie de son aside pour une section pleine largeur sous l'éditeur) : étage 1 = APERÇU compact (canvas plafonné à 620 px) + colonne « Box & fond » à sa droite (sélecteur de cible d'édition : les 4 box avec leur switch et leur source, puis le fond) ; étage 2 = TOUS LES RÉGLAGES SUR TOUTE LA LARGEUR, en grille responsive repeat(auto-fill, minmax(340px, 1fr)) — les sections du correcteur de couleur ne sont plus empilées dans un couloir, elles se répartissent en colonnes. Repli en une colonne sous 1100 px (même point de rupture que .pip-compose).",

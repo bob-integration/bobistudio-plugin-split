@@ -32,7 +32,6 @@
   "plugin.split.flash_select2": "Select at least 2 boxes (Shift+click).",
   "plugin.split.flash_select3": "Select at least 3 boxes (Shift+click).",
   "plugin.split.no_sel": "No box selected.",
-  "plugin.split.multi_note": "Multi-selection: the settings edit the reference box; the tools (align, distribute, paste) act on the whole selection.",
   "plugin.split.f_x": "X (center)",
   "plugin.split.f_y": "Y (center)",
   "plugin.split.f_size": "Size",
@@ -151,5 +150,17 @@
   "plugin.split.k_art_op": "Opacity",
   "plugin.split.light_err": "Light setting rejected",
   "plugin.split.input_err": "Wiring rejected",
-  "plugin.split.targets": "Boxes & background"
+  "plugin.split.targets": "Boxes & background",
+  "plugin.split.multi_head": "boxes selected",
+  "plugin.split.multi_ref": "reference: Box",
+  "plugin.split.multi_abs": "Applies to ALL selected boxes (uniformise).",
+  "plugin.split.multi_delta": "Multi-selection: the value you type is applied as an OFFSET (the change requested on the reference box is carried over to each box, which keeps its own layout).",
+  "plugin.split.multi_knob": "Applies to ALL selected boxes.",
+  "plugin.split.mixed_knob": "Multiple values in the selection. Acting on this control applies it to ALL selected boxes (uniformise).",
+  "plugin.split.mixed_color": "Different colours in the selection: picking one uniformises them.",
+  "plugin.split.mixed_toggle": "Different states in the selection: toggling applies the same state to ALL selected boxes.",
+  "plugin.split.mixed_short": "multiple values",
+  "plugin.split.box_enable_one": "Show this box (per-box setting, never applied to the selection).",
+  "plugin.split.box_src_one": "Source of this box (per-box setting, never applied to the selection).",
+  "plugin.split.multi_note": "Any setting changed below applies to ALL selected boxes. Position, size and z-order are carried over as an OFFSET (each box keeps its relative layout); appearance (crop, rotation, opacity, border, shadow…) is UNIFORMISED. A “≠” marks diverging values: as long as you don't touch that control, it is not overwritten. Source and activation stay per-box (“Boxes & background” column)."
 }

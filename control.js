@@ -153,6 +153,54 @@ window.MXLPlugins.split = (function () {
     }
     const primary = () => (sel.length ? sel[0] : -1);
 
+    // ═══ ÉDITION MULTI-BOX ══════════════════════════════════════════════════════════
+    // La multi-sélection valait pour le canvas et la barre d'outils, mais le panneau
+    // n'écrivait QUE dans boxes[primary()] : on sélectionnait 3 box, on tournait un cadran,
+    // une seule bougeait. Tout réglage passe désormais par applySetting(), qui écrit dans
+    // TOUTES les box sélectionnées — un POST /box CIBLÉ par box, avec le SEUL champ touché
+    // (fusion profonde côté moteur : on ne réécrit jamais l'état complet d'une box).
+    //
+    // ★ DELTA vs ABSOLU — le choix, et pourquoi :
+    //   • GÉOMÉTRIE (x, y, size, size_x, size_y, z) → DELTA. Appliquer une valeur absolue
+    //     identique à N box les empilerait au même endroit (et écraserait leurs tailles/
+    //     ordres respectifs) : absurde. On applique donc l'ÉCART demandé sur la box de
+    //     référence à chacune, qui garde sa disposition relative. Uniformiser une taille
+    //     reste possible : c'est l'outil dédié « même taille que la référence » de la barre.
+    //   • APPARENCE (crop, rotation, opacité, adoucissement, coins, bordure, ombre, miroir,
+    //     ratio, couleurs) → ABSOLU : là, on VEUT uniformiser la sélection.
+    const DELTA_PATHS = new Set(['x', 'y', 'size', 'size_x', 'size_y', 'z']);
+    const getV = (b, path) => { const p = path.split('.'); return p.length === 1 ? b[p[0]] : (b[p[0]] || {})[p[1]]; };
+    const setV = (b, path, v) => { const p = path.split('.'); if (p.length === 1) b[p[0]] = v; else b[p[0]][p[1]] = v; };
+    const patchOf = (path, v) => { const p = path.split('.'); return p.length === 1 ? { [p[0]]: v } : { [p[0]]: { [p[1]]: v } }; };
+    // `z` vaut null tant qu'il n'est pas forcé : sa valeur EFFECTIVE est l'index de la box.
+    const effV = (i, path) => { const v = getV(boxes[i], path); return (path === 'z' && v == null) ? i : v; };
+    // Valeurs divergentes dans la sélection → le champ ne doit pas MENTIR en affichant celle
+    // de la box de référence (cf. renderProps : placeholder « — » + libellé « ≠ »).
+    function isMixed(path) {
+        if (sel.length < 2) return false;
+        const ref = effV(sel[0], path);
+        return sel.some(i => {
+            const v = effV(i, path);
+            if (typeof ref === 'number' && typeof v === 'number') return Math.abs(v - ref) > 1e-6;
+            return v !== ref;
+        });
+    }
+    // Écrit UN réglage dans toute la sélection. `newVal` = valeur saisie/tournée sur la box de
+    // référence. Ne touche QUE ce réglage : les autres restent ceux de chaque box.
+    function applySetting(path, newVal) {
+        const refI = primary(); if (refI < 0 || !boxes) return;
+        const isDelta = DELTA_PATHS.has(path) && typeof newVal === 'number';
+        const d = isDelta ? (newVal - (effV(refI, path) || 0)) : 0;
+        sel.forEach(i => {
+            const b = boxes[i];
+            const v = isDelta ? ((effV(i, path) || 0) + d) : newVal;
+            setV(b, path, v);
+            Object.assign(b, normBox(b));                 // re-borne via caps
+            postBox(i, patchOf(path, getV(b, path)));     // POST ciblé, champ unique
+        });
+        drawCanvas();
+    }
+
     // ─── Fetch état / métriques ─────────────────────────────────────────────────────
     function userIsEditing() {
         if (drag || knobDrag) return true;
@@ -228,14 +276,25 @@ window.MXLPlugins.split = (function () {
     // 'box:<champ>' · 'box:<sous-dict>.<champ>' · 'light:<champ>' · 'art:<champ>'.
     function knobHtml(p, value) {
         const v = (value == null) ? p.def : value, shape = p.shape || 'arc';
-        return `<div class="cc-knob" data-target="${p.target}" data-min="${p.min}" data-max="${p.max}"
-      data-step="${p.step}" data-default="${p.def}" data-unit="${p.unit || ''}" data-shape="${shape}">
-  <div class="cc-knob-label">${esc(p.label)}</div>
+        // Valeurs divergentes dans la sélection : le cadran reste posé sur la valeur de la box
+        // de RÉFÉRENCE (il faut bien une aiguille), mais il est grisé, son libellé porte « ≠ »
+        // et le champ chiffré est VIDE avec le placeholder « — » : il n'affirme pas une valeur
+        // commune qui n'existe pas. Agir dessus UNIFORMISE la sélection (c'est un absolu).
+        const mixed = !!p.mixed;
+        const multiTitle = mixed
+            ? T('mixed_knob', 'Valeurs multiples dans la sélection. Agir sur ce réglage l\'applique à TOUTES les box sélectionnées (uniformisation).')
+            : (sel.length > 1 ? T('multi_knob', 'S\'applique à TOUTES les box sélectionnées.') : '');
+        return `<div class="cc-knob${mixed ? ' is-mixed' : ''}" data-target="${p.target}" data-min="${p.min}" data-max="${p.max}"
+      data-step="${p.step}" data-default="${p.def}" data-unit="${p.unit || ''}" data-shape="${shape}"
+      data-ref="${v}" data-mixed="${mixed ? '1' : '0'}">
+  <div class="cc-knob-label">${esc(p.label)}${mixed ? ' <span class="mixed-mark" aria-hidden="true">≠</span>' : ''}</div>
   <div class="cc-knob-dial" role="slider" tabindex="0" aria-label="${esc(p.label)}"
-       aria-valuemin="${p.min}" aria-valuemax="${p.max}" aria-valuenow="${v}" aria-valuetext="${esc(fmt(v, p.step, p.unit))}"
-       title="${esc(T('knob_title', 'Glisser vertical, molette, flèches (Maj = pas fin). Double-clic = valeur par défaut.'))}">${knobSvg((v - p.min) / ((p.max - p.min) || 1), shape, v)}</div>
+       aria-valuemin="${p.min}" aria-valuemax="${p.max}" aria-valuenow="${v}"
+       aria-valuetext="${mixed ? esc(T('mixed_short', 'valeurs multiples')) : esc(fmt(v, p.step, p.unit))}"
+       title="${esc((T('knob_title', 'Glisser vertical, molette, flèches (Maj = pas fin). Double-clic = valeur par défaut.') + (multiTitle ? ' ' + multiTitle : '')))}">${knobSvg((v - p.min) / ((p.max - p.min) || 1), shape, v)}</div>
   <input type="number" class="cc-knob-value no-stepper" min="${p.min}" max="${p.max}" step="${p.step}"
-         value="${v}" aria-label="${esc(p.label)}"></div>`;
+         value="${mixed ? '' : v}" placeholder="${mixed ? '—' : ''}"
+         title="${esc(multiTitle)}" aria-label="${esc(p.label)}"></div>`;
     }
     function knobApply(knob, v) {
         const min = +knob.dataset.min, max = +knob.dataset.max, step = +knob.dataset.step;
@@ -253,13 +312,9 @@ window.MXLPlugins.split = (function () {
         const [kind, path] = String(knob.dataset.target).split(':');
         if (kind === 'light') { postLight({ [path]: v }); return; }
         if (kind === 'art') { postArt({ [path]: v }); return; }
-        const i = primary(); if (i < 0) return;
-        const b = boxes[i];
-        if (path.includes('.')) {
-            const [sub, key] = path.split('.');
-            b[sub][key] = v; postBox(i, { [sub]: { [key]: v } });
-        } else { b[path] = v; postBox(i, { [path]: v }); }
-        drawCanvas();
+        applySetting(path, v);              // ★ toute la sélection, pas seulement la référence
+        const k = knob.closest('.cc-knob');
+        if (k) { k.classList.remove('is-mixed'); k.dataset.mixed = '0'; }   // la valeur vient d'être uniformisée
     }
     function bindKnobs(root) {
         (root || EL).querySelectorAll('.cc-knob').forEach(knob => {
@@ -283,7 +338,9 @@ window.MXLPlugins.split = (function () {
             dial.addEventListener('pointerdown', e => {
                 if (e.button !== undefined && e.button !== 0) return;
                 e.preventDefault();
-                knobDrag = { startY: e.clientY, startValue: parseFloat(num.value) || 0,
+                // Champ vide = valeurs multiples → on part de la valeur de la box de référence.
+                const start = (num.value === '') ? (+knob.dataset.ref || 0) : (parseFloat(num.value) || 0);
+                knobDrag = { startY: e.clientY, startValue: start,
                     min: +knob.dataset.min, max: +knob.dataset.max, step: +knob.dataset.step };
                 try { dial.setPointerCapture(e.pointerId); } catch (_) {}
                 dial.addEventListener('pointermove', move);
@@ -298,13 +355,16 @@ window.MXLPlugins.split = (function () {
             dial.addEventListener('wheel', e => {
                 e.preventDefault();
                 const step = +knob.dataset.step;
-                const v = knobClamp(knob, parseFloat(num.value) + (e.deltaY < 0 ? 1 : -1) * step * (e.shiftKey ? 10 : 1));
+                const cur = (num.value === '') ? (+knob.dataset.ref || 0) : parseFloat(num.value);
+                const v = knobClamp(knob, cur + (e.deltaY < 0 ? 1 : -1) * step * (e.shiftKey ? 10 : 1));
                 knobApply(knob, v); knobPost(knob, parseFloat(num.value));
             }, { passive: false });
             dial.addEventListener('keydown', e => {
                 const step = +knob.dataset.step, min = +knob.dataset.min, max = +knob.dataset.max;
                 const mult = e.shiftKey ? 10 : 1;
-                let v = parseFloat(num.value), handled = true;
+                let v = parseFloat(num.value);
+                if (isNaN(v)) v = +knob.dataset.ref || 0;      // mixte : partir de la référence
+                let handled = true;
                 switch (e.key) {
                     case 'ArrowUp': case 'ArrowRight': v += step * mult; break;
                     case 'ArrowDown': case 'ArrowLeft': v -= step * mult; break;
@@ -582,9 +642,11 @@ window.MXLPlugins.split = (function () {
     <span class="split-chip-dot" style="background:${BOX_COLORS[i % 4]}"></span>
     <span class="split-chip-name">${esc(T('box', 'Box'))} ${i + 1}</span>
     <input type="checkbox" class="ios-toggle" data-en="${i}" ${b.enabled ? 'checked' : ''}
-           title="${esc(T('box_enable', 'Afficher cette box'))}" aria-label="${esc(T('box_enable', 'Afficher cette box'))}">
+           title="${esc(T('box_enable_one', 'Afficher cette box (réglage propre à cette box, jamais appliqué à la sélection).'))}"
+           aria-label="${esc(T('box_enable', 'Afficher cette box'))}">
   </div>
-  <div class="field"><select data-src="${i}" aria-label="${esc(T('box', 'Box'))} ${i + 1}">${srcOptions(inputs[i])}</select></div>
+  <div class="field"><select data-src="${i}" aria-label="${esc(T('box', 'Box'))} ${i + 1}"
+       title="${esc(T('box_src_one', 'Source de cette box (réglage propre à cette box, jamais appliqué à la sélection).'))}">${srcOptions(inputs[i])}</select></div>
 </div>`).join('');
         strip.querySelectorAll('.split-chip').forEach(chip => {
             chip.addEventListener('click', e => {
@@ -615,26 +677,43 @@ window.MXLPlugins.split = (function () {
         const [min, max, dflt] = cap(group, key);
         const step = (opts && opts.step) || stepOf(min, max);
         const b = boxes[primary()];
+        const full = path ? `${path}.${key}` : key;
         let val = b ? (path ? (b[path] || {})[key] : b[key]) : dflt;
         if (val == null) val = (opts && opts.nullValue != null) ? opts.nullValue : (dflt == null ? 0 : dflt);
-        return `<div class="field">
-  <label for="${id}">${esc(label)}</label>
-  <input type="number" id="${id}" data-key="${key}" data-path="${path || ''}"
-         min="${min}" max="${max}" step="${step}" value="${Number(val).toFixed(decimals(step))}">
+        const mixed = isMixed(full);
+        const delta = DELTA_PATHS.has(full) && sel.length > 1;
+        // Géométrie en multi = DELTA (une valeur absolue empilerait les box) ; apparence = ABSOLU.
+        const tip = sel.length < 2 ? ''
+            : (delta ? T('multi_delta', 'Multi-sélection : la valeur saisie est appliquée en DÉCALAGE (l\'écart demandé sur la box de référence est reporté sur chaque box, qui garde sa disposition).')
+                     : T('multi_abs', 'S\'applique à TOUTES les box sélectionnées (uniformisation).'));
+        return `<div class="field${mixed ? ' is-mixed' : ''}">
+  <label for="${id}" title="${esc(tip)}">${esc(label)}${mixed ? ' <span class="mixed-mark" aria-hidden="true">≠</span>' : ''}</label>
+  <input type="number" id="${id}" data-key="${key}" data-path="${path || ''}" data-ref="${Number(val)}"
+         min="${min}" max="${max}" step="${step}" title="${esc(tip)}"
+         value="${mixed ? '' : Number(val).toFixed(decimals(step))}" placeholder="${mixed ? '—' : ''}">
 </div>`;
     }
     function colorField(id, label, path, key) {
         const b = boxes[primary()];
+        const full = path ? `${path}.${key}` : key;
         const val = (b && (path ? (b[path] || {})[key] : b[key])) || '#ffffff';
-        return `<div class="field"><label for="${id}">${esc(label)}</label>
-  <input type="color" id="${id}" data-key="${key}" data-path="${path || ''}" value="${esc(val)}"></div>`;
+        const mixed = isMixed(full);
+        const tip = mixed ? T('mixed_color', 'Couleurs différentes dans la sélection : choisir une couleur les uniformise.')
+            : (sel.length > 1 ? T('multi_abs', 'S\'applique à TOUTES les box sélectionnées (uniformisation).') : '');
+        return `<div class="field${mixed ? ' is-mixed' : ''}"><label for="${id}" title="${esc(tip)}">${esc(label)}${mixed ? ' <span class="mixed-mark" aria-hidden="true">≠</span>' : ''}</label>
+  <input type="color" id="${id}" data-key="${key}" data-path="${path || ''}" value="${esc(val)}" title="${esc(tip)}"></div>`;
     }
     function toggleField(key, path, label) {
         const b = boxes[primary()];
+        const full = path ? `${path}.${key}` : key;
         const on = !!(b && (path ? (b[path] || {})[key] : b[key]));
-        return `<label class="toggle-inline">
-  <input type="checkbox" class="ios-toggle" data-flag="${key}" data-path="${path || ''}" ${on ? 'checked' : ''}>
-  <span>${esc(label)}</span></label>`;
+        const mixed = isMixed(full);
+        const tip = mixed ? T('mixed_toggle', 'États différents dans la sélection : basculer applique le même état à TOUTES les box sélectionnées.')
+            : (sel.length > 1 ? T('multi_abs', 'S\'applique à TOUTES les box sélectionnées (uniformisation).') : '');
+        return `<label class="toggle-inline${mixed ? ' is-mixed' : ''}" title="${esc(tip)}">
+  <input type="checkbox" class="ios-toggle" data-flag="${key}" data-path="${path || ''}" ${on ? 'checked' : ''}
+         ${mixed ? 'data-indeterminate="1"' : ''}>
+  <span>${esc(label)}${mixed ? ' <span class="mixed-mark" aria-hidden="true">≠</span>' : ''}</span></label>`;
     }
 
     // Coût de la rotation : ANNONCÉ AVANT usage, selon le format courant (mesures du moteur).
@@ -665,15 +744,21 @@ window.MXLPlugins.split = (function () {
         const K = (target, label, group, key, unit, shape) => {
             const [min, max, dflt] = cap(group, key);
             const path = target.split(':')[1];
-            const val = path.includes('.') ? b[path.split('.')[0]][path.split('.')[1]] : b[path];
-            return knobHtml({ target, label, min, max, step: stepOf(min, max), def: (dflt == null ? 0 : dflt), unit, shape }, val);
+            const val = getV(b, path);
+            return knobHtml({ target, label, min, max, step: stepOf(min, max),
+                def: (dflt == null ? 0 : dflt), unit, shape, mixed: isMixed(path) }, val);
         };
         host.innerHTML = `
 <div class="split-props-head">
-  <span class="split-chip-dot" style="background:${BOX_COLORS[i % 4]}"></span>
-  <h3>${esc(T('box', 'Box'))} ${i + 1}${sel.length > 1 ? ` <span class="meta">(+${sel.length - 1})</span>` : ''}</h3>
+  ${sel.length > 1
+    ? sel.map(k => `<span class="split-chip-dot" style="background:${BOX_COLORS[k % 4]}"></span>`).join('')
+    : `<span class="split-chip-dot" style="background:${BOX_COLORS[i % 4]}"></span>`}
+  <h3>${sel.length > 1
+    ? esc(sel.length + ' ' + T('multi_head', 'box sélectionnées'))
+    : esc(T('box', 'Box') + ' ' + (i + 1))}</h3>
+  ${sel.length > 1 ? `<span class="meta">${esc(T('multi_ref', 'référence : Box') + ' ' + (i + 1))}</span>` : ''}
 </div>
-${sel.length > 1 ? `<p class="meta">${esc(T('multi_note', 'Multi-sélection : les réglages modifient la box de référence ; les outils (aligner, distribuer, coller) agissent sur toute la sélection.'))}</p>` : ''}
+${sel.length > 1 ? `<p class="meta split-full">${esc(T('multi_note', 'Tout réglage modifié ci-dessous s\'applique à TOUTES les box sélectionnées. Position, taille et z-ordre sont reportés en DÉCALAGE (chaque box garde sa disposition relative) ; l\'apparence (crop, rotation, opacité, bordure, ombre…) est UNIFORMISÉE. Un « ≠ » signale des valeurs divergentes : tant que vous ne touchez pas ce réglage, il n\'est pas écrasé. La source et l\'activation restent propres à chaque box (colonne « Box & fond »).'))}</p>` : ''}
 
 <div class="cc-section">
   <h4>${esc(T('sec_geom', 'Géométrie'))}</h4>
@@ -681,10 +766,12 @@ ${sel.length > 1 ? `<p class="meta">${esc(T('multi_note', 'Multi-sélection : le
     ${numField('sp_x', T('f_x', 'X (centre)'), 'box_fields', 'x', '')}
     ${numField('sp_y', T('f_y', 'Y (centre)'), 'box_fields', 'y', '')}
     ${numField('sp_size', T('f_size', 'Taille'), 'box_fields', 'size', '')}
-    <div class="field"><label for="sp_aspect">${esc(T('f_aspect', 'Ratio'))}</label>
-      <select id="sp_aspect" data-key="aspect" data-path="">
-        <option value="keep"${b.aspect === 'keep' ? ' selected' : ''}>${esc(T('aspect_keep', 'Conservé (format de la source)'))}</option>
-        <option value="free"${b.aspect === 'free' ? ' selected' : ''}>${esc(T('aspect_free', 'Libre (étirement)'))}</option>
+    <div class="field${isMixed('aspect') ? ' is-mixed' : ''}"><label for="sp_aspect">${esc(T('f_aspect', 'Ratio'))}${isMixed('aspect') ? ' <span class="mixed-mark" aria-hidden="true">≠</span>' : ''}</label>
+      <select id="sp_aspect" data-key="aspect" data-path=""
+              title="${esc(sel.length > 1 ? T('multi_abs', 'S\'applique à TOUTES les box sélectionnées (uniformisation).') : '')}">
+        ${isMixed('aspect') ? `<option value="" selected disabled>${esc(T('mixed_short', 'valeurs multiples'))}</option>` : ''}
+        <option value="keep"${(!isMixed('aspect') && b.aspect === 'keep') ? ' selected' : ''}>${esc(T('aspect_keep', 'Conservé (format de la source)'))}</option>
+        <option value="free"${(!isMixed('aspect') && b.aspect === 'free') ? ' selected' : ''}>${esc(T('aspect_free', 'Libre (étirement)'))}</option>
       </select></div>
     ${numField('sp_size_x', T('f_size_x', 'Largeur (0 = taille)'), 'box_fields', 'size_x', '')}
     ${numField('sp_size_y', T('f_size_y', 'Hauteur (0 = taille)'), 'box_fields', 'size_y', '')}
@@ -761,26 +848,24 @@ ${!advanced ? '' : `<div id="split_adv">
             inp.onchange = () => onFieldChange(inp);
         });
         host.querySelectorAll('input[data-flag]').forEach(cb => {
+            if (cb.dataset.indeterminate) cb.indeterminate = true;   // états divergents : ni coché ni décoché
             cb.onchange = () => {
-                const i2 = primary(), path = cb.dataset.path, key = cb.dataset.flag;
-                if (path) { boxes[i2][path][key] = cb.checked; postBox(i2, { [path]: { [key]: cb.checked } }); }
-                else { boxes[i2][key] = cb.checked; postBox(i2, { [key]: cb.checked }); }
-                renderProps(); drawCanvas();
+                const path = cb.dataset.path, key = cb.dataset.flag;
+                applySetting(path ? `${path}.${key}` : key, cb.checked);   // ★ toute la sélection
+                renderProps();
             };
         });
         bindKnobs(host);
         syncFieldsDisabled();
     }
     function onFieldChange(inp) {
-        const i = primary(); if (i < 0) return;
+        if (primary() < 0) return;
         const key = inp.dataset.key, path = inp.dataset.path;
+        const full = path ? `${path}.${key}` : key;
         let val = (inp.type === 'number') ? parseFloat(inp.value) : inp.value;
-        if (inp.type === 'number' && isNaN(val)) return;
-        const b = boxes[i];
-        if (path) b[path][key] = val; else b[key] = val;
-        Object.assign(b, normBox(b));                        // re-borne (bornes = caps)
-        postBox(i, path ? { [path]: { [key]: b[path][key] } } : { [key]: b[key] });
-        renderProps(); drawCanvas();
+        if (inp.type === 'number' && isNaN(val)) return;     // champ vidé (mixte) : on ne touche à RIEN
+        applySetting(full, val);                             // ★ toute la sélection
+        renderProps();
     }
     // Ratio conservé → largeur/hauteur libres sans effet : DÉSACTIVÉES en le DISANT.
     function syncFieldsDisabled() {

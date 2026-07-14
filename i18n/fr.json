@@ -32,7 +32,6 @@
   "plugin.split.flash_select2": "Sélectionnez au moins 2 box (Maj+clic).",
   "plugin.split.flash_select3": "Sélectionnez au moins 3 box (Maj+clic).",
   "plugin.split.no_sel": "Aucune box sélectionnée.",
-  "plugin.split.multi_note": "Multi-sélection : les réglages modifient la box de référence ; les outils (aligner, distribuer, coller) agissent sur toute la sélection.",
   "plugin.split.f_x": "X (centre)",
   "plugin.split.f_y": "Y (centre)",
   "plugin.split.f_size": "Taille",
@@ -151,5 +150,17 @@
   "plugin.split.k_art_op": "Opacité",
   "plugin.split.light_err": "Réglage de lumière refusé",
   "plugin.split.input_err": "Câblage refusé",
-  "plugin.split.targets": "Box & fond"
+  "plugin.split.targets": "Box & fond",
+  "plugin.split.multi_head": "box sélectionnées",
+  "plugin.split.multi_ref": "référence : Box",
+  "plugin.split.multi_abs": "S'applique à TOUTES les box sélectionnées (uniformisation).",
+  "plugin.split.multi_delta": "Multi-sélection : la valeur saisie est appliquée en DÉCALAGE (l'écart demandé sur la box de référence est reporté sur chaque box, qui garde sa disposition).",
+  "plugin.split.multi_knob": "S'applique à TOUTES les box sélectionnées.",
+  "plugin.split.mixed_knob": "Valeurs multiples dans la sélection. Agir sur ce réglage l'applique à TOUTES les box sélectionnées (uniformisation).",
+  "plugin.split.mixed_color": "Couleurs différentes dans la sélection : choisir une couleur les uniformise.",
+  "plugin.split.mixed_toggle": "États différents dans la sélection : basculer applique le même état à TOUTES les box sélectionnées.",
+  "plugin.split.mixed_short": "valeurs multiples",
+  "plugin.split.box_enable_one": "Afficher cette box (réglage propre à cette box, jamais appliqué à la sélection).",
+  "plugin.split.box_src_one": "Source de cette box (réglage propre à cette box, jamais appliqué à la sélection).",
+  "plugin.split.multi_note": "Tout réglage modifié ci-dessous s'applique à TOUTES les box sélectionnées. Position, taille et z-ordre sont reportés en DÉCALAGE (chaque box garde sa disposition relative) ; l'apparence (crop, rotation, opacité, bordure, ombre…) est UNIFORMISÉE. Un « ≠ » signale des valeurs divergentes : tant que vous ne touchez pas ce réglage, il n'est pas écrasé. La source et l'activation restent propres à chaque box (colonne « Box & fond »)."
 }
