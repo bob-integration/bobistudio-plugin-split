@@ -173,6 +173,55 @@
       ]
     }
   ],
+  "param_tree": {
+    "boxes": { "count_from": "n_boxes", "idx": "slot", "path_prefix": "boxes", "label_from": "consumes" },
+    "box_groups": [
+      { "label": "Géométrie", "endpoint": "/box", "caps": "box_fields",
+        "fields": {
+          "x": { "label": "Position X", "type": "position" },
+          "y": { "label": "Position Y", "type": "position" },
+          "size": { "label": "Taille", "type": "ratio" },
+          "rotation": { "label": "Rotation", "type": "angle" },
+          "opacity": { "label": "Opacité", "type": "percent" },
+          "feather": { "label": "Adoucissement des bords", "type": "pixels" },
+          "radius": { "label": "Coins arrondis", "type": "pixels" } } },
+      { "label": "Affichage", "endpoint": "/box", "caps": "box_fields",
+        "fields": {
+          "enabled": { "label": "Activée", "type": "bool" },
+          "mirror_h": { "label": "Miroir horizontal", "type": "bool" },
+          "mirror_v": { "label": "Miroir vertical", "type": "bool" },
+          "aspect": { "label": "Ratio", "type": "enum", "enum_caps": "box_enums" } } },
+      { "label": "Recadrage", "endpoint": "/box", "wrap": "crop", "caps": "crop",
+        "fields": {
+          "t": { "label": "Haut", "type": "ratio" }, "b": { "label": "Bas", "type": "ratio" },
+          "l": { "label": "Gauche", "type": "ratio" }, "r": { "label": "Droite", "type": "ratio" } } },
+      { "label": "Bordure", "endpoint": "/box", "wrap": "border", "caps": "border_fields",
+        "fields": {
+          "outer": { "label": "Épaisseur extérieure", "type": "pixels" },
+          "inner": { "label": "Épaisseur intérieure", "type": "pixels" },
+          "bevel": { "label": "Biseau (relief)", "type": "ratio" },
+          "bevel_soft": { "label": "Adoucissement du biseau", "type": "ratio" } } },
+      { "label": "Ombre portée", "endpoint": "/box", "wrap": "shadow", "caps": "shadow_fields",
+        "fields": {
+          "dx": { "label": "Décalage X", "type": "pixels" },
+          "dy": { "label": "Décalage Y", "type": "pixels" },
+          "blur": { "label": "Flou", "type": "pixels" },
+          "opacity": { "label": "Opacité", "type": "percent" } } }
+    ],
+    "global_groups": [
+      { "label": "Groupe (calque global)", "endpoint": "/global", "caps": "global_fields", "path_prefix": "global",
+        "fields": {
+          "dx": { "label": "Décalage X", "type": "ratio" },
+          "dy": { "label": "Décalage Y", "type": "ratio" },
+          "scale": { "label": "Échelle", "type": "scale" },
+          "rotation": { "label": "Rotation", "type": "angle" },
+          "opacity": { "label": "Opacité", "type": "percent" } } },
+      { "label": "Lumière", "endpoint": "/light", "caps": "light_fields", "path_prefix": "light",
+        "fields": {
+          "angle": { "label": "Direction", "type": "angle" },
+          "altitude": { "label": "Hauteur", "type": "angle" } } }
+    ]
+  },
   "config_schema": [
     {
       "key": "slice_mode",
