@@ -64,17 +64,20 @@
     /* 64px = la taille NATIVE du tracé du catalogue. À 56 il fallait le mettre à l'échelle, donc
      * le rotatif n'avait pas la même taille qu'ailleurs et son repère de défaut était réduit
      * d'autant. Un contrôle partagé doit faire la même taille partout. */
-    width: 64px; height: 64px; border-radius: 50%;
-    background: radial-gradient(circle at 50% 35%, var(--bg-elev) 0%, var(--bg-elev) 55%, var(--bg-input) 100%);
-    box-shadow: inset 0 0 0 1px var(--border), inset 0 1px 0 rgba(255,255,255,0.04), 0 1px 2px rgba(0,0,0,0.25);
-    cursor: ns-resize; touch-action: none; user-select: none; transition: box-shadow 120ms ease-out;
+    /* Le FOND du cadran est retiré : dégradé radial et ombres internes donnaient un rotatif
+     * différent de celui de color_corrector, alors que le tracé est le même. C'était aussi du
+     * relief, que la charte proscrit. Ne restent que la taille et les propriétés de GESTE. */
+    width: 64px; height: 64px;
+    cursor: ns-resize; touch-action: none; user-select: none;
 }
-.cc-knob-dial:hover {
-    box-shadow: inset 0 0 0 1px var(--accent), inset 0 1px 0 rgba(255,255,255,0.05), 0 1px 3px rgba(0,0,0,0.35);
+/* États alignés sur le catalogue : ils dessinaient des ombres du corps circulaire qu'on vient de
+ * retirer, donc un anneau flottant sur du transparent. Survol gardé (@media hover) pour ne pas
+ * rester collé au tactile ; focus sur :focus et non :focus-visible — le geste pose le focus par
+ * programme, et le navigateur ne le considère alors pas comme « visible ». */
+@media (hover: hover) {
+    .cc-knob-dial:hover .ctl-knob-track { stroke: var(--text-muted); }
 }
-.cc-knob-dial:focus-visible {
-    outline: none; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
-}
+.cc-knob-dial:focus { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 50%; }
 .cc-knob-dial:active { cursor: grabbing; }
 .cc-knob-dial svg { display: block; pointer-events: none; }   /* taille native, pas de mise à l'échelle */
 .cc-knob-value {
