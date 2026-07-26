@@ -427,39 +427,11 @@ window.MXLPlugins.split = (function () {
         });
     }
 
-    // ─── Pictos de la barre d'outils : IDENTIQUES à l'éditeur de PiP / composer multiview ──
-    const SVG = {
-        align_left: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="1.6" height="14" rx="0.8"/><rect x="4" y="3" width="9.5" height="3.6" rx="1"/><rect x="4" y="9.4" width="6" height="3.6" rx="1"/></svg>',
-        align_hcenter: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="2" y="3" width="12" height="3.6" rx="1"/><rect x="4" y="9.4" width="8" height="3.6" rx="1"/><rect x="7.2" y="1" width="1.6" height="14" rx="0.8"/></svg>',
-        align_right: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="13.4" y="1" width="1.6" height="14" rx="0.8"/><rect x="2.5" y="3" width="9.5" height="3.6" rx="1"/><rect x="6" y="9.4" width="6" height="3.6" rx="1"/></svg>',
-        align_top: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="14" height="1.6" rx="0.8"/><rect x="3" y="4" width="3.6" height="9.5" rx="1"/><rect x="9.4" y="4" width="3.6" height="6" rx="1"/></svg>',
-        align_vcenter: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3" y="2" width="3.6" height="12" rx="1"/><rect x="9.4" y="4" width="3.6" height="8" rx="1"/><rect x="1" y="7.2" width="14" height="1.6" rx="0.8"/></svg>',
-        align_bottom: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1" y="13.4" width="14" height="1.6" rx="0.8"/><rect x="3" y="2.5" width="3.6" height="9.5" rx="1"/><rect x="9.4" y="6" width="3.6" height="6" rx="1"/></svg>',
-        size_w: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3" y="2" width="10" height="4.5" rx="1"/><rect x="3" y="9.5" width="10" height="4.5" rx="1" fill-opacity="0.55"/></svg>',
-        size_h: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="2" y="3" width="4.5" height="10" rx="1"/><rect x="9.5" y="3" width="4.5" height="10" rx="1" fill-opacity="0.55"/></svg>',
-        size_both: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1.5" y="1.5" width="8" height="8" rx="1" fill-opacity="0.55"/><rect x="6.5" y="6.5" width="8" height="8" rx="1"/></svg>',
-        distribute_h: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="1.6" height="14" rx="0.8"/><rect x="13.4" y="1" width="1.6" height="14" rx="0.8"/><rect x="6" y="4" width="4" height="8" rx="1"/></svg>',
-        distribute_v: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1" y="1" width="14" height="1.6" rx="0.8"/><rect x="1" y="13.4" width="14" height="1.6" rx="0.8"/><rect x="4" y="6" width="8" height="4" rx="1"/></svg>',
-        copy_settings: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="5.5" y="1.5" width="9" height="9" rx="1.5" fill-opacity="0.45"/><rect x="1.5" y="5.5" width="9" height="9" rx="1.5"/></svg>',
-        paste_settings: '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="12" rx="1.5" fill-opacity="0.45"/><rect x="5.5" y="1" width="5" height="3" rx="1"/><rect x="5" y="6.5" width="6" height="6" rx="1"/></svg>',
-    };
-    function toolGroup(label, defs) {
-        const grp = document.createElement('div');
-        grp.className = 'tool-group';
-        grp.innerHTML = `<span class="tool-group-label" aria-hidden="true">${esc(label)}</span>`;
-        const row = document.createElement('div');
-        row.className = 'tool-row'; row.setAttribute('role', 'group'); row.setAttribute('aria-label', label);
-        defs.forEach(([svg, title, fn, id]) => {
-            const b = document.createElement('button');
-            b.type = 'button'; b.className = 'tool-btn'; b.innerHTML = svg;
-            b.title = title; b.setAttribute('aria-label', title);
-            if (id) b.id = id;
-            b.onclick = fn;
-            row.appendChild(b);
-        });
-        grp.appendChild(row);
-        return grp;
-    }
+    /* Pictos et construction de la barre : catalogue (MXLControls). Ils étaient ici, sous des
+     * noms génériques enfermés par `.split-ui` — donc invisibles pour le composer multiview et
+     * l'éditeur de PiP, qui font pourtant le même geste. */
+    const SVG = window.MXLControls.ICONS;
+    const toolGroup = window.MXLControls.toolGroup;
 
     // ─── Outils de disposition (même sémantique que le composer multiview / PiP) ─────
     function alignBoxes(mode) {
@@ -571,7 +543,7 @@ window.MXLPlugins.split = (function () {
         EL.innerHTML = `
 <div class="split-ui">
   <div id="split-error-slot"></div>
-  <div class="split-toolbar" id="split_toolbar"></div>
+  <div class="ctl-toolbar" id="split_toolbar"></div>
 
   <!-- Étage 1 : APERÇU (compact) + cible d'édition (les 4 box et le fond) à sa droite.
        Même patron que l'éditeur de PiP : une grille minmax(0,1fr) + colonne fixe, qui se replie

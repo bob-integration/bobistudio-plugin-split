@@ -135,32 +135,9 @@
 .split-inline-switch { margin-left: auto; display: inline-flex; align-items: center; }
 
 /* ── Barre d'outils (éditeur de layout multiview / PiP) ──────────────────── */
-.split-toolbar {
-    display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3);
-    padding-bottom: var(--space-3); margin-bottom: var(--space-2);
-    border-bottom: 1px solid var(--border-soft);
-}
-.split-ui .tool-group { display: flex; flex-direction: column; gap: 3px; }
-.split-ui .tool-group-label {
-    font-size: 0.62em; font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase;
-    color: var(--text-muted); padding-left: 2px;
-}
-.split-ui .tool-row {
-    display: flex; gap: 2px; padding: 2px;
-    background: var(--bg-input); border-radius: var(--radius-small);
-}
-.split-ui .tool-btn {
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 32px; height: 30px; padding: 0;
-    border: none; border-radius: 3px; background: transparent;
-    color: var(--text-muted); cursor: pointer;
-    transition: background 0.12s, color 0.12s;
-}
-.split-ui .tool-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-strong); }
-.split-ui .tool-btn:active:not(:disabled) { filter: brightness(0.92); }
-.split-ui .tool-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-.split-ui .tool-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.split-ui .tool-btn svg { width: 16px; height: 16px; }
+/* Barre d'outils, groupes et boutons-pictos : catalogue (.ctl-toolbar / .ctl-toolgroup /
+ * .ctl-toolrow / .ctl-tool). Ils étaient définis ici sous des noms génériques mais scopés,
+ * donc inutilisables par le composer multiview et l'éditeur de PiP. */
 .split-snap { align-self: center; white-space: nowrap; }
 
 /* Chip de budget de trame (lecture d'état moteur — valeur + cause, jamais muet) */
