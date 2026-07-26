@@ -1257,21 +1257,23 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
     function updateBudget() {
         const host = $('#split_budget'); if (!host) return;
         if (metricsErr || !adv) {
-            host.className = 'split-budget na';
+            host.className = 'split-budget';
             host.innerHTML = `<span>${esc(T('budget', 'Budget de trame'))}</span>` +
-                `<span class="split-budget-bar" tabindex="0"><span class="split-budget-fill"></span>` +
-                `<span class="split-budget-val">—</span></span>`;
+                `<span class="ctl-gauge na" tabindex="0"><span class="ctl-gauge-fill"></span>` +
+                `<span class="ctl-gauge-val">—</span></span>`;
             host.title = T('budget_na', 'Métriques du moteur indisponibles (:8080) — le conteneur tourne-t-il ?');
             return;
         }
         const pct = adv.budget_pct, rot = adv.rotated_boxes || 0;
         const over = !!adv.over_budget, warn = (pct != null && pct > 80);
-        host.className = 'split-budget' + (over ? ' over' : (warn ? ' warn' : ''));
+        // L'état est porté par la JAUGE, pas par son conteneur : le composant est autonome.
+        const etat = over ? ' over' : (warn ? ' warn' : '');
+        host.className = 'split-budget';
         const part = pct == null ? 0 : Math.max(0, Math.min(1, pct / 100));
         host.innerHTML = `<span>${esc(T('budget', 'Budget de trame'))}</span>` +
-            `<span class="split-budget-bar" tabindex="0">` +
-            `<span class="split-budget-fill" style="transform:scaleX(${part.toFixed(3)})"></span>` +
-            `<span class="split-budget-val">${pct == null ? '—' : pct + ' %'}${rot ? esc(' · ' + T('budget_rot', 'rotation') + ' ×' + rot) : ''}</span>` +
+            `<span class="ctl-gauge${etat}" tabindex="0">` +
+            `<span class="ctl-gauge-fill" style="transform:scaleX(${part.toFixed(3)})"></span>` +
+            `<span class="ctl-gauge-val">${pct == null ? '—' : pct + ' %'}${rot ? esc(' · ' + T('budget_rot', 'rotation') + ' ×' + rot) : ''}</span>` +
             `</span>`;
         host.title = over ? T('budget_over_t', 'Le compositing dépasse le budget de trame : le Split décroche (fps sous la consigne). La rotation est de loin le poste le plus lourd — la retirer est le premier geste.')
             : (warn ? T('budget_warn_t', 'Le compositing approche du budget de trame — plus de marge pour un effet supplémentaire.')
