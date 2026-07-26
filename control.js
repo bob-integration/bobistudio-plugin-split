@@ -1259,8 +1259,8 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         if (metricsErr || !adv) {
             host.className = 'split-budget na';
             host.innerHTML = `<span>${esc(T('budget', 'Budget de trame'))}</span>` +
-                `<span class="split-budget-bar" aria-hidden="true"><span class="split-budget-fill"></span></span>` +
-                `<span class="split-budget-val">—</span>`;
+                `<span class="split-budget-bar" tabindex="0"><span class="split-budget-fill"></span>` +
+                `<span class="split-budget-val">—</span></span>`;
             host.title = T('budget_na', 'Métriques du moteur indisponibles (:8080) — le conteneur tourne-t-il ?');
             return;
         }
@@ -1269,9 +1269,10 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         host.className = 'split-budget' + (over ? ' over' : (warn ? ' warn' : ''));
         const part = pct == null ? 0 : Math.max(0, Math.min(1, pct / 100));
         host.innerHTML = `<span>${esc(T('budget', 'Budget de trame'))}</span>` +
-            `<span class="split-budget-bar" aria-hidden="true">` +
-            `<span class="split-budget-fill" style="transform:scaleX(${part.toFixed(3)})"></span></span>` +
-            `<span class="split-budget-val">${pct == null ? '—' : pct + ' %'}${rot ? esc(' · ' + T('budget_rot', 'rotation') + ' ×' + rot) : ''}</span>`;
+            `<span class="split-budget-bar" tabindex="0">` +
+            `<span class="split-budget-fill" style="transform:scaleX(${part.toFixed(3)})"></span>` +
+            `<span class="split-budget-val">${pct == null ? '—' : pct + ' %'}${rot ? esc(' · ' + T('budget_rot', 'rotation') + ' ×' + rot) : ''}</span>` +
+            `</span>`;
         host.title = over ? T('budget_over_t', 'Le compositing dépasse le budget de trame : le Split décroche (fps sous la consigne). La rotation est de loin le poste le plus lourd — la retirer est le premier geste.')
             : (warn ? T('budget_warn_t', 'Le compositing approche du budget de trame — plus de marge pour un effet supplémentaire.')
                 : T('budget_ok_t', 'Coût de composition par trame, rapporté au budget de la cadence (100 % = décrochage).'));
