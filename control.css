@@ -188,7 +188,11 @@
    juste en dessous — exactement le patron de la bibliothèque de modèles de PiP sortie de son
    aside (`.pip-lib-full` + grille `auto-fill`). */
 .split-cols { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: var(--space-4); align-items: start; }
-@media (max-width: 1100px) { .split-cols { grid-template-columns: 1fr; } }
+/* Seuil calculé, pas choisi au jugé : la palette fait 280px, la gouttière 16, et le canevas est
+ * plafonné à 620 (.split-canvas-wrap). Deux colonnes tiennent donc dès 916px, et l'iPad en
+ * PAYSAGE fait 1024 : à 1100 il basculait en une colonne, la palette passait sous la scène et il
+ * restait un trou à droite, le canevas ne remplissant pas la largeur libérée. */
+@media (max-width: 940px) { .split-cols { grid-template-columns: 1fr; } }
 .split-stage { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
 .split-canvas-wrap { position: relative; width: 100%; max-width: 620px; }
 #split_canvas {
