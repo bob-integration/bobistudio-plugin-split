@@ -215,14 +215,18 @@
 .split-bg-field { margin-top: var(--space-3); }
 /* Bande des box : une par ligne dans la colonne (elle s'étale en grille si la colonne
    passe pleine largeur au repli responsive). */
-.split-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-2); }
+/* `minmax(min(Xpx, 100%), 1fr)` et non `minmax(Xpx, 1fr)` : la seconde forme DÉBORDE dès que le
+ * conteneur est plus étroit que X, et comme rien ici ne confine son débordement, c'est le corps de
+ * page qui le subit — sur iPad, Safari réduit alors la page entière. Le `min()` laisse la colonne
+ * rétrécir au lieu de forcer la largeur. */
+.split-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: var(--space-2); }
 
 /* ── Étage 2 : réglages PLEINE LARGEUR, en grille responsive ──────────────
    Les sections empilées du correcteur de couleur restent la structure : elles se
    RÉPARTISSENT simplement en colonnes au lieu d'être écrasées dans une colonne étroite
    (c'était le motif du défilement sans fin). */
 .split-wide {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
     gap: 0 var(--space-5); align-items: start;
 }
 @media (max-width: 1100px) { .split-wide { grid-template-columns: 1fr; } }
@@ -278,7 +282,7 @@
 /* ── Mémoires ───────────────────────────────────────────────────────────── */
 .split-mem-list {
     list-style: none; padding: 0; margin: 0 0 var(--space-3);
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: var(--space-2);
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(min(170px, 100%), 1fr)); gap: var(--space-2);
 }
 .split-mem-card {
     border: 1px solid var(--border-soft); border-radius: var(--radius-small);

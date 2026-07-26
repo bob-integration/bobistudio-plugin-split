@@ -592,16 +592,16 @@ window.MXLPlugins.split = (function () {
       <!-- FOND : trois modes explicites (noir / source vidéo / couleur unie) -->
       <div class="field split-bg-field">
         <label for="split_bg_mode">${esc(T('bg_mode', 'Fond (plein cadre)'))}</label>
-        <select id="split_bg_mode">${bgModeOptions()}</select>
+        <select class="ctl-select" id="split_bg_mode">${bgModeOptions()}</select>
       </div>
       <div class="field split-bg-field" id="split_bg_src_f">
         <label for="split_bg">${esc(T('bg_src', 'Source du fond'))}</label>
-        <select id="split_bg">${srcOptions(inputs[4])}</select>
+        <select class="ctl-select" id="split_bg">${srcOptions(inputs[4])}</select>
       </div>
       <div class="field split-bg-field" id="split_bg_col_f">
         <label for="split_bg_color">${esc(T('bg_color', 'Couleur du fond'))}</label>
         <input type="color" id="split_bg_color" value="${esc(((st && st.bg) || {}).color || '#000000')}">
-        <label class="toggle-inline split-bg-legal"><input type="checkbox" class="ios-toggle" id="split_bg_legal">
+        <label class="toggle-inline split-bg-legal"><input type="checkbox" class="ctl-switch" id="split_bg_legal">
           <span>${esc(T('bg_legal', 'Plage légale (broadcast)'))}</span></label>
       </div>
       <div class="split-bg-field" id="split_bg_grad_f"></div>
@@ -655,11 +655,11 @@ window.MXLPlugins.split = (function () {
             [SVG.copy_settings, T('copy_settings', 'Copier les réglages de la box (hors position)'), copySettings, 'split_copy'],
             [SVG.paste_settings, T('paste_settings', 'Coller les réglages dans les box sélectionnées'), pasteSettings, 'split_paste'],
         ]));
-        // Magnétisme : même contrôle que l'éditeur de PiP (label + switch .ios-toggle).
+        // Magnétisme : même contrôle que l'éditeur de PiP (label + switch .ctl-switch).
         const snapLbl = document.createElement('label');
         snapLbl.className = 'toggle-inline split-snap';
         snapLbl.title = T('snap_title', 'Aimante la box aux bords et au centre du cadre, et aux autres box. Les flèches du clavier contournent le magnétisme (réglage au pixel).');
-        snapLbl.innerHTML = `<input type="checkbox" class="ios-toggle" id="split_snap" ${snapEnabled ? 'checked' : ''}>` +
+        snapLbl.innerHTML = `<input type="checkbox" class="ctl-switch" id="split_snap" ${snapEnabled ? 'checked' : ''}>` +
             `<span>${esc(T('snap', 'Snap magnétique'))}</span>`;
         tb.appendChild(snapLbl);
         snapLbl.querySelector('#split_snap').onchange = function () { snapEnabled = this.checked; snapGuides = []; drawCanvas(); };
@@ -689,11 +689,11 @@ window.MXLPlugins.split = (function () {
   <div class="split-chip-head">
     <span class="split-chip-dot" style="background:${BOX_COLORS[i % 4]}"></span>
     <span class="split-chip-name">${esc(T('box', 'Box'))} ${i + 1}</span>
-    <input type="checkbox" class="ios-toggle" data-en="${i}" ${b.enabled ? 'checked' : ''}
+    <input type="checkbox" class="ctl-switch" data-en="${i}" ${b.enabled ? 'checked' : ''}
            title="${esc(T('box_enable_one', 'Afficher cette box (réglage propre à cette box, jamais appliqué à la sélection).'))}"
            aria-label="${esc(T('box_enable', 'Afficher cette box'))}">
   </div>
-  <div class="field"><select data-src="${i}" aria-label="${esc(T('box', 'Box'))} ${i + 1}"
+  <div class="field"><select class="ctl-select" data-src="${i}" aria-label="${esc(T('box', 'Box'))} ${i + 1}"
        title="${esc(T('box_src_one', 'Source de cette box (réglage propre à cette box, jamais appliqué à la sélection).'))}">${srcOptions(inputs[i])}</select></div>
 </div>`).join('');
         strip.querySelectorAll('.split-chip').forEach(chip => {
@@ -760,7 +760,7 @@ window.MXLPlugins.split = (function () {
         const tip = mixed ? T('mixed_toggle', 'États différents dans la sélection : basculer applique le même état à TOUTES les box sélectionnées.')
             : (sel.length > 1 ? T('multi_abs', 'S\'applique à TOUTES les box sélectionnées (uniformisation).') : '');
         return `<label class="toggle-inline${mixed ? ' is-mixed' : ''}" title="${esc(tip)}">
-  <input type="checkbox" class="ios-toggle" data-flag="${key}" data-path="${path || ''}" ${on ? 'checked' : ''}
+  <input type="checkbox" class="ctl-switch" data-flag="${key}" data-path="${path || ''}" ${on ? 'checked' : ''}
          ${mixed ? 'data-indeterminate="1"' : ''}>
   <span>${esc(label)}${mixed ? ' <span class="mixed-mark" aria-hidden="true">≠</span>' : ''}</span></label>`;
     }
@@ -829,7 +829,7 @@ ${sel.length > 1 ? `<p class="meta split-full">${esc(T('multi_note', 'Tout régl
     ${numField('sp_y', T('f_y', 'Y (centre)'), 'box_fields', 'y', '')}
     ${numField('sp_size', T('f_size', 'Taille'), 'box_fields', 'size', '')}
     <div class="field${isMixed('aspect') ? ' is-mixed' : ''}"><label for="sp_aspect">${esc(T('f_aspect', 'Ratio'))}${isMixed('aspect') ? ' <span class="mixed-mark" aria-hidden="true">≠</span>' : ''}</label>
-      <select id="sp_aspect" data-key="aspect" data-path=""
+      <select class="ctl-select" id="sp_aspect" data-key="aspect" data-path=""
               title="${esc(sel.length > 1 ? T('multi_abs', 'S\'applique à TOUTES les box sélectionnées (uniformisation).') : '')}">
         ${isMixed('aspect') ? `<option value="" selected disabled>${esc(T('mixed_short', 'valeurs multiples'))}</option>` : ''}
         <option value="keep"${(!isMixed('aspect') && b.aspect === 'keep') ? ' selected' : ''}>${esc(T('aspect_keep', 'Conservé (format de la source)'))}</option>
@@ -889,7 +889,7 @@ ${!advanced ? '' : `<div id="split_adv">
 
   <div class="cc-section">
     <h4>${esc(T('sec_shadow', 'Ombre portée'))}
-      <label class="split-inline-switch"><input type="checkbox" class="ios-toggle" data-flag="enabled" data-path="shadow"
+      <label class="split-inline-switch"><input type="checkbox" class="ctl-switch" data-flag="enabled" data-path="shadow"
              ${b.shadow.enabled ? 'checked' : ''} aria-label="${esc(T('f_shadow_on', 'Activer l\'ombre portée'))}"></label>
     </h4>
     <div class="cc-knob-row ${b.shadow.enabled ? '' : 'is-off'}">
@@ -1151,7 +1151,7 @@ ${stops.length < nmax ? `<button type="button" class="btn" id="split_grad_add">$
         host.className = 'cc-section';
         host.innerHTML = `
 <h4>${esc(T('art', 'Habillage (couche ART)'))}
-  <label class="split-inline-switch"><input type="checkbox" class="ios-toggle" id="art_en" ${a.enabled ? 'checked' : ''}
+  <label class="split-inline-switch"><input type="checkbox" class="ctl-switch" id="art_en" ${a.enabled ? 'checked' : ''}
          aria-label="${esc(T('art_enabled', 'Activer l\'habillage'))}"></label></h4>
 <div class="row">
   <button type="button" class="btn btn-blue" id="art_pick">${esc(T('art_import', 'Importer une image…'))}</button>
@@ -1159,14 +1159,14 @@ ${stops.length < nmax ? `<button type="button" class="btn" id="split_grad_add">$
   <span class="meta" id="art_state"></span>
 </div>
 <div class="split-toggles">
-  <label class="toggle-inline"><input type="checkbox" class="ios-toggle" id="art_above" ${a.above ? 'checked' : ''}>
+  <label class="toggle-inline"><input type="checkbox" class="ctl-switch" id="art_above" ${a.above ? 'checked' : ''}>
     <span>${esc(T('art_above', 'Au-dessus des box'))}</span></label>
-  <label class="toggle-inline"><input type="checkbox" class="ios-toggle" id="art_inv" ${a.invert ? 'checked' : ''}>
+  <label class="toggle-inline"><input type="checkbox" class="ctl-switch" id="art_inv" ${a.invert ? 'checked' : ''}>
     <span>${esc(T('art_invert', 'Inverser la clé'))}</span></label>
 </div>
 <div class="split-grid split-grid-narrow">
   <div class="field"><label for="art_key">${esc(T('art_key', 'Incrustation'))}</label>
-    <select id="art_key">${keyOpts}</select></div>
+    <select class="ctl-select" id="art_key">${keyOpts}</select></div>
   <div class="field"><label for="art_chroma">${esc(T('art_chroma', 'Couleur de clé (chroma)'))}</label>
     <input type="color" id="art_chroma" value="${esc(a.chroma_key || '#00b140')}"></div>
 </div>
@@ -1240,7 +1240,7 @@ ${noImg ? `<p class="meta">${esc(T('art_need_img', 'Importez d\'abord une image 
 </div>
 <div class="split-grid split-grid-narrow">
   <div class="field"><label for="lt_curve">${esc(T('t_curve', 'Courbe de transition'))}</label>
-    <select id="lt_curve">${easings().map(c => `<option value="${esc(c)}"${TR.curve === c ? ' selected' : ''}>${esc(T('easing_' + c, c))}</option>`).join('')}</select></div>
+    <select class="ctl-select" id="lt_curve">${easings().map(c => `<option value="${esc(c)}"${TR.curve === c ? ' selected' : ''}>${esc(T('easing_' + c, c))}</option>`).join('')}</select></div>
   <div class="field"><label for="lt_stag">${esc(T('t_stagger', 'Décalage inter-box (ms)'))}</label>
     <input type="number" id="lt_stag" min="${smin}" max="${smax}" step="10" value="${Number(TR.stagger_ms || 0).toFixed(0)}"></div>
 </div>
@@ -1794,7 +1794,7 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
     function sendSelect(memId) {
         const others = containers.filter(d => d.vmid !== VMID);
         if (!others.length) return '';
-        return `<select data-send="${memId}" aria-label="${esc(T('mem_send', 'Envoyer vers…'))}">
+        return `<select class="ctl-select" data-send="${memId}" aria-label="${esc(T('mem_send', 'Envoyer vers…'))}">
             <option value="">${esc(T('mem_send', 'Envoyer vers…'))}</option>
             ${others.map(d => `<option value="${d.vmid}">${esc(d.hostname)} (#${d.vmid})</option>`).join('')}</select>`;
     }
