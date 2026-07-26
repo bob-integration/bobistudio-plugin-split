@@ -265,30 +265,14 @@ window.MXLPlugins.split = (function () {
     // Le PAS est le même pour tout le monde (`step` du champ = `data-step` du cadran, dérivé de
     // /state.caps) : bouton −/+, flèches clavier et molette avancent EXACTEMENT du même pas —
     // une seule vérité. Le stepper émet `change` → le commit passe par le handler du rotatif.
-    function knobSvg(p01, shape, val) {
-        const r = 22, C = 2 * Math.PI * r;
-        if (shape === 'angle') {
-            const deg = Number(val) || 0;                        // 0 = 12 h, sens horaire
-            const pol = a => [28 + r * Math.cos(a * Math.PI / 180), 28 + r * Math.sin(a * Math.PI / 180)];
-            const [x0, y0] = pol(-90), [x1, y1] = pol(-90 + deg);
-            const large = Math.abs(deg) > 180 ? 1 : 0, sweep = deg >= 0 ? 1 : 0;
-            const arc = Math.abs(deg) < 0.5 ? '' : `<path d="M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${large} ${sweep} ${x1.toFixed(2)} ${y1.toFixed(2)}"
-                 fill="none" stroke="var(--accent)" stroke-width="3" stroke-linecap="round"/>`;
-            return `<svg viewBox="0 0 56 56" aria-hidden="true">
-                <circle cx="28" cy="28" r="${r}" fill="none" stroke="var(--border)" stroke-width="3"/>
-                ${arc}
-                <line x1="28" y1="28" x2="28" y2="9" stroke="var(--text-strong)" stroke-width="2"
-                      stroke-linecap="round" transform="rotate(${deg} 28 28)"/>
-                <circle cx="28" cy="28" r="2.2" fill="var(--text-muted)"/></svg>`;
-        }
-        const p = Math.max(0, Math.min(1, p01)), sweep = C * 0.75, prog = sweep * p, ind = -135 + p * 270;
-        return `<svg viewBox="0 0 56 56" aria-hidden="true">
-            <g transform="rotate(135 28 28)">
-                <circle cx="28" cy="28" r="${r}" fill="none" stroke="var(--border)" stroke-width="3" stroke-dasharray="${sweep} ${C}"/>
-                <circle cx="28" cy="28" r="${r}" fill="none" stroke="var(--accent)" stroke-width="3" stroke-dasharray="${prog} ${C}" stroke-linecap="round"/>
-            </g>
-            <line x1="28" y1="28" x2="28" y2="9" stroke="var(--text-strong)" stroke-width="2" stroke-linecap="round" transform="rotate(${ind} 28 28)"/>
-            <circle cx="28" cy="28" r="2.2" fill="var(--text-muted)"/></svg>`;
+    // ÉTAGE 1 de la migration : seul le TRACÉ passe au catalogue. Aucune classe ni règle de mise
+    // en page n'est touchée — c'est en les retirant d'un bloc que la page avait été cassée : le
+    // conteneur .cc-knob ne portait pas qu'un rotatif, il portait aussi les contraintes de largeur
+    // qui tiennent la colonne.
+    // Toutes les formes rendent un ARC, y compris la direction : un réglage est une valeur chiffrée
+    // bornée et se lit de la même façon partout (règle de parc, cf. controls.css).
+    function knobSvg(p01, shape, val, def01) {
+        return window.MXLControls.knobSvg('arc', p01, def01);
     }
     // p = {target, label, min, max, step, def, unit, shape}. `target` = destination du POST :
     // 'box:<champ>' · 'box:<sous-dict>.<champ>' · 'light:<champ>' · 'art:<champ>'.
@@ -309,7 +293,7 @@ window.MXLPlugins.split = (function () {
   <div class="cc-knob-dial" role="slider" tabindex="0" aria-label="${esc(p.label)}"
        aria-valuemin="${p.min}" aria-valuemax="${p.max}" aria-valuenow="${v}"
        aria-valuetext="${mixed ? esc(T('mixed_short', 'valeurs multiples')) : esc(fmt(v, p.step, p.unit))}"
-       title="${esc((T('knob_title', 'Glisser vertical, molette, flèches (Maj = pas fin). Double-clic = valeur par défaut.') + (multiTitle ? ' ' + multiTitle : '')))}">${knobSvg((v - p.min) / ((p.max - p.min) || 1), shape, v)}</div>
+       title="${esc((T('knob_title', 'Glisser vertical, molette, flèches (Maj = pas fin). Double-clic = valeur par défaut.') + (multiTitle ? ' ' + multiTitle : '')))}">${knobSvg((v - p.min) / ((p.max - p.min) || 1), shape, v, (p.def - p.min) / ((p.max - p.min) || 1))}</div>
   <input type="number" class="cc-knob-value" min="${p.min}" max="${p.max}" step="${p.step}"
          value="${mixed ? '' : v}" placeholder="${mixed ? '—' : ''}"
          title="${esc(multiTitle)}" aria-label="${esc(p.label)}"></div>`;
@@ -319,7 +303,8 @@ window.MXLPlugins.split = (function () {
         const unit = knob.dataset.unit || '', shape = knob.dataset.shape;
         v = parseFloat(Number(v).toFixed(decimals(step)));
         const dial = knob.querySelector('.cc-knob-dial'), num = knob.querySelector('.cc-knob-value');
-        dial.innerHTML = knobSvg((v - min) / ((max - min) || 1), shape, v);
+        dial.innerHTML = knobSvg((v - min) / ((max - min) || 1), shape, v,
+            (parseFloat(knob.dataset.default) - min) / ((max - min) || 1));
         dial.setAttribute('aria-valuenow', v);
         dial.setAttribute('aria-valuetext', fmt(v, step, unit));
         if (document.activeElement !== num) num.value = v;
@@ -404,7 +389,8 @@ window.MXLPlugins.split = (function () {
                 const v = parseFloat(num.value); if (isNaN(v)) return;
                 const min = +knob.dataset.min, max = +knob.dataset.max;
                 const c = Math.max(min, Math.min(max, v));
-                dial.innerHTML = knobSvg((c - min) / ((max - min) || 1), knob.dataset.shape, c);
+                dial.innerHTML = knobSvg((c - min) / ((max - min) || 1), knob.dataset.shape, c,
+                    (parseFloat(knob.dataset.default) - min) / ((max - min) || 1));
                 dial.setAttribute('aria-valuenow', c);
             });
             num.addEventListener('change', () => {         // commit (y compris depuis −/+)
