@@ -14,7 +14,7 @@
     "mode": "split",
     "desc_i18n": "settings.js.skh_desc_split"
   },
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Composite 4 incrustations (PiP) sur un fond → 1 sortie, + couche ART (habillage importé, incrustation luma/chroma/alpha, au-dessus ou en dessous). Mode avancé par box : rotation, opacité, adoucissement des bords, coins arrondis, ombre portée, miroir, ratio libre, z-ordre libre, bordure 3D (biseau + source de lumière). Transitions à courbes d'accélération, décalage inter-boxes, tous les paramètres interpolés. Réglages avancés neutres par défaut → chemin de composition historique inchangé.",
   "nav": {
     "section": "traitements",
@@ -80,7 +80,8 @@
       "invert": false,
       "opacity": 1.0,
       "chroma_key": "#00b140"
-    }
+    },
+    "log_level": "info"
   },
   "wiring": {
     "produces": [
@@ -135,7 +136,8 @@
       "/light",
       "/transition",
       "/global",
-      "/bg"
+      "/bg",
+      "/log_level"
     ],
     "atem": {
       "CSBP": "/box"
@@ -171,55 +173,242 @@
           "default": 0
         }
       ]
+    },
+    {
+      "id": "log_level",
+      "label": "Niveau de log (à chaud)",
+      "endpoint": "/log_level",
+      "params": [
+        {
+          "key": "level",
+          "label": "Niveau",
+          "type": "text",
+          "default": "info",
+          "options": [
+            {
+              "value": "debug",
+              "label": "Détaillé"
+            },
+            {
+              "value": "info",
+              "label": "Événements (défaut)"
+            },
+            {
+              "value": "warning",
+              "label": "Anomalies seules"
+            },
+            {
+              "value": "error",
+              "label": "Erreurs seules"
+            }
+          ]
+        }
+      ]
     }
   ],
   "param_tree": {
-    "boxes": { "count_from": "n_boxes", "idx": "slot", "path_prefix": "boxes", "label_from": "consumes" },
+    "boxes": {
+      "count_from": "n_boxes",
+      "idx": "slot",
+      "path_prefix": "boxes",
+      "label_from": "consumes"
+    },
     "box_groups": [
-      { "label": "Géométrie", "endpoint": "/box", "caps": "box_fields",
+      {
+        "label": "Géométrie",
+        "endpoint": "/box",
+        "caps": "box_fields",
         "fields": {
-          "x": { "label": "Position X", "type": "position" },
-          "y": { "label": "Position Y", "type": "position" },
-          "size": { "label": "Taille", "type": "ratio" },
-          "rotation": { "label": "Rotation", "type": "angle" },
-          "opacity": { "label": "Opacité", "type": "percent" },
-          "feather": { "label": "Adoucissement des bords", "type": "pixels" },
-          "radius": { "label": "Coins arrondis", "type": "pixels" } } },
-      { "label": "Affichage", "endpoint": "/box", "caps": "box_fields",
+          "x": {
+            "label": "Position X",
+            "type": "position"
+          },
+          "y": {
+            "label": "Position Y",
+            "type": "position"
+          },
+          "size": {
+            "label": "Taille",
+            "type": "ratio"
+          },
+          "rotation": {
+            "label": "Rotation",
+            "type": "angle"
+          },
+          "opacity": {
+            "label": "Opacité",
+            "type": "percent"
+          },
+          "feather": {
+            "label": "Adoucissement des bords",
+            "type": "pixels"
+          },
+          "radius": {
+            "label": "Coins arrondis",
+            "type": "pixels"
+          }
+        }
+      },
+      {
+        "label": "Affichage",
+        "endpoint": "/box",
+        "caps": "box_fields",
         "fields": {
-          "enabled": { "label": "Activée", "type": "bool" },
-          "mirror_h": { "label": "Miroir horizontal", "type": "bool" },
-          "mirror_v": { "label": "Miroir vertical", "type": "bool" },
-          "aspect": { "label": "Ratio", "type": "enum", "enum_caps": "box_enums" } } },
-      { "label": "Recadrage", "endpoint": "/box", "wrap": "crop", "caps": "crop",
+          "enabled": {
+            "label": "Activée",
+            "type": "bool"
+          },
+          "mirror_h": {
+            "label": "Miroir horizontal",
+            "type": "bool"
+          },
+          "mirror_v": {
+            "label": "Miroir vertical",
+            "type": "bool"
+          },
+          "aspect": {
+            "label": "Ratio",
+            "type": "enum",
+            "enum_caps": "box_enums"
+          }
+        }
+      },
+      {
+        "label": "Recadrage",
+        "endpoint": "/box",
+        "wrap": "crop",
+        "caps": "crop",
         "fields": {
-          "t": { "label": "Haut", "type": "ratio" }, "b": { "label": "Bas", "type": "ratio" },
-          "l": { "label": "Gauche", "type": "ratio" }, "r": { "label": "Droite", "type": "ratio" } } },
-      { "label": "Bordure", "endpoint": "/box", "wrap": "border", "caps": "border_fields",
+          "t": {
+            "label": "Haut",
+            "type": "ratio"
+          },
+          "b": {
+            "label": "Bas",
+            "type": "ratio"
+          },
+          "l": {
+            "label": "Gauche",
+            "type": "ratio"
+          },
+          "r": {
+            "label": "Droite",
+            "type": "ratio"
+          }
+        }
+      },
+      {
+        "label": "Bordure",
+        "endpoint": "/box",
+        "wrap": "border",
+        "caps": "border_fields",
         "fields": {
-          "outer": { "label": "Épaisseur extérieure", "type": "pixels" },
-          "inner": { "label": "Épaisseur intérieure", "type": "pixels" },
-          "bevel": { "label": "Biseau (relief)", "type": "ratio" },
-          "bevel_soft": { "label": "Adoucissement du biseau", "type": "ratio" } } },
-      { "label": "Ombre portée", "endpoint": "/box", "wrap": "shadow", "caps": "shadow_fields",
+          "outer": {
+            "label": "Épaisseur extérieure",
+            "type": "pixels"
+          },
+          "inner": {
+            "label": "Épaisseur intérieure",
+            "type": "pixels"
+          },
+          "bevel": {
+            "label": "Biseau (relief)",
+            "type": "ratio"
+          },
+          "bevel_soft": {
+            "label": "Adoucissement du biseau",
+            "type": "ratio"
+          }
+        }
+      },
+      {
+        "label": "Ombre portée",
+        "endpoint": "/box",
+        "wrap": "shadow",
+        "caps": "shadow_fields",
         "fields": {
-          "dx": { "label": "Décalage X", "type": "pixels" },
-          "dy": { "label": "Décalage Y", "type": "pixels" },
-          "blur": { "label": "Flou", "type": "pixels" },
-          "opacity": { "label": "Opacité", "type": "percent" } } }
+          "dx": {
+            "label": "Décalage X",
+            "type": "pixels"
+          },
+          "dy": {
+            "label": "Décalage Y",
+            "type": "pixels"
+          },
+          "blur": {
+            "label": "Flou",
+            "type": "pixels"
+          },
+          "opacity": {
+            "label": "Opacité",
+            "type": "percent"
+          }
+        }
+      }
     ],
     "global_groups": [
-      { "label": "Groupe (calque global)", "endpoint": "/global", "caps": "global_fields", "path_prefix": "global",
+      {
+        "label": "Groupe (calque global)",
+        "endpoint": "/global",
+        "caps": "global_fields",
+        "path_prefix": "global",
         "fields": {
-          "dx": { "label": "Décalage X", "type": "ratio" },
-          "dy": { "label": "Décalage Y", "type": "ratio" },
-          "scale": { "label": "Échelle", "type": "scale" },
-          "rotation": { "label": "Rotation", "type": "angle" },
-          "opacity": { "label": "Opacité", "type": "percent" } } },
-      { "label": "Lumière", "endpoint": "/light", "caps": "light_fields", "path_prefix": "light",
+          "dx": {
+            "label": "Décalage X",
+            "type": "ratio"
+          },
+          "dy": {
+            "label": "Décalage Y",
+            "type": "ratio"
+          },
+          "scale": {
+            "label": "Échelle",
+            "type": "scale"
+          },
+          "rotation": {
+            "label": "Rotation",
+            "type": "angle"
+          },
+          "opacity": {
+            "label": "Opacité",
+            "type": "percent"
+          }
+        }
+      },
+      {
+        "label": "Lumière",
+        "endpoint": "/light",
+        "caps": "light_fields",
+        "path_prefix": "light",
         "fields": {
-          "angle": { "label": "Direction", "type": "angle" },
-          "altitude": { "label": "Hauteur", "type": "angle" } } }
+          "angle": {
+            "label": "Direction",
+            "type": "angle"
+          },
+          "altitude": {
+            "label": "Hauteur",
+            "type": "angle"
+          }
+        }
+      },
+      {
+        "label": "Journal (diagnostic)",
+        "endpoint": "/log_level",
+        "fields": {
+          "level": {
+            "label": "Niveau de log",
+            "type": "enum",
+            "options": [
+              "debug",
+              "info",
+              "warning",
+              "error"
+            ],
+            "default": "info",
+            "path": "log_level"
+          }
+        }
+      }
     ]
   },
   "config_schema": [
@@ -342,6 +531,32 @@
       "min": 0,
       "max": 2000,
       "default": 0,
+      "scope": "user"
+    },
+    {
+      "key": "log_level",
+      "type": "select",
+      "label": "Niveau de log",
+      "help": "Verbosité du journal du conteneur. Défaut « Événements » : les faits marquants (démarrage/arrêt, changement de format, reconnexion, repli sur un chemin dégradé, entrée qui apparaît ou disparaît) sont TOUJOURS écrits — après une panne le journal doit permettre de reconstituer l'histoire, et élever le niveau après coup ne récupère rien. Les métriques périodiques (fps, compteurs) ne sont PAS journalisées : elles sont déjà publiées sur :8080. « Détaillé » = lance-flammes par trame, à n'activer que le temps d'un diagnostic (le journal Docker n'est pas roté).",
+      "options": [
+        {
+          "value": "debug",
+          "label": "Détaillé (par trame — diagnostic ponctuel)"
+        },
+        {
+          "value": "info",
+          "label": "Événements (défaut)"
+        },
+        {
+          "value": "warning",
+          "label": "Anomalies seules"
+        },
+        {
+          "value": "error",
+          "label": "Erreurs seules"
+        }
+      ],
+      "default": "info",
       "scope": "user"
     }
   ]

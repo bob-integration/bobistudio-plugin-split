@@ -69,6 +69,51 @@ CONFIG         = {config}
 HOSTNAME       = "{hostname}"
 PLUGIN_VERSION = "{plugin_version}"
 
+# ─── Niveau de log ─────────────────────────────────────────────────────────
+# `log_level` (config_schema du plugin, défaut « info ») filtre les impressions du script.
+# Le critère n'est PAS « verbeux vs silencieux » mais ÉVÉNEMENT vs MÉTRIQUE :
+#   debug   — le lance-flammes : par trame, par bande, décisions internes
+#   info    — ÉVÉNEMENTS rares et signifiants  ← DÉFAUT (toujours visible) : démarrage/
+#             arrêt, session ouverte/fermée, changement de format, reconnexion, repli sur
+#             un chemin dégradé, entrée qui apparaît/disparaît, rebascule.
+#   warning — anomalies et replis subis
+#   error   — échecs
+# RÈGLE 1 : après une panne, le journal PAR DÉFAUT doit permettre de RECONSTITUER
+#   l'histoire. Élever le niveau après coup ne récupère RIEN : ce qui n'a pas été écrit
+#   est perdu. On ne coupe donc pas l'information, on coupe la redondance.
+# RÈGLE 2 : une MÉTRIQUE PÉRIODIQUE (fps, compteurs) ne se journalise PAS — elle est déjà
+#   publiée sur :8080 et échantillonnée par l'orchestrateur. La journaliser duplique la
+#   mesure ET consomme la fenêtre de rétention (journal Docker non roté : le bruit purge
+#   les lignes utiles anciennes). Au mieux `debug`.
+# RÈGLE 3 : un événement qui peut partir EN RAFALE s'AGRÈGE sur une fenêtre et sort en UNE
+#   ligne périodique (« N frames lentes sur la dernière minute, pire … ») — le signal
+#   reste, le spam disparaît.
+# Réglable à chaud, sans redéployer, quand le plugin expose l'endpoint de contrôle :
+# POST :8082/log_level {{"level": "debug"}} (exposé aux macros via param_tree/actions).
+_LOG_ORDER = {{"debug": 10, "info": 20, "warning": 30, "error": 40}}
+LOG_LEVEL = str(CONFIG.get("log_level") or "info").strip().lower()
+if LOG_LEVEL not in _LOG_ORDER:
+    LOG_LEVEL = "info"
+_LOG_MIN = _LOG_ORDER[LOG_LEVEL]
+
+
+def log(msg, niveau="info"):
+    """Impression gatée par le niveau de log courant (défaut du message : « info »)."""
+    if _LOG_ORDER.get(niveau, 20) >= _LOG_MIN:
+        print(msg, flush=True)
+
+
+def set_log_level(niveau):
+    """Change le niveau à chaud. Renvoie True si le niveau est reconnu."""
+    global LOG_LEVEL, _LOG_MIN
+    lv = str(niveau or "").strip().lower()
+    if lv not in _LOG_ORDER:
+        return False
+    LOG_LEVEL, _LOG_MIN = lv, _LOG_ORDER[lv]
+    return True
+
+
+
 SHM_OUT  = CONFIG.get("shm_out") or (HOSTNAME + "_split")
 WIDTH    = int(CONFIG.get("width") or 1280);  WIDTH  -= WIDTH % 2
 HEIGHT   = int(CONFIG.get("height") or 720);  HEIGHT -= HEIGHT % 2
@@ -118,8 +163,8 @@ def _migrate_boxes_opacity(boxes):
             sh["opacity"] = _mig_op(sh["opacity"], 50.0)
             b["shadow"] = sh
         out.append(b)
-    print("split: opacités migrées de la fraction (0..1) vers le POURCENT (0-100) — unité unique "
-          "moteur+UI (marqueur opacity_unit=pct persisté au prochain sync)")
+    log("split: opacités migrées de la fraction (0..1) vers le POURCENT (0-100) — unité unique "
+        "moteur+UI (marqueur opacity_unit=pct persisté au prochain sync)", "info")
     return out
 
 
@@ -188,7 +233,7 @@ _SCAN   = str(CONFIG.get("scan") or "p").strip().lower()
 SLICE_H = _out_slice_h(HEIGHT, _CH) if (SLICE_MODE and not _SCAN.startswith("i")) else 0
 SLICE_ON = SLICE_MODE and SLICE_H > 0
 if SLICE_MODE and not SLICE_ON:
-    print(f"split: slice_mode demandé mais inéligible (scan={{_SCAN}} h={{HEIGHT}}) — whole-frame")
+    log(f"split: slice_mode demandé mais inéligible (scan={{_SCAN}} h={{HEIGHT}}) — whole-frame", "warning")
 
 # ── CADENCE « flow » (tissu en tranches, motif multiview) : pacing = GRILLE TAI — le
 # verrou-entrée sur le fond disparaît ; à chaque epoch, chaque couche (fond + boxes) CIBLE
@@ -197,7 +242,7 @@ if SLICE_MODE and not SLICE_ON:
 CADENCE = str(CONFIG.get("cadence") or "").strip().lower()
 FLOW = (CADENCE == "flow") and SLICE_ON
 if CADENCE == "flow" and not FLOW:
-    print("split: cadence=flow exige le mode tranche éligible — repli pacing historique")
+    log("split: cadence=flow exige le mode tranche éligible — repli pacing historique", "warning")
 
 def _grid_next(now_s, interval_s):
     import math as _m
@@ -292,9 +337,9 @@ COLORIMETRY = _COL_RAW.lower().replace("bt", "").replace(".", "")
 # — exactement ce qu'on refuse.
 COLORIMETRY_ASSUMED = COLORIMETRY not in _KRKB
 if COLORIMETRY_ASSUMED:
-    print(f"split: colorimétrie NON DÉCLARÉE ou inconnue (« {{_COL_RAW}} ») — on SUPPOSE BT.709 pour "
-          f"toutes les couleurs (bordure, ombre, clé chroma, habillage, fond). Si la chaîne est en "
-          f"601 ou 2020, les couleurs seront FAUSSES : déclarez `colorimetry` dans le format.")
+    log(f"split: colorimétrie NON DÉCLARÉE ou inconnue (« {{_COL_RAW}} ») — on SUPPOSE BT.709 pour "
+        f"toutes les couleurs (bordure, ombre, clé chroma, habillage, fond). Si la chaîne est en "
+        f"601 ou 2020, les couleurs seront FAUSSES : déclarez `colorimetry` dans le format.", "warning")
     COLORIMETRY = "709"
 
 
@@ -804,7 +849,7 @@ metrics = {{"fps": 0.0, "frame_index": 0, "inputs_latency_ms": {{}}, "own_latenc
 
 bus_error = threading.Event()
 def _handle_sigbus(signum, frame):
-    print("SIGBUS reçu — réouverture des flux MXL")
+    log("SIGBUS reçu — réouverture des flux MXL", "warning")
     bus_error.set()
 signal.signal(signal.SIGBUS, _handle_sigbus)
 
@@ -929,6 +974,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 for i in range(N_BOXES):
                     s["input_%d" % i] = state["inputs"][i]
                 s["bg_input"] = state["inputs"][4]
+                s["log_level"] = LOG_LEVEL   # lisible en condition de macro
             self._reply(200, s)
         else:
             self._reply(404, {{"error": "not found"}})
@@ -949,6 +995,12 @@ class ControlHandler(BaseHTTPRequestHandler):
                 state["inputs"][idx] = shm_name
                 state["transition"] = None
             self._reply(200, {{"ok": True}})
+
+        elif self.path == "/log_level":
+            # Verbosité À CHAUD (pas de redéploiement) : instruction d'incident. Le niveau
+            # PERSISTANT reste le champ `log_level` du config_schema ; celui-ci est volatil.
+            ok = set_log_level(body.get("level") or body.get("log_level"))
+            self._reply(200 if ok else 400, {{"ok": ok, "log_level": LOG_LEVEL}})
 
         elif self.path == "/box":
             # PATCH live d'une box (annule la transition en cours). FUSION PROFONDE : l'UI peut
@@ -1129,7 +1181,7 @@ def ensure_input(idx):
     try:
         r = bobimxl.Reader(inst, wanted)   # lève si le flux n'existe pas encore
         input_handles[idx] = (r, wanted)
-        print(f"input #{{idx}} câblé sur flux MXL {{wanted}}")
+        log(f"input #{{idx}} câblé sur flux MXL {{wanted}}", "info")   # entrée qui apparaît = événement
         return r
     except Exception:
         return None
@@ -2507,16 +2559,16 @@ def _bake_art():
             _art["has_alpha"] = has_alpha; _art["cover"] = round(cover, 4)
             _art["holes"] = round(holes, 4)
             _art["warn"] = warn
-        print(f"split: ART cuit ({{mode}}) — opaque[{{baked['oy0']}}:{{baked['oy1']}}] "
-              f"partiel[{{baked['py0']}}:{{baked['py1']}}] opacité_moyenne={{cover * 100:.1f}} % "
-              f"trous(α=0)={{holes * 100:.1f}} % canal_alpha={{has_alpha}}")
+        log(f"split: ART cuit ({{mode}}) — opaque[{{baked['oy0']}}:{{baked['oy1']}}] "
+            f"partiel[{{baked['py0']}}:{{baked['py1']}}] opacité_moyenne={{cover * 100:.1f}} % "
+            f"trous(α=0)={{holes * 100:.1f}} % canal_alpha={{has_alpha}}", "info")
         # ★ JAMAIS EN SILENCE (anti-patron n°1 du projet) : l'habillage vient d'effacer toute la
         # composition — on le DIT, en nommant la cause et les remèdes. Rien n'est corrigé d'office.
         if "no_alpha" in warn:
-            print("split: ATTENTION — l'image d'habillage n'a AUCUN canal de transparence "
-                  "(JPEG ou PNG opaque) et la clé est « alpha » : elle est donc OPAQUE PARTOUT. "
-                  "Remèdes : importer un PNG à fond transparent, choisir la clé « luma » ou "
-                  "« chroma », ou placer l'habillage EN DESSOUS des box.")
+            log("split: ATTENTION — l'image d'habillage n'a AUCUN canal de transparence "
+                "(JPEG ou PNG opaque) et la clé est « alpha » : elle est donc OPAQUE PARTOUT. "
+                "Remèdes : importer un PNG à fond transparent, choisir la clé « luma » ou "
+                "« chroma », ou placer l'habillage EN DESSOUS des box.", "warning")
         if "covers_all" in warn:
             print(f"split: ATTENTION — l'habillage couvre tout le cadre (opacité moyenne "
                   f"{{cover * 100:.0f}} %, trous transparents {{holes * 100:.1f}} %) ET il est posé "
@@ -2527,7 +2579,7 @@ def _bake_art():
         with _art_lock:
             _art["baked"] = None; _art["err"] = str(e)
             _art["warn"] = []; _art["cover"] = None; _art["holes"] = None
-        print(f"split: ART illisible — {{e}}")
+        log(f"split: ART illisible — {{e}}", "error")
 
 
 def _paint_art_rows(oy, ou, ov, b0, b1):
@@ -2617,16 +2669,16 @@ def _slot_skip(slot, reason, detail=""):
     if cur is None or cur[0] != reason:
         _slot_state[slot] = [reason, 1, detail]
         if reason != "not_wired":
-            print(f"split: slot {{slot}} NON COMPOSÉ — {{_SKIP_LABELS.get(reason, reason)}}"
-                  + (f" ({{detail}})" if detail else ""))
+            log(f"split: slot {{slot}} NON COMPOSÉ — {{_SKIP_LABELS.get(reason, reason)}}"
+                + (f" ({{detail}})" if detail else ""), "warning")
         return
     cur[1] += 1
     if reason != "not_wired" and cur[1] % _REOPEN_AFTER == 0:
         # Rien d'utilisable depuis ≈ 2 s : la cause la plus probable est un flux dont la
         # GÉNÉRATION a changé sous nos pieds (producteur redéployé). On lâche le lecteur ; il
         # sera rouvert au tour suivant, sur la génération vivante.
-        print(f"split: slot {{slot}} muet depuis {{cur[1]}} trames "
-              f"({{_SKIP_LABELS.get(reason, reason)}}) — RELÂCHE du lecteur et réouverture")
+        log(f"split: slot {{slot}} muet depuis {{cur[1]}} trames "
+            f"({{_SKIP_LABELS.get(reason, reason)}}) — RELÂCHE du lecteur et réouverture", "warning")
         _drop_slot(slot)
 
 
@@ -2634,7 +2686,7 @@ def _slot_ok(slot):
     """Le slot compose de nouveau — remet les compteurs d'état à zéro et le DIT (une fois)."""
     cur = _slot_state.pop(slot, None)
     if cur is not None and cur[0] != "not_wired":
-        print(f"split: slot {{slot}} RÉTABLI (après {{cur[1]}} trames « {{cur[0]}} »)")
+        log(f"split: slot {{slot}} RÉTABLI (après {{cur[1]}} trames « {{cur[0]}} »)", "info")
 
 
 def _sl_ensure(L, need_k, deadl):
@@ -2869,8 +2921,8 @@ if _ac:
 out = _ouvrir_sortie(SHM_OUT)
 if SLICE_ON:
     metrics["slice_mode"] = True
-    print(f"split: MODE TRANCHE actif — {{SLICE_H}} lignes/bande ({{HEIGHT // SLICE_H}} tranches)"
-          + (" [cadence=flow]" if FLOW else ""))
+    log(f"split: MODE TRANCHE actif — {{SLICE_H}} lignes/bande ({{HEIGHT // SLICE_H}} tranches)"
+        + (" [cadence=flow]" if FLOW else ""), "info")
 
 frame_index = 0
 start = time.time()
@@ -2998,7 +3050,7 @@ while True:
                                       tr, boxes, ts_in_per_slot,
                                       bg_fill=bg_fill, bg_is_src=bg_is_src)
         except Exception as _e:
-            print(f"split: erreur slice_frame ignorée (frame {{frame_index}}) : {{_e}}")
+            log(f"split: erreur slice_frame ignorée (frame {{frame_index}}) : {{_e}}", "warning")
         ts_out = time.time_ns()
     else:
         # ── Composition TRAME ENTIÈRE (chemin historique). Depuis 0.9.0 elle s'appuie sur les
@@ -3142,11 +3194,11 @@ while True:
                     _hint = ("noyau C mvk ACTIF" if _MVK else
                              "★ noyau C mvk INACTIF (image bobi-compute < 0.15 ?) — tout le "
                              "compositing tourne en repli numpy, 5 à 20× plus lent")
-                    print(f"split: ATTENTION — compositing à {{_pct}} % du budget de trame "
-                          f"({{interval * 1000.0:.0f}} ms @ {{FPS}} fps) : le split va décrocher. "
-                          f"Boxes tournées : {{_n_rot}} ; {{_hint}} ; replis mvk : {{_mvk_miss}}. "
-                          f"Poste n°1 restant : une rotation qui BOUGE (transition/curseur) "
-                          f"reconstruit son empreinte 2D à chaque trame (~13 ms/box en 1080p).")
+                    log(f"split: ATTENTION — compositing à {{_pct}} % du budget de trame "
+                        f"({{interval * 1000.0:.0f}} ms @ {{FPS}} fps) : le split va décrocher. "
+                        f"Boxes tournées : {{_n_rot}} ; {{_hint}} ; replis mvk : {{_mvk_miss}}. "
+                        f"Poste n°1 restant : une rotation qui BOUGE (transition/curseur) "
+                        f"reconstruit son empreinte 2D à chaque trame (~13 ms/box en 1080p).", "warning")
             elif _pct is not None and _pct < 90.0:
                 _over_warned[0] = False
             if _sl_dbg:

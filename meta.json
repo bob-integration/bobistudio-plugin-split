@@ -1,7 +1,12 @@
 {
-  "version": "0.13.0",
-  "date": "2026-07-14",
+  "version": "0.14.0",
+  "date": "2026-07-26",
   "changes": {
+    "Niveau de log par plugin — silencieux par défaut (0.14.0)": [
+      "Nouveau réglage `log_level` (défaut « Événements »). Classement événement/anomalie : câblage d’une entrée, habillage cuit, slot RÉTABLI, passage en mode tranche → `info` (visibles par défaut) ; slot non composé/muet, colorimétrie non déclarée, replis, dépassement de budget de trame → `warning` ; habillage illisible → `error`. Aucune métrique périodique n’était journalisée (rien à retirer).",
+      "Endpoint POST /log_level {level} : bascule la verbosité à chaud, sans redéployer. Niveau courant publié dans /state.",
+      "Exposé aux macros : config_schema (persistant), param_tree groupe « Journal (diagnostic) » et action « Niveau de log (à chaud) ». REDÉPLOIEMENT requis (nouvel endpoint)."
+    ],
     "★ Fond DÉGRADÉ / WIPE en noyau C (0.13.0)": [
       "Le mode de fond `gradient` : 2 à 4 arrêts de couleur + angle (0-360°) + DOUCEUR (0-1). ★ La douceur unifie mélange et wipe : 0 = frontière NETTE (wipe), 1 = dégradé progressif — un wipe n'est qu'un dégradé de douceur nulle, une seule fonctionnalité. Chaque arrêt = hex sRGB, converti par LA conversion du plugin (colorimétrie déclarée + profondeur, 0.12.2) ; interpolation EN YUV à la profondeur courante.",
       "★ NOYAU C (mvk ABI 5, image bobi-compute ≥ 0.16) : une valeur par pixel = passe plein cadre. Projection scalaire du pixel sur l'axe → t → arrêt + interpolation, TRAMÉ (Bayer 8×8 ±½ LSB) contre le BANDING 8 bits. Calcul en DOUBLE (-ffp-contract=off) → bit-exact au repli numpy float64 (selftest mvk_selftest.py test_abi5, C ≡ numpy sur angles/douceurs/profondeurs ; kernel ≡ repli = 0 dans le plugin, 422/420/444, trame entière ≡ mode tranche). Repli numpy IDENTIQUE présent (mvk_miss.gradient sur :8080, à 0).",
