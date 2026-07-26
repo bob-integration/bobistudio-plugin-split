@@ -563,7 +563,7 @@ window.MXLPlugins.split = (function () {
            groupe (entrées/sorties de champ) possibles. -->
       <button type="button" class="split-chip split-chip-global" id="split_global_chip"
               aria-pressed="false" title="${esc(T('global_tip', 'Canal GLOBAL : un calque de transformation appliqué PAR-DESSUS les réglages de chaque box (décalage, échelle, rotation, opacité du groupe). Il ne remplace pas les valeurs des box — il s\'y compose. C\'est lui qui permet les entrées/sorties de champ de tout le groupe.'))}">
-        <span class="split-chip-dot split-dot-global"></span>
+        <span class="ctl-dot ctl-dot--all"></span>
         <span>${esc(T('global', 'Global (groupe)'))}</span>
         <span class="split-chip-state" id="split_global_state"></span>
       </button>
@@ -666,7 +666,7 @@ window.MXLPlugins.split = (function () {
         strip.innerHTML = boxes.map((b, i) => `
 <div class="split-chip${sel.includes(i) ? ' sel' : ''}" data-box="${i}">
   <div class="split-chip-head">
-    <span class="split-chip-dot" style="background:${BOX_COLORS[i % 4]}"></span>
+    <span class="ctl-dot" style="background:${BOX_COLORS[i % 4]}"></span>
     <span class="split-chip-name">${esc(T('box', 'Box'))} ${i + 1}</span>
     <input type="checkbox" class="ctl-switch" data-en="${i}" ${b.enabled ? 'checked' : ''}
            title="${esc(T('box_enable_one', 'Afficher cette box (réglage propre à cette box, jamais appliqué à la sélection).'))}"
@@ -792,8 +792,8 @@ window.MXLPlugins.split = (function () {
         host.innerHTML = `
 <div class="split-props-head">
   ${sel.length > 1
-    ? sel.map(k => `<span class="split-chip-dot" style="background:${BOX_COLORS[k % 4]}"></span>`).join('')
-    : `<span class="split-chip-dot" style="background:${BOX_COLORS[i % 4]}"></span>`}
+    ? sel.map(k => `<span class="ctl-dot" style="background:${BOX_COLORS[k % 4]}"></span>`).join('')
+    : `<span class="ctl-dot" style="background:${BOX_COLORS[i % 4]}"></span>`}
   <h3>${sel.length > 1
     ? esc(sel.length + ' ' + T('multi_head', 'box sélectionnées'))
     : esc(T('box', 'Box') + ' ' + (i + 1))}</h3>
@@ -954,7 +954,7 @@ ${!advanced ? '' : `<div id="split_adv">
         };
         host.innerHTML = `
 <div class="split-props-head">
-  <span class="split-chip-dot split-dot-global"></span>
+  <span class="ctl-dot ctl-dot--all"></span>
   <h3>${esc(T('global', 'Global (groupe)'))}</h3>
   ${!gNeutral(g) ? `<span class="split-badge-on">${esc(T('global_on', 'actif'))}</span>` : ''}
 </div>
@@ -1257,15 +1257,20 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
     function updateBudget() {
         const host = $('#split_budget'); if (!host) return;
         if (metricsErr || !adv) {
-            host.className = 'split-budget';
-            host.innerHTML = `<span>${esc(T('budget', 'Budget de trame'))}</span><span class="split-budget-val">—</span>`;
+            host.className = 'split-budget na';
+            host.innerHTML = `<span>${esc(T('budget', 'Budget de trame'))}</span>` +
+                `<span class="split-budget-bar" aria-hidden="true"><span class="split-budget-fill"></span></span>` +
+                `<span class="split-budget-val">—</span>`;
             host.title = T('budget_na', 'Métriques du moteur indisponibles (:8080) — le conteneur tourne-t-il ?');
             return;
         }
         const pct = adv.budget_pct, rot = adv.rotated_boxes || 0;
         const over = !!adv.over_budget, warn = (pct != null && pct > 80);
         host.className = 'split-budget' + (over ? ' over' : (warn ? ' warn' : ''));
+        const part = pct == null ? 0 : Math.max(0, Math.min(1, pct / 100));
         host.innerHTML = `<span>${esc(T('budget', 'Budget de trame'))}</span>` +
+            `<span class="split-budget-bar" aria-hidden="true">` +
+            `<span class="split-budget-fill" style="transform:scaleX(${part.toFixed(3)})"></span></span>` +
             `<span class="split-budget-val">${pct == null ? '—' : pct + ' %'}${rot ? esc(' · ' + T('budget_rot', 'rotation') + ' ×' + rot) : ''}</span>`;
         host.title = over ? T('budget_over_t', 'Le compositing dépasse le budget de trame : le Split décroche (fps sous la consigne). La rotation est de loin le poste le plus lourd — la retirer est le premier geste.')
             : (warn ? T('budget_warn_t', 'Le compositing approche du budget de trame — plus de marge pour un effet supplémentaire.')

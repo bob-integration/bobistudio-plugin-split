@@ -151,6 +151,31 @@
     padding: 2px 8px; border-radius: 3px;
     background: var(--bg-input); border: 1px solid var(--border); color: var(--text);
 }
+
+/* Jauge horizontale du budget : le chiffre dit la valeur, la jauge dit la MARGE — combien il
+ * reste avant le décrochage. C'est ce que le pourcentage seul ne donne pas d'un coup d'œil.
+ * L'échelle est bornée à 100 % parce que 100 % EST le décrochage : au-delà, la question n'est
+ * plus « combien » mais « ça décroche », que la couleur dit déjà.
+ * Le trait à 80 % matérialise le seuil d'alerte, sinon le passage à l'orange paraît arbitraire.
+ * `aria-hidden` : redondant avec le chiffre juste à côté, qui reste la source lisible. */
+.split-budget-bar {
+    position: relative; width: 84px; height: 8px; flex: 0 0 auto;
+    background: var(--bg-input); border: 1px solid var(--border); border-radius: 2px;
+    overflow: hidden;
+}
+.split-budget-bar::after {           /* seuil d'alerte */
+    content: ''; position: absolute; left: 80%; top: 0; bottom: 0;
+    width: 1px; background: var(--border-strong, var(--text-muted)); opacity: 0.6;
+}
+.split-budget-fill {
+    position: absolute; inset: 0; transform-origin: left center;
+    background: var(--accent); transform: scaleX(0);
+    transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), background 0.15s;
+}
+.split-budget.warn .split-budget-fill { background: var(--status-warning-fg); }
+.split-budget.over .split-budget-fill { background: var(--status-stopped-fg); }
+/* Métriques absentes : la jauge doit se TAIRE, pas afficher zéro — zéro serait un mensonge. */
+.split-budget.na .split-budget-bar { opacity: 0.35; }
 .split-budget.warn .split-budget-val {
     background: var(--status-warning-bg); color: var(--status-warning-fg); border-color: var(--status-warning-fg);
 }
@@ -226,7 +251,6 @@
 .split-chip:hover { border-color: var(--border); background: var(--bg-hover); }
 .split-chip.sel { border-color: var(--accent); background: var(--bg-selected); }
 .split-chip-head { display: flex; align-items: center; gap: var(--space-2); font-size: 0.86em; font-weight: 600; }
-.split-chip-dot { width: 10px; height: 10px; border-radius: 2px; flex: 0 0 auto; }
 .split-chip-name { flex: 1; min-width: 0; }
 
 /* En-tête du bloc de réglages (quelle box on édite) — pleine largeur au-dessus de la grille. */
@@ -290,7 +314,8 @@
 .cc-knob.is-mixed .cc-knob-value { border-color: var(--status-warning-fg); }
 .cc-knob.is-mixed .cc-knob-value::placeholder { color: var(--text-muted); text-align: center; }
 /* Plusieurs pastilles dans l'en-tête = les box concernées par l'édition. */
-.split-props-head .split-chip-dot + .split-chip-dot { margin-left: -4px; }
+/* Chevauchement des pastilles : catalogue (.ctl-dots). */
+.split-props-head .ctl-dot + .ctl-dot { margin-left: -4px; }
 
 /* ── CANAL GLOBAL (0.12.0) : un CALQUE, pas une multi-sélection ────────────────────────────
    Il apparaît comme un canal SUPPLÉMENTAIRE au-dessus des 4 box (colonne « Box & fond ») :
@@ -298,9 +323,6 @@
    état — neutre ou actif — se lit d'un coup d'œil. */
 .split-chip-global { width: 100%; margin-bottom: var(--space-2); }
 .split-chip-global.is-on { border-color: var(--accent); }
-.split-dot-global {
-    background: conic-gradient(from 0deg, var(--accent), var(--text-muted), var(--accent));
-}
 .split-chip-state { margin-left: auto; font-size: 0.78em; color: var(--text-muted); }
 .split-chip-global.is-on .split-chip-state { color: var(--accent); font-weight: 600; }
 .split-badge-on {
