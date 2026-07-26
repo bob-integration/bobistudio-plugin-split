@@ -286,7 +286,7 @@ window.MXLPlugins.split = (function () {
         const multiTitle = mixed
             ? T('mixed_knob', 'Valeurs multiples dans la sélection. Agir sur ce réglage l\'applique à TOUTES les box sélectionnées (uniformisation).')
             : (sel.length > 1 ? T('multi_knob', 'S\'applique à TOUTES les box sélectionnées.') : '');
-        return `<div class="cc-knob${mixed ? ' is-mixed' : ''}" data-target="${p.target}" data-min="${p.min}" data-max="${p.max}"
+        return `<div class="cc-knob ctl-knob${mixed ? ' is-mixed' : ''}" data-target="${p.target}" data-min="${p.min}" data-max="${p.max}"
       data-step="${p.step}" data-default="${p.def}" data-unit="${p.unit || ''}" data-shape="${shape}"
       data-ref="${v}" data-mixed="${mixed ? '1' : '0'}">
   <div class="cc-knob-label">${esc(p.label)}${mixed ? ' <span class="mixed-mark" aria-hidden="true">≠</span>' : ''}</div>
@@ -322,6 +322,10 @@ window.MXLPlugins.split = (function () {
         if (k) { k.classList.remove('is-mixed'); k.dataset.mixed = '0'; }   // la valeur vient d'être uniformisée
     }
     function bindKnobs(root) {
+        // Le catalogue pose lui-même le bouton de remise à zéro sur chaque rotatif (idempotent,
+        // donc sans risque à chaque rendu). On n'écrit plus ce balisage à la main : c'est ce qui
+        // faisait qu'il manquait ici alors qu'il existait sur color_corrector.
+        if (window.MXLControls) window.MXLControls.attachKnobs(root, T('knob_reset', 'Remettre à la valeur par défaut'));
         (root || EL).querySelectorAll('.cc-knob').forEach(knob => {
             if (knob._bound) return; knob._bound = true;
             const dial = knob.querySelector('.cc-knob-dial'), num = knob.querySelector('.cc-knob-value');
@@ -353,10 +357,15 @@ window.MXLPlugins.split = (function () {
                 dial.addEventListener('pointercancel', up);
                 dial.focus();
             });
-            dial.addEventListener('dblclick', () => {
+            const remiseAZero = () => {
                 const d = +knob.dataset.default;
                 knobApply(knob, d); knobPost(knob, d);
-            });
+            };
+            dial.addEventListener('dblclick', remiseAZero);
+            // Le bouton de remise à zéro est POSÉ par le catalogue (MXLControls.attachKnobs) et
+            // n'appelle rien du plugin : il émet cet évènement, qu'on écoute ici. Le catalogue
+            // n'a donc pas à connaître notre façon de réinitialiser.
+            knob.addEventListener('ctl-knob-reset', remiseAZero);
             dial.addEventListener('wheel', e => {
                 e.preventDefault();
                 const step = +knob.dataset.step;
