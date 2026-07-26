@@ -61,7 +61,10 @@
     letter-spacing: 0.5px; font-weight: 600; text-align: center; white-space: nowrap;
 }
 .cc-knob-dial {
-    width: 56px; height: 56px; border-radius: 50%;
+    /* 64px = la taille NATIVE du tracé du catalogue. À 56 il fallait le mettre à l'échelle, donc
+     * le rotatif n'avait pas la même taille qu'ailleurs et son repère de défaut était réduit
+     * d'autant. Un contrôle partagé doit faire la même taille partout. */
+    width: 64px; height: 64px; border-radius: 50%;
     background: radial-gradient(circle at 50% 35%, var(--bg-elev) 0%, var(--bg-elev) 55%, var(--bg-input) 100%);
     box-shadow: inset 0 0 0 1px var(--border), inset 0 1px 0 rgba(255,255,255,0.04), 0 1px 2px rgba(0,0,0,0.25);
     cursor: ns-resize; touch-action: none; user-select: none; transition: box-shadow 120ms ease-out;
@@ -73,7 +76,7 @@
     outline: none; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 2px var(--bg), 0 0 0 4px var(--accent);
 }
 .cc-knob-dial:active { cursor: grabbing; }
-.cc-knob-dial svg { width: 100%; height: 100%; display: block; pointer-events: none; }
+.cc-knob-dial svg { display: block; pointer-events: none; }   /* taille native, pas de mise à l'échelle */
 .cc-knob-value {
     font-family: var(--font-mono); font-size: 0.78em;
     width: 56px; text-align: center; background: var(--bg-input);
