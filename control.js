@@ -10,7 +10,7 @@
 //  • LANGAGE VISUEL du panneau de réglages : le CORRECTEUR DE COULEUR (plugins/color_corrector)
 //    — LA référence d'UI du projet. On en reprend : les sections `.cc-section` à micro-titre `h4`
 //    majuscule, la bascule « mode avancé » `.cc-adv-toggle`, le bandeau `.cc-error`, la note
-//    `.cc-hint`, et surtout le COMPOSANT ROTATIF `.ctl-knob ctl-knob--arc` (cadran + champ chiffré) avec ses
+//    `.cc-hint`, et surtout le COMPOSANT ROTATIF `.cc-knob` (cadran + champ chiffré) avec ses
 //    interactions exactes : glissé vertical (Maj = pas fin), molette, flèches / PgUp-PgDn /
 //    Début-Fin, double-clic = valeur par défaut. Seul AJOUT : la variante shape="angle" (cercle
 //    complet, repère à 12 h) pour les ANGLES — même cadran, même champ, géométrie différente.
@@ -213,7 +213,7 @@ window.MXLPlugins.split = (function () {
         const ae = document.activeElement;
         if (!ae || !EL || !EL.contains(ae)) return false;
         if (['INPUT', 'SELECT', 'TEXTAREA'].includes(ae.tagName)) return true;
-        return !!(ae.classList && ae.classList.contains('ctl-knob-hit'));
+        return !!(ae.classList && ae.classList.contains('cc-knob-dial'));
     }
     async function fetchState({ rebuild = false } = {}) {
         if (VMID == null || !EL) return;
@@ -250,7 +250,7 @@ window.MXLPlugins.split = (function () {
     }
 
     // ═══ ROTATIF — COMPOSANT DU CORRECTEUR DE COULEUR, repris tel quel ══════════════
-    // Mêmes classes (.ctl-knob ctl-knob--arc / .ctl-knob-hit / .ctl-knob-val), même cadran SVG, mêmes
+    // Mêmes classes (.cc-knob / .cc-knob-dial / .cc-knob-value), même cadran SVG, mêmes
     // interactions. AJOUT : shape="angle" → cercle complet, repère à 12 h, pour la ROTATION
     // d'une box et la DIRECTION de la lumière (un angle n'est pas une jauge).
     //
@@ -265,11 +265,30 @@ window.MXLPlugins.split = (function () {
     // Le PAS est le même pour tout le monde (`step` du champ = `data-step` du cadran, dérivé de
     // /state.caps) : bouton −/+, flèches clavier et molette avancent EXACTEMENT du même pas —
     // une seule vérité. Le stepper émet `change` → le commit passe par le handler du rotatif.
-    // Tracé délégué au catalogue (static/js/controls.js). La forme 'angle' (direction) prend la
-    // variante AIGUILLE : sur une direction, ce qu'on lit c'est où elle pointe, pas un taux de
-    // remplissage. Les autres prennent l'arc gradué. Plus aucun SVG écrit ici.
-    function knobSvg(p01, shape, val, def01) {
-        return window.MXLControls.knobSvg(shape === 'angle' ? 'needle' : 'arc', p01, def01);
+    function knobSvg(p01, shape, val) {
+        const r = 22, C = 2 * Math.PI * r;
+        if (shape === 'angle') {
+            const deg = Number(val) || 0;                        // 0 = 12 h, sens horaire
+            const pol = a => [28 + r * Math.cos(a * Math.PI / 180), 28 + r * Math.sin(a * Math.PI / 180)];
+            const [x0, y0] = pol(-90), [x1, y1] = pol(-90 + deg);
+            const large = Math.abs(deg) > 180 ? 1 : 0, sweep = deg >= 0 ? 1 : 0;
+            const arc = Math.abs(deg) < 0.5 ? '' : `<path d="M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${large} ${sweep} ${x1.toFixed(2)} ${y1.toFixed(2)}"
+                 fill="none" stroke="var(--accent)" stroke-width="3" stroke-linecap="round"/>`;
+            return `<svg viewBox="0 0 56 56" aria-hidden="true">
+                <circle cx="28" cy="28" r="${r}" fill="none" stroke="var(--border)" stroke-width="3"/>
+                ${arc}
+                <line x1="28" y1="28" x2="28" y2="9" stroke="var(--text-strong)" stroke-width="2"
+                      stroke-linecap="round" transform="rotate(${deg} 28 28)"/>
+                <circle cx="28" cy="28" r="2.2" fill="var(--text-muted)"/></svg>`;
+        }
+        const p = Math.max(0, Math.min(1, p01)), sweep = C * 0.75, prog = sweep * p, ind = -135 + p * 270;
+        return `<svg viewBox="0 0 56 56" aria-hidden="true">
+            <g transform="rotate(135 28 28)">
+                <circle cx="28" cy="28" r="${r}" fill="none" stroke="var(--border)" stroke-width="3" stroke-dasharray="${sweep} ${C}"/>
+                <circle cx="28" cy="28" r="${r}" fill="none" stroke="var(--accent)" stroke-width="3" stroke-dasharray="${prog} ${C}" stroke-linecap="round"/>
+            </g>
+            <line x1="28" y1="28" x2="28" y2="9" stroke="var(--text-strong)" stroke-width="2" stroke-linecap="round" transform="rotate(${ind} 28 28)"/>
+            <circle cx="28" cy="28" r="2.2" fill="var(--text-muted)"/></svg>`;
     }
     // p = {target, label, min, max, step, def, unit, shape}. `target` = destination du POST :
     // 'box:<champ>' · 'box:<sous-dict>.<champ>' · 'light:<champ>' · 'art:<champ>'.
@@ -283,15 +302,15 @@ window.MXLPlugins.split = (function () {
         const multiTitle = mixed
             ? T('mixed_knob', 'Valeurs multiples dans la sélection. Agir sur ce réglage l\'applique à TOUTES les box sélectionnées (uniformisation).')
             : (sel.length > 1 ? T('multi_knob', 'S\'applique à TOUTES les box sélectionnées.') : '');
-        return `<div class="ctl-knob ${shape === 'angle' ? 'ctl-knob--needle' : 'ctl-knob--arc'}${mixed ? ' is-mixed' : ''}" data-target="${p.target}" data-min="${p.min}" data-max="${p.max}"
+        return `<div class="cc-knob${mixed ? ' is-mixed' : ''}" data-target="${p.target}" data-min="${p.min}" data-max="${p.max}"
       data-step="${p.step}" data-default="${p.def}" data-unit="${p.unit || ''}" data-shape="${shape}"
       data-ref="${v}" data-mixed="${mixed ? '1' : '0'}">
-  <div class="ctl-knob-name">${esc(p.label)}${mixed ? ' <span class="mixed-mark" aria-hidden="true">≠</span>' : ''}</div>
-  <div class="ctl-knob-hit" role="slider" tabindex="0" aria-label="${esc(p.label)}"
+  <div class="cc-knob-label">${esc(p.label)}${mixed ? ' <span class="mixed-mark" aria-hidden="true">≠</span>' : ''}</div>
+  <div class="cc-knob-dial" role="slider" tabindex="0" aria-label="${esc(p.label)}"
        aria-valuemin="${p.min}" aria-valuemax="${p.max}" aria-valuenow="${v}"
        aria-valuetext="${mixed ? esc(T('mixed_short', 'valeurs multiples')) : esc(fmt(v, p.step, p.unit))}"
-       title="${esc((T('knob_title', 'Glisser vertical, molette, flèches (Maj = pas fin). Double-clic = valeur par défaut.') + (multiTitle ? ' ' + multiTitle : '')))}">${knobSvg((v - p.min) / ((p.max - p.min) || 1), shape, v, (p.def - p.min) / ((p.max - p.min) || 1))}</div>
-  <input type="number" class="ctl-knob-val" min="${p.min}" max="${p.max}" step="${p.step}"
+       title="${esc((T('knob_title', 'Glisser vertical, molette, flèches (Maj = pas fin). Double-clic = valeur par défaut.') + (multiTitle ? ' ' + multiTitle : '')))}">${knobSvg((v - p.min) / ((p.max - p.min) || 1), shape, v)}</div>
+  <input type="number" class="cc-knob-value" min="${p.min}" max="${p.max}" step="${p.step}"
          value="${mixed ? '' : v}" placeholder="${mixed ? '—' : ''}"
          title="${esc(multiTitle)}" aria-label="${esc(p.label)}"></div>`;
     }
@@ -299,7 +318,7 @@ window.MXLPlugins.split = (function () {
         const min = +knob.dataset.min, max = +knob.dataset.max, step = +knob.dataset.step;
         const unit = knob.dataset.unit || '', shape = knob.dataset.shape;
         v = parseFloat(Number(v).toFixed(decimals(step)));
-        const dial = knob.querySelector('.ctl-knob-hit'), num = knob.querySelector('.ctl-knob-val');
+        const dial = knob.querySelector('.cc-knob-dial'), num = knob.querySelector('.cc-knob-value');
         dial.innerHTML = knobSvg((v - min) / ((max - min) || 1), shape, v);
         dial.setAttribute('aria-valuenow', v);
         dial.setAttribute('aria-valuetext', fmt(v, step, unit));
@@ -314,13 +333,13 @@ window.MXLPlugins.split = (function () {
         if (kind === 'light') { postLight({ [path]: v }); return; }
         if (kind === 'art') { postArt({ [path]: v }); return; }
         applySetting(path, v);              // ★ toute la sélection, pas seulement la référence
-        const k = knob.closest('.ctl-knob');
+        const k = knob.closest('.cc-knob');
         if (k) { k.classList.remove('is-mixed'); k.dataset.mixed = '0'; }   // la valeur vient d'être uniformisée
     }
     function bindKnobs(root) {
-        (root || EL).querySelectorAll('.ctl-knob').forEach(knob => {
+        (root || EL).querySelectorAll('.cc-knob').forEach(knob => {
             if (knob._bound) return; knob._bound = true;
-            const dial = knob.querySelector('.ctl-knob-hit'), num = knob.querySelector('.ctl-knob-val');
+            const dial = knob.querySelector('.cc-knob-dial'), num = knob.querySelector('.cc-knob-value');
             const move = e => {
                 if (!knobDrag) return;
                 const dy = knobDrag.startY - e.clientY, range = knobDrag.max - knobDrag.min;
@@ -524,7 +543,7 @@ window.MXLPlugins.split = (function () {
         const dir = NUDGE[e.key]; if (!dir) return;
         const ae = document.activeElement;
         if (ae && /INPUT|SELECT|TEXTAREA/.test(ae.tagName)) return;
-        if (ae && ae.classList && ae.classList.contains('ctl-knob-hit')) return;   // rotatif focalisé
+        if (ae && ae.classList && ae.classList.contains('cc-knob-dial')) return;   // rotatif focalisé
         if (!EL.contains(ae) && ae !== document.body) return;
         e.preventDefault();
         const W = (st && st.width) || 1920, H = (st && st.height) || 1080;
@@ -825,7 +844,7 @@ ${sel.length > 1 ? `<p class="meta split-full">${esc(T('multi_note', 'Tout régl
     ${numField('sp_size_y', T('f_size_y', 'Hauteur (0 = taille)'), 'box_fields', 'size_y', '')}
     ${numField('sp_z', T('f_z', 'Z (ordre)'), 'box_fields', 'z', '', { nullValue: i, step: 1 })}
   </div>
-  <div class="split-knob-row">
+  <div class="cc-knob-row">
     ${K('box:crop.t', T('k_crop_t', 'Crop H'), 'crop', 't', '')}
     ${K('box:crop.b', T('k_crop_b', 'Crop B'), 'crop', 'b', '')}
     ${K('box:crop.l', T('k_crop_l', 'Crop G'), 'crop', 'l', '')}
@@ -844,7 +863,7 @@ ${sel.length > 1 ? `<p class="meta split-full">${esc(T('multi_note', 'Tout régl
 ${!advanced ? '' : `<div id="split_adv">
   <div class="cc-section">
     <h4>${esc(T('sec_fx', 'Effets'))}</h4>
-    <div class="split-knob-row">
+    <div class="cc-knob-row">
       ${K('box:rotation', T('k_rotation', 'Rotation'), 'box_fields', 'rotation', '°', 'angle')}
       ${K('box:opacity', T('k_opacity', 'Opacité'), 'box_fields', 'opacity', '')}
       ${K('box:feather', T('k_feather', 'Adoucis.'), 'box_fields', 'feather', 'px')}
@@ -865,7 +884,7 @@ ${!advanced ? '' : `<div id="split_adv">
       ${numField('sp_bo', T('f_border_outer', 'Extérieur (px)'), 'border_fields', 'outer', 'border')}
       ${numField('sp_bi', T('f_border_inner', 'Intérieur (px)'), 'border_fields', 'inner', 'border')}
     </div>
-    <div class="split-knob-row">
+    <div class="cc-knob-row">
       ${K('box:border.bevel', T('k_bevel', 'Biseau'), 'border_fields', 'bevel', '')}
       ${K('box:border.bevel_soft', T('k_bevel_soft', 'Adoucis.'), 'border_fields', 'bevel_soft', '')}
       ${K('box:border.bevel_pos', T('k_bevel_pos', 'Position'), 'border_fields', 'bevel_pos', '')}
@@ -878,7 +897,7 @@ ${!advanced ? '' : `<div id="split_adv">
       <label class="split-inline-switch"><input type="checkbox" class="ios-toggle" data-flag="enabled" data-path="shadow"
              ${b.shadow.enabled ? 'checked' : ''} aria-label="${esc(T('f_shadow_on', 'Activer l\'ombre portée'))}"></label>
     </h4>
-    <div class="split-knob-row ${b.shadow.enabled ? '' : 'is-off'}">
+    <div class="cc-knob-row ${b.shadow.enabled ? '' : 'is-off'}">
       ${K('box:shadow.dx', T('k_shadow_dx', 'Décal. X'), 'shadow_fields', 'dx', 'px')}
       ${K('box:shadow.dy', T('k_shadow_dy', 'Décal. Y'), 'shadow_fields', 'dy', 'px')}
       ${K('box:shadow.blur', T('k_shadow_blur', 'Flou'), 'shadow_fields', 'blur', 'px')}
@@ -892,7 +911,7 @@ ${!advanced ? '' : `<div id="split_adv">
         const at = $('#split_adv_toggle');
         if (at) at.onclick = () => { advanced = !advanced; renderProps(); };
         host.querySelectorAll('input[type=number], input[type=color], select[data-key]').forEach(inp => {
-            if (inp.classList.contains('ctl-knob-val')) return;   // géré par bindKnobs
+            if (inp.classList.contains('cc-knob-value')) return;   // géré par bindKnobs
             inp.onchange = () => onFieldChange(inp);
             // Champs SIMPLES (X/Y, tailles, z, largeurs de bordure) : ils portent aussi les
             // boutons −/+ (stepper global). Même précaution qu'aux rotatifs pour une sélection
@@ -968,7 +987,7 @@ ${!advanced ? '' : `<div id="split_adv">
 <p class="meta split-full">${esc(T('global_scope', 'Le Global transforme le GROUPE : il se compose par-dessus les réglages de chaque box (rendu = Global ∘ box), sans en écraser aucun — les box gardent leurs positions relatives. C\'est ce qui permet de faire entrer ou sortir tout le groupe du cadre. Les attributs de BORD d\'une box (crop, adoucissement, coins, bordure, biseau, ombre, miroir, ratio) et ce qui est propre à une box (source, activation, z-ordre) ne s\'appliquent donc pas à lui : ils ne sont pas affichés ici.'))}</p>
 <div class="cc-section">
   <h4>${esc(T('g_sec_geo', 'Transformation du groupe'))}</h4>
-  <div class="split-knob-row">
+  <div class="cc-knob-row">
     ${K('dx', T('g_dx', 'Décal. X'), '', '')}
     ${K('dy', T('g_dy', 'Décal. Y'), '', '')}
     ${K('scale', T('g_scale', 'Échelle'), '×', '')}
@@ -1023,7 +1042,7 @@ ${!advanced ? '' : `<div id="split_adv">
           title="${esc(T('grad_del', 'Retirer cet arrêt'))}">✕</button>
 </div>`).join('');
         host.innerHTML = `
-<div class="split-knob-row">
+<div class="cc-knob-row">
   ${knob('angle', T('grad_angle', 'Angle'), '°', 'angle')}
   ${knob('softness', T('grad_soft', 'Douceur'), '', '')}
 </div>
@@ -1156,7 +1175,7 @@ ${stops.length < nmax ? `<button type="button" class="btn" id="split_grad_add">$
   <div class="field"><label for="art_chroma">${esc(T('art_chroma', 'Couleur de clé (chroma)'))}</label>
     <input type="color" id="art_chroma" value="${esc(a.chroma_key || '#00b140')}"></div>
 </div>
-<div class="split-knob-row ${noImg ? 'is-off' : ''}" id="art_knobs">
+<div class="cc-knob-row ${noImg ? 'is-off' : ''}" id="art_knobs">
   ${knobHtml({ target: 'art:clip', label: T('k_clip', 'Seuil'), min: 0, max: 1, step: 0.01, def: 0.15, unit: '' }, a.clip)}
   ${knobHtml({ target: 'art:gain', label: T('k_gain', 'Gain'), min: 0.01, max: 16, step: 0.01, def: 1, unit: '' }, a.gain)}
   ${knobHtml({ target: 'art:opacity', label: T('k_art_op', 'Opacité'), min: 0, max: 1, step: 0.01, def: 1, unit: '' }, a.opacity)}
@@ -1220,7 +1239,7 @@ ${noImg ? `<p class="meta">${esc(T('art_need_img', 'Importez d\'abord une image 
         host.className = 'cc-section';
         host.innerHTML = `
 <h4>${esc(T('look', 'Lumière & transitions'))}</h4>
-<div class="split-knob-row">
+<div class="cc-knob-row">
   ${knobHtml({ target: 'light:angle', label: T('k_light_angle', 'Direction'), min: amin, max: amax, step: 1, def: adef, unit: '°', shape: 'angle' }, L.angle)}
   ${knobHtml({ target: 'light:altitude', label: T('k_light_alt', 'Hauteur'), min: hmin, max: hmax, step: 1, def: hdef, unit: '°' }, L.altitude)}
 </div>
