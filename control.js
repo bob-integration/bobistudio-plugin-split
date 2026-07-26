@@ -35,7 +35,7 @@ window.MXLPlugins.split = (function () {
     // il réutilise LE panneau (mêmes cadrans, mêmes libellés, mêmes pas, mêmes steppers). Les
     // réglages qui ne le concernent pas sont MASQUÉS (et on dit pourquoi, une fois, en tête).
     let selGlobal = false;
-    let sources = [], containers = [], memCache = [], adv = null, metricsErr = false;
+    let sources = [], containers = [], memCache = [], adv = null, metricsErr = false, sourcesErr = null;
     let drag = null, knobDrag = null, boxPostTimer = null, persistTimer = null, pollTimer = null, metTimer = null;
     // Snap magnétique — transposé de l'éditeur de PiP : mêmes cibles (bords + centre du cadre,
     // bords + centre des autres box), seuil ∝ résolution du canvas, guides pointillés, même
@@ -82,17 +82,23 @@ window.MXLPlugins.split = (function () {
     }
 
     // ─── Sources / instances ────────────────────────────────────────────────────────
+    /* `/api/sources?kind=video` et NON `/api/home/summary` : ce dernier n'a jamais eu — ou n'a
+     * plus — de clé `nodes`/`topo_nodes`, si bien que la boucle parcourait un tableau vide et que
+     * la liste des sources restait DÉSESPÉRÉMENT vide, sans une erreur. `/api/sources` est
+     * l'endpoint dédié (dérivé de la DB seule, aucun appel réseau), déjà utilisé par multiview.
+     * L'échec n'est plus muet : il se voit dans la liste elle-même. */
     async function loadSources() {
         try {
-            const data = await (await fetch('/api/home/summary')).json();
+            const r = await fetch('/api/sources?kind=video');
+            if (!r.ok) throw new Error('HTTP ' + r.status);
             const seen = new Set(), out = [];
-            for (const n of (data.nodes || data.topo_nodes || []))
-                for (const p of (n.produces || []))
-                    if (p.kind === 'video' && p.shm && !seen.has(p.shm)) {
-                        seen.add(p.shm); out.push({ shm: p.shm, label: `${n.hostname || ('#' + n.vmid)} · ${p.shm}` });
-                    }
-            sources = out;
-        } catch (e) { sources = []; }
+            for (const p of (await r.json())) {
+                if (!p.shm || seen.has(p.shm)) continue;
+                seen.add(p.shm);
+                out.push({ shm: p.shm, label: `${p.hostname || ('#' + p.vmid)} · ${p.label || p.shm}` });
+            }
+            sources = out; sourcesErr = null;
+        } catch (e) { sources = []; sourcesErr = String(e && e.message || e); }
     }
     async function loadContainers() {
         try {
@@ -102,6 +108,7 @@ window.MXLPlugins.split = (function () {
     }
     function srcOptions(selected) {
         let h = `<option value="">${esc(T('src_none', '— non câblé —'))}</option>`, found = false;
+        if (sourcesErr) h += `<option value="" disabled>${esc(T('src_err', 'Sources indisponibles'))} : ${esc(sourcesErr)}</option>`;
         for (const s of sources) {
             const k = (s.shm === selected) ? ' selected' : ''; if (k) found = true;
             h += `<option value="${esc(s.shm)}"${k}>${esc(s.label)}</option>`;
