@@ -293,10 +293,10 @@ window.MXLPlugins.split = (function () {
         const multiTitle = mixed
             ? T('mixed_knob', 'Valeurs multiples dans la sélection. Agir sur ce réglage l\'applique à TOUTES les box sélectionnées (uniformisation).')
             : (sel.length > 1 ? T('multi_knob', 'S\'applique à TOUTES les box sélectionnées.') : '');
-        return `<div class="cc-knob ctl-knob${mixed ? ' is-mixed' : ''}" data-target="${p.target}" data-min="${p.min}" data-max="${p.max}"
+        return `<div class="cc-knob ctl-knob${mixed ? ' ctl-mixed' : ''}" data-target="${p.target}" data-min="${p.min}" data-max="${p.max}"
       data-step="${p.step}" data-default="${p.def}" data-unit="${p.unit || ''}" data-shape="${shape}"
       data-ref="${v}" data-mixed="${mixed ? '1' : '0'}">
-  <div class="cc-knob-label">${esc(p.label)}${mixed ? ' <span class="mixed-mark" aria-hidden="true">≠</span>' : ''}</div>
+  <div class="cc-knob-label">${esc(p.label)}${mixed ? ' <span class="ctl-mixed-mark" aria-hidden="true">≠</span>' : ''}</div>
   <div class="cc-knob-dial" role="slider" tabindex="0" aria-label="${esc(p.label)}"
        aria-valuemin="${p.min}" aria-valuemax="${p.max}" aria-valuenow="${v}"
        aria-valuetext="${mixed ? esc(T('mixed_short', 'valeurs multiples')) : esc(fmt(v, p.step, p.unit))}"
@@ -326,7 +326,7 @@ window.MXLPlugins.split = (function () {
         if (kind === 'art') { postArt({ [path]: v }); return; }
         applySetting(path, v);              // ★ toute la sélection, pas seulement la référence
         const k = knob.closest('.cc-knob');
-        if (k) { k.classList.remove('is-mixed'); k.dataset.mixed = '0'; }   // la valeur vient d'être uniformisée
+        if (k) { k.classList.remove('ctl-mixed'); k.dataset.mixed = '0'; }   // la valeur vient d'être uniformisée
     }
     function bindKnobs(root) {
         // Le catalogue pose lui-même le bouton de remise à zéro sur chaque rotatif (idempotent,
@@ -714,8 +714,8 @@ window.MXLPlugins.split = (function () {
         const tip = sel.length < 2 ? ''
             : (delta ? T('multi_delta', 'Multi-sélection : la valeur saisie est appliquée en DÉCALAGE (l\'écart demandé sur la box de référence est reporté sur chaque box, qui garde sa disposition).')
                      : T('multi_abs', 'S\'applique à TOUTES les box sélectionnées (uniformisation).'));
-        return `<div class="field${mixed ? ' is-mixed' : ''}">
-  <label for="${id}" title="${esc(tip)}">${esc(label)}${mixed ? ' <span class="mixed-mark" aria-hidden="true">≠</span>' : ''}</label>
+        return `<div class="field${mixed ? ' ctl-mixed' : ''}">
+  <label for="${id}" title="${esc(tip)}">${esc(label)}${mixed ? ' <span class="ctl-mixed-mark" aria-hidden="true">≠</span>' : ''}</label>
   <input type="number" id="${id}" data-key="${key}" data-path="${path || ''}" data-ref="${Number(val)}"
          min="${min}" max="${max}" step="${step}" title="${esc(tip)}"
          value="${mixed ? '' : Number(val).toFixed(decimals(step))}" placeholder="${mixed ? '—' : ''}">
@@ -728,7 +728,7 @@ window.MXLPlugins.split = (function () {
         const mixed = isMixed(full);
         const tip = mixed ? T('mixed_color', 'Couleurs différentes dans la sélection : choisir une couleur les uniformise.')
             : (sel.length > 1 ? T('multi_abs', 'S\'applique à TOUTES les box sélectionnées (uniformisation).') : '');
-        return `<div class="field${mixed ? ' is-mixed' : ''}"><label for="${id}" title="${esc(tip)}">${esc(label)}${mixed ? ' <span class="mixed-mark" aria-hidden="true">≠</span>' : ''}</label>
+        return `<div class="field${mixed ? ' ctl-mixed' : ''}"><label for="${id}" title="${esc(tip)}">${esc(label)}${mixed ? ' <span class="ctl-mixed-mark" aria-hidden="true">≠</span>' : ''}</label>
   <input type="color" id="${id}" data-key="${key}" data-path="${path || ''}" value="${esc(val)}" title="${esc(tip)}"></div>`;
     }
     function toggleField(key, path, label) {
@@ -738,10 +738,10 @@ window.MXLPlugins.split = (function () {
         const mixed = isMixed(full);
         const tip = mixed ? T('mixed_toggle', 'États différents dans la sélection : basculer applique le même état à TOUTES les box sélectionnées.')
             : (sel.length > 1 ? T('multi_abs', 'S\'applique à TOUTES les box sélectionnées (uniformisation).') : '');
-        return `<label class="toggle-inline${mixed ? ' is-mixed' : ''}" title="${esc(tip)}">
+        return `<label class="toggle-inline${mixed ? ' ctl-mixed' : ''}" title="${esc(tip)}">
   <input type="checkbox" class="ctl-switch" data-flag="${key}" data-path="${path || ''}" ${on ? 'checked' : ''}
          ${mixed ? 'data-indeterminate="1"' : ''}>
-  <span>${esc(label)}${mixed ? ' <span class="mixed-mark" aria-hidden="true">≠</span>' : ''}</span></label>`;
+  <span>${esc(label)}${mixed ? ' <span class="ctl-mixed-mark" aria-hidden="true">≠</span>' : ''}</span></label>`;
     }
 
     // Coût de la rotation : ANNONCÉ AVANT usage, selon le format courant (mesures du moteur).
@@ -807,7 +807,7 @@ ${sel.length > 1 ? `<p class="meta split-full">${esc(T('multi_note', 'Tout régl
     ${numField('sp_x', T('f_x', 'X (centre)'), 'box_fields', 'x', '')}
     ${numField('sp_y', T('f_y', 'Y (centre)'), 'box_fields', 'y', '')}
     ${numField('sp_size', T('f_size', 'Taille'), 'box_fields', 'size', '')}
-    <div class="field${isMixed('aspect') ? ' is-mixed' : ''}"><label for="sp_aspect">${esc(T('f_aspect', 'Ratio'))}${isMixed('aspect') ? ' <span class="mixed-mark" aria-hidden="true">≠</span>' : ''}</label>
+    <div class="field${isMixed('aspect') ? ' ctl-mixed' : ''}"><label for="sp_aspect">${esc(T('f_aspect', 'Ratio'))}${isMixed('aspect') ? ' <span class="ctl-mixed-mark" aria-hidden="true">≠</span>' : ''}</label>
       <select class="ctl-select" id="sp_aspect" data-key="aspect" data-path=""
               title="${esc(sel.length > 1 ? T('multi_abs', 'S\'applique à TOUTES les box sélectionnées (uniformisation).') : '')}">
         ${isMixed('aspect') ? `<option value="" selected disabled>${esc(T('mixed_short', 'valeurs multiples'))}</option>` : ''}

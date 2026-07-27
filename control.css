@@ -272,16 +272,13 @@
    Le champ ne ment pas (vide + placeholder « — »), le libellé porte un « ≠ », et le cadran
    reste posé sur la valeur de la box de référence mais grisé : il indique un point de départ,
    pas une valeur commune. Toucher le réglage uniformise (apparence) ou décale (géométrie). */
-.split-ui .mixed-mark {
-    color: var(--status-warning-fg); font-weight: 700; margin-left: 2px;
-    font-family: var(--font-mono);
-}
-.split-ui .field.is-mixed input:not([type="color"]),
-.split-ui .field.is-mixed select { border-color: var(--status-warning-fg); }
-.split-ui .field.is-mixed input::placeholder { color: var(--text-muted); opacity: 0.9; }
-.cc-knob.is-mixed .cc-knob-dial { opacity: 0.6; }
-.cc-knob.is-mixed .cc-knob-value { border-color: var(--status-warning-fg); }
-.cc-knob.is-mixed .cc-knob-value::placeholder { color: var(--text-muted); text-align: center; }
+/* Marque et bordure d'alerte : catalogue (.ctl-mixed / .ctl-mixed-mark). Ne restent ici que
+ * les parties propres au rotatif de ce plugin, dont les sous-éléments ne portent pas encore
+ * les noms du catalogue. */
+.split-ui .field.ctl-mixed input::placeholder { color: var(--text-muted); opacity: 0.9; }
+.cc-knob.ctl-mixed .cc-knob-dial { opacity: 0.6; }
+.cc-knob.ctl-mixed .cc-knob-value { border-color: var(--status-warning-fg); }
+.cc-knob.ctl-mixed .cc-knob-value::placeholder { color: var(--text-muted); text-align: center; }
 /* Plusieurs pastilles dans l'en-tête = les box concernées par l'édition. */
 /* Chevauchement des pastilles : catalogue (.ctl-dots). */
 .split-props-head .ctl-dot + .ctl-dot { margin-left: -4px; }
