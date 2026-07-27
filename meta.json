@@ -1,7 +1,12 @@
 {
-  "version": "0.15.0",
+  "version": "0.15.1",
   "date": "2026-07-27",
   "changes": {
+    "Couleur de bordure en teinte/saturation/luminance (0.15.1)": [
+      "Trois cadrans Teinte (0-359,9°) / Saturation (0-100 %) / Luminance (0-100 %) sur la couleur de bordure, comme un pupitre ATEM l'exprime. C'est une VUE de la couleur existante, pas une deuxième donnée : convertie à l'affichage, reconvertie à l'écriture (aller-retour vérifié exact sur 4000 couleurs, écart 0 LSB). Le sélecteur de couleur reste, les deux restent d'accord.",
+      "Tourner un cadran ne remplace QUE sa composante : les deux autres restent celles de la couleur en place.",
+      "INTERFACE SEULEMENT : le script moteur est inchangé, aucun redéploiement n'est nécessaire (les conteneurs restent estampillés 0.15.0, l'écart affiché est cosmétique)."
+    ],
     "★ Crop armable, et bouton « réinitialiser la fenêtre » (0.15.0)": [
       "Nouveau réglage `crop_enabled` par box : le rognage s'active et se désactive SANS perdre ses quatre valeurs — les réactiver les restitue telles quelles. Rendu : plus aucun code ne lit `crop` en direct, tout passe par `_eff_crop(box)` qui rend des zéros quand c'est désactivé (une seule règle, un seul endroit).",
       "Défaut rétrocompatible : une box sans le champ est considérée activée SI un rognage est déjà posé, désactivée si tout est à zéro — les compositions existantes rendent à l'identique.",

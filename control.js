@@ -157,6 +157,39 @@ window.MXLPlugins.split = (function () {
             },
         };
     }
+    // ─── Couleur de bordure : HEX stocké, TEINTE/SATURATION/LUMINANCE affichés ──────
+    // Le pupitre règle une couleur de bordure en teinte/saturation/luminance ; notre modèle
+    // n'en stocke qu'une, en hexadécimal. Les trois cadrans sont donc une VUE de cette
+    // couleur, pas une deuxième donnée : convertis à l'affichage, reconvertis à l'écriture.
+    // Deux réglages concurrents pour une seule couleur se contrediraient tôt ou tard.
+    function hexToHsl(hex) {
+        const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '#ffffff'));
+        const n = parseInt(m ? m[1] : 'ffffff', 16);
+        const r = ((n >> 16) & 255) / 255, g = ((n >> 8) & 255) / 255, bl = (n & 255) / 255;
+        const mx = Math.max(r, g, bl), mn = Math.min(r, g, bl), d = mx - mn;
+        let h = 0;
+        if (d) {
+            if (mx === r) h = ((g - bl) / d) % 6;
+            else if (mx === g) h = (bl - r) / d + 2;
+            else h = (r - g) / d + 4;
+            h *= 60; if (h < 0) h += 360;
+        }
+        const l = (mx + mn) / 2;
+        const sat = d ? d / (1 - Math.abs(2 * l - 1)) : 0;
+        return { h: Math.round(h * 10) / 10, s: Math.round(sat * 1000) / 10, l: Math.round(l * 1000) / 10 };
+    }
+    function hslToHex(h, sPct, lPct) {
+        const sN = Math.max(0, Math.min(1, sPct / 100)), lN = Math.max(0, Math.min(1, lPct / 100));
+        h = ((h % 360) + 360) % 360;
+        const c = (1 - Math.abs(2 * lN - 1)) * sN, x = c * (1 - Math.abs((h / 60) % 2 - 1)), m = lN - c / 2;
+        let r = 0, g = 0, b = 0;
+        if (h < 60) { r = c; g = x; } else if (h < 120) { r = x; g = c; }
+        else if (h < 180) { g = c; b = x; } else if (h < 240) { g = x; b = c; }
+        else if (h < 300) { r = x; b = c; } else { r = c; b = x; }
+        const hx = v => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+        return '#' + hx(r) + hx(g) + hx(b);
+    }
+
     const wOf = b => (b.aspect === 'free' && b.size_x > 0) ? b.size_x : b.size;
     const hOf = b => (b.aspect === 'free' && b.size_y > 0) ? b.size_y : b.size;
     function rectN(b) {
@@ -328,6 +361,16 @@ window.MXLPlugins.split = (function () {
         const [kind, path] = String(knob.dataset.target).split(':');
         if (kind === 'glob') { postGlobal({ [path]: v }); return; }   // canal GLOBAL
         if (kind === 'bggrad') { postBg({ gradient: { [path]: v } }); return; }   // dégradé de fond
+        if (kind === 'bcol') {
+            // On repart de la couleur de la box de RÉFÉRENCE et on ne remplace QUE la
+            // composante tournée : les deux autres restent celles de la couleur en place.
+            const rb = boxes[primary()]; if (!rb) return;
+            const cur = hexToHsl((rb.border || {}).color || '#ffffff');
+            cur[path] = v;
+            applySetting('border.color', hslToHex(cur.h, cur.s, cur.l));
+            renderProps();
+            return;
+        }
         if (kind === 'light') { postLight({ [path]: v }); return; }
         if (kind === 'art') { postArt({ [path]: v }); return; }
         applySetting(path, v);              // ★ toute la sélection, pas seulement la référence
@@ -892,6 +935,19 @@ ${!advanced ? '' : `<div id="split_adv">
       ${colorField('sp_bc', T('f_border_color', 'Couleur'), 'border', 'color')}
       ${numField('sp_bo', T('f_border_outer', 'Extérieur (px)'), 'border_fields', 'outer', 'border')}
       ${numField('sp_bi', T('f_border_inner', 'Intérieur (px)'), 'border_fields', 'inner', 'border')}
+    </div>
+    <div class="cc-knob-row">
+      ${(() => {
+        const hsl = hexToHsl((b.border || {}).color || '#ffffff');
+        const mx = isMixed('border.color');
+        const KC = (comp, label, min, max, step, unit) => knobHtml(
+          { target: 'bcol:' + comp, label, min, max, step,
+            def: (comp === 'h' ? 0 : (comp === 'l' ? 100 : 0)), unit,
+            shape: (comp === 'h' ? 'angle' : 'arc'), mixed: mx }, hsl[comp]);
+        return KC('h', T('k_bhue', 'Teinte'), 0, 359.9, 0.1, '°')
+             + KC('s', T('k_bsat', 'Saturation'), 0, 100, 0.5, '%')
+             + KC('l', T('k_blum', 'Luminance'), 0, 100, 0.5, '%');
+      })()}
     </div>
     <div class="cc-knob-row">
       ${K('box:border.bevel', T('k_bevel', 'Biseau'), 'border_fields', 'bevel', '')}
