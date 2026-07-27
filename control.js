@@ -138,6 +138,7 @@ window.MXLPlugins.split = (function () {
             radius: cv('box_fields', 'radius', b.radius),
             size_x: cv('box_fields', 'size_x', b.size_x), size_y: cv('box_fields', 'size_y', b.size_y),
             aspect: (b.aspect === 'free' ? 'free' : 'keep'),
+            crop_enabled: !!b.crop_enabled,
             mirror_h: !!b.mirror_h, mirror_v: !!b.mirror_v,
             z: (b.z == null ? null : cv('box_fields', 'z', b.z)),
             crop: { t: cc(crop.t), b: cc(crop.b), l: cc(crop.l), r: cc(crop.r) },
@@ -492,7 +493,7 @@ window.MXLPlugins.split = (function () {
         });
         syncAll();
     }
-    const CLIP_KEYS = ['size', 'size_x', 'size_y', 'aspect', 'rotation', 'opacity', 'feather', 'radius', 'mirror_h', 'mirror_v'];
+    const CLIP_KEYS = ['size', 'size_x', 'size_y', 'aspect', 'rotation', 'opacity', 'feather', 'radius', 'mirror_h', 'mirror_v', 'crop_enabled'];
     function copySettings() {
         const i = primary(); if (i < 0 || !boxes) return;
         const b = boxes[i], c = {};
@@ -513,6 +514,29 @@ window.MXLPlugins.split = (function () {
         });
         syncAll();
         TOAST(T('pasted', 'Réglages collés.'), 'info');
+    }
+
+    // Remise à plat de la GÉOMÉTRIE d'une fenêtre : plein cadre, centrée, rognage à zéro et
+    // désarmé, ratio conservé, sans rotation ni miroir. On ne touche PAS à ce qui relève de
+    // l'HABILLAGE (bordure, ombre, opacité, adoucissement, coins) ni à la source : une remise
+    // à plat de la fenêtre n'est pas un effacement de la box, et l'utilisateur n'a rien
+    // demandé de tel. Chaque box sélectionnée est remise à plat INDÉPENDAMMENT (pas de
+    // décalage relatif : elles se superposent, c'est le sens de « plein cadre »).
+    function resetBoxes() {
+        if (!boxes || !sel.length) return;
+        const patch = {
+            x: 0.5, y: 0.5, size: 1.0, size_x: 0, size_y: 0, aspect: 'keep',
+            rotation: 0, mirror_h: false, mirror_v: false,
+            crop_enabled: false, crop: { t: 0, b: 0, l: 0, r: 0 },
+        };
+        sel.forEach(i => {
+            Object.assign(boxes[i], normBox(Object.assign({}, boxes[i], JSON.parse(JSON.stringify(patch)))));
+            postBox(i, JSON.parse(JSON.stringify(patch)));
+        });
+        syncAll();
+        TOAST(sel.length > 1
+            ? T('reset_done_n', 'Fenêtres réinitialisées : plein cadre, centrées, sans rognage.')
+            : T('reset_done', 'Fenêtre réinitialisée : plein cadre, centrée, sans rognage.'), 'info');
     }
 
     // ─── Déplacement clavier PIXEL PAR PIXEL — CONTOURNE le snap (comme l'éditeur de PiP) ──
@@ -638,6 +662,7 @@ window.MXLPlugins.split = (function () {
         tb.appendChild(toolGroup(T('group_settings', 'Réglages'), [
             [SVG.copy_settings, T('copy_settings', 'Copier les réglages de la box (hors position)'), copySettings, 'split_copy'],
             [SVG.paste_settings, T('paste_settings', 'Coller les réglages dans les box sélectionnées'), pasteSettings, 'split_paste'],
+            [SVG.reset_box, T('reset_box', 'Réinitialiser la fenêtre : plein cadre, centrée, sans rognage. N\'efface ni la source, ni la bordure, ni l\'ombre, ni les effets.'), resetBoxes, 'split_reset'],
         ]));
         // Magnétisme : même contrôle que l'éditeur de PiP (label + switch .ctl-switch).
         const snapLbl = document.createElement('label');
@@ -823,11 +848,16 @@ ${sel.length > 1 ? `<p class="meta split-full">${esc(T('multi_note', 'Tout régl
     ${numField('sp_size_y', T('f_size_y', 'Hauteur (0 = taille)'), 'box_fields', 'size_y', '')}
     ${numField('sp_z', T('f_z', 'Z (ordre)'), 'box_fields', 'z', '', { nullValue: i, step: 1 })}
   </div>
+</div>
+
+<div class="cc-section">
+  <h4 class="split-crop-head">${toggleField('crop_enabled', '', T('f_crop', 'Crop'))}</h4>
+  <p class="cc-hint split-crop-hint">${esc(T('crop_arm_hint', 'Désactivé, les quatre valeurs sont conservées mais ne rognent plus : les réactiver les restitue telles quelles.'))}</p>
   <div class="cc-knob-row">
-    ${K('box:crop.t', T('k_crop_t', 'Crop H'), 'crop', 't', '')}
-    ${K('box:crop.b', T('k_crop_b', 'Crop B'), 'crop', 'b', '')}
-    ${K('box:crop.l', T('k_crop_l', 'Crop G'), 'crop', 'l', '')}
-    ${K('box:crop.r', T('k_crop_r', 'Crop D'), 'crop', 'r', '')}
+    ${K('box:crop.t', T('k_crop_t', 'Haut'), 'crop', 't', '')}
+    ${K('box:crop.b', T('k_crop_b', 'Bas'), 'crop', 'b', '')}
+    ${K('box:crop.l', T('k_crop_l', 'Gauche'), 'crop', 'l', '')}
+    ${K('box:crop.r', T('k_crop_r', 'Droite'), 'crop', 'r', '')}
   </div>
 </div>
 
@@ -934,6 +964,19 @@ ${!advanced ? '' : `<div id="split_adv">
             el.title = free ? '' : T('free_only', 'Actif seulement en ratio « Libre » : à ratio conservé, la box garde le format de sa source et une seule taille suffit.');
             const f = el.closest('.field'), lab = f && f.querySelector('label');
             if (lab) lab.title = el.title;
+        });
+        // Rognage désarmé : les cadrans restent LISIBLES mais inertes, avec la raison en
+        // infobulle (un contrôle grisé sans explication est un échec silencieux d'UI).
+        const armed = b.crop_enabled !== false;
+        const croptip = armed ? '' : T('crop_disarmed', 'Crop désactivé : ces valeurs sont conservées mais ne s\'appliquent pas. Activez le Crop pour les régler.');
+        ['t', 'b', 'l', 'r'].forEach(k => {
+            const kn = EL.querySelector(`[data-knob="box:crop.${k}"]`); if (!kn) return;
+            kn.classList.toggle('is-inert', !armed);
+            kn.title = croptip;
+            kn.querySelectorAll('input, .cc-knob-dial').forEach(el => {
+                el.disabled = !armed;
+                if (el.classList.contains('cc-knob-dial')) el.setAttribute('aria-disabled', armed ? 'false' : 'true');
+            });
         });
         const sc = $('#sp_scol');
         if (sc) {

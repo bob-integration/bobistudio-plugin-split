@@ -308,3 +308,16 @@
 .split-grad-stop .split-grad-col { width: 44px; height: 32px; padding: 2px; flex: 0 0 auto; }
 .split-grad-stop .split-grad-pos { flex: 1 1 auto; min-width: 0; }
 .split-grad-stop .split-grad-del { flex: 0 0 auto; width: 32px; padding: 0; }
+
+/* ── Zone CROP ───────────────────────────────────────────────────────────────
+   L'interrupteur EST le titre de la section : un h4 « Crop » doublé d'un
+   interrupteur « Crop » aurait dit deux fois la même chose. Le libellé garde donc
+   sa taille de titre, et la case reste alignée dessus. */
+.split-crop-head { margin: 0 0 2px; }
+.split-crop-head .toggle-inline { display: inline-flex; align-items: center; gap: 8px; margin: 0; }
+.split-crop-head .toggle-inline span { font: inherit; color: inherit; }
+.split-crop-hint { margin: 0 0 10px; }
+/* Cadrans inertes : lisibles (on doit voir les valeurs conservées), mais visiblement
+   hors service — la raison est en infobulle, jamais un grisé muet. */
+.cc-knob.is-inert { opacity: 0.45; }
+.cc-knob.is-inert .cc-knob-dial { cursor: not-allowed; }

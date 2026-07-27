@@ -731,6 +731,17 @@ def _norm_box(b):
         "x":    _f(b.get("x", 0.5), POS_MIN, POS_MAX, 0.5),
         "y":    _f(b.get("y", 0.5), POS_MIN, POS_MAX, 0.5),
         "size": _f(b.get("size", 0.45), 0.05, 1.0, 0.45),
+        # ★ ROGNAGE ARMÉ (0.15.0) : interrupteur SÉPARÉ des quatre valeurs, comme sur un
+        # pupitre ATEM (bouton CROP). Désarmé, les valeurs sont CONSERVÉES telles quelles et
+        # simplement mises en veille — les réarmer les restitue. Le rendu ne lit jamais
+        # `crop` en direct mais `_eff_crop(box)`, qui rend des zéros quand c'est désarmé :
+        # une seule règle, un seul endroit. Sans cet interrupteur, le bouton CROP du pupitre
+        # ne pouvait qu'échouer (rien où l'écrire, notre retour d'état le remettait à OFF).
+        # DÉFAUT rétrocompatible : absent du dict → armé SI un rognage est déjà posé (les
+        # compositions existantes rendent à l'identique), désarmé si tout est à zéro.
+        "crop_enabled": bool(b.get("crop_enabled",
+                                   any(_f(crop.get(k, 0.0), 0.0, 0.9, 0.0) > 0
+                                       for k in ("t", "b", "l", "r")))),
         "crop": {{
             "t": _f(crop.get("t", 0.0), 0.0, 0.9, 0.0),
             "b": _f(crop.get("b", 0.0), 0.0, 0.9, 0.0),
@@ -769,6 +780,19 @@ def _norm_box(b):
         # z-ordre LIBRE (l'ATEM fige 1→2→3→4). Défaut None → l'index de la box fait foi.
         "z": (None if b.get("z") is None else _f(b.get("z"), -99.0, 99.0, 0.0)),
     }}
+
+
+_NO_CROP = {{"t": 0.0, "b": 0.0, "l": 0.0, "r": 0.0}}
+
+
+def _eff_crop(b):
+    """Rognage EFFECTIF d'une box : ses quatre valeurs si le rognage est armé, zéro sinon.
+    ★ Le rendu ne doit JAMAIS lire `b["crop"]` en direct — sinon un rognage désarmé
+    continuerait de rogner. Un seul point de vérité, ici. Les valeurs stockées ne sont
+    jamais effacées par le désarmement : réarmer les restitue telles quelles."""
+    if not b.get("crop_enabled", True):
+        return _NO_CROP
+    return b.get("crop") or _NO_CROP
 
 
 def _is_adv(b):
@@ -953,7 +977,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                             "size_x": [0.0, 1.0, 0.0], "size_y": [0.0, 1.0, 0.0],
                             "z": [-99.0, 99.0, None],
                         }},
-                        "box_flags": ["enabled", "mirror_h", "mirror_v"],
+                        "box_flags": ["enabled", "mirror_h", "mirror_v", "crop_enabled"],
                         "box_enums": {{"aspect": ["keep", "free"]}},
                         "crop": [0.0, 0.9, 0.0],
                         "border_fields": {{
@@ -1358,7 +1382,12 @@ def _interp_box(fr, to, p):
         "x":    _lerp(fr["x"], to["x"], p),
         "y":    _lerp(fr["y"], to["y"], p),
         "size": _lerp(fr["size"], to["size"], p),
-        "crop": {{k: _lerp(fr["crop"][k], to["crop"][k], p) for k in ("t", "b", "l", "r")}},
+        # Le rognage s'INTERPOLE toujours entre les valeurs EFFECTIVES des deux bouts : un
+        # rappel de mémoire qui arme (ou désarme) le rognage le fait donc apparaître (ou
+        # disparaître) PROGRESSIVEMENT, au lieu de sauter au milieu de la transition. La box
+        # tweenée est marquée armée : ses valeurs sont déjà effectives.
+        "crop_enabled": True,
+        "crop": {{k: _lerp(_eff_crop(fr)[k], _eff_crop(to)[k], p) for k in ("t", "b", "l", "r")}},
         # ── bordure : INTERPOLÉE (0.8.0 sautait à la cible) ──
         "border": {{
             "w":          _lerp(float(fb.get("w", 0) or 0), float(tb.get("w", 0) or 0), p),
@@ -1520,7 +1549,7 @@ def _box_slice_geom(b, alpha):
     Renvoie None si la box est invisible (alpha≈0, trop petite ou hors cadre)."""
     if alpha <= 0.001:
         return None
-    crop = b.get("crop") or {{}}
+    crop = _eff_crop(b)
     cl = max(0.0, min(0.9, crop.get("l", 0.0))); cr = max(0.0, min(0.9, crop.get("r", 0.0)))
     ct = max(0.0, min(0.9, crop.get("t", 0.0))); cb = max(0.0, min(0.9, crop.get("b", 0.0)))
     if cl + cr >= 0.95: cl = cr = 0.0
@@ -1806,7 +1835,7 @@ def _adv_key(b, alpha):
     PAS partie — une box qui se contente de TRANSLATER réutilise son stamp tel quel (la carte
     d'échantillonnage ne dépend que de la taille, du crop, de la rotation et du miroir)."""
     bd = b.get("border") or {{}}; sh = b.get("shadow") or {{}}
-    cr = b.get("crop") or {{}}
+    cr = _eff_crop(b)
     return (
         round(b.get("size", 0.0), 5), b.get("aspect"),
         round(b.get("size_x", 0.0), 5), round(b.get("size_y", 0.0), 5),
@@ -1833,7 +1862,7 @@ def _build_stamp(b, alpha):
     Renvoie None si la box est invisible (trop petite, hors cadre, alpha nul)."""
     if alpha <= 0.001:
         return None
-    crop = b.get("crop") or {{}}
+    crop = _eff_crop(b)
     cl = _f(crop.get("l", 0.0), 0.0, 0.9, 0.0); cr_ = _f(crop.get("r", 0.0), 0.0, 0.9, 0.0)
     ct = _f(crop.get("t", 0.0), 0.0, 0.9, 0.0); cb = _f(crop.get("b", 0.0), 0.0, 0.9, 0.0)
     if cl + cr_ >= 0.95: cl = cr_ = 0.0
@@ -2168,7 +2197,7 @@ def _stamp_for(idx, b, alpha):
         sx = b.get("size_x") or b.get("size", 0.45); sy = b.get("size_y") or b.get("size", 0.45)
     else:
         sx = sy = b.get("size", 0.45)
-    crop = b.get("crop") or {{}}
+    crop = _eff_crop(b)
     cl = _f(crop.get("l", 0.0), 0.0, 0.9, 0.0); cr_ = _f(crop.get("r", 0.0), 0.0, 0.9, 0.0)
     ct = _f(crop.get("t", 0.0), 0.0, 0.9, 0.0); cb = _f(crop.get("b", 0.0), 0.0, 0.9, 0.0)
     if cl + cr_ >= 0.95: cl = cr_ = 0.0
