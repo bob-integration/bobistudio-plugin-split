@@ -37,6 +37,7 @@ window.MXLPlugins.split = (function () {
     let selGlobal = false;
     let sources = [], containers = [], memCache = [], adv = null, metricsErr = false, sourcesErr = null;
     let drag = null, knobDrag = null, boxPostTimer = null, persistTimer = null, pollTimer = null, metTimer = null;
+    let onLabelLevel = null;   // écouteur du sélecteur global de niveau de libellé (barre de nav)
     // Snap magnétique — transposé de l'éditeur de PiP : mêmes cibles (bords + centre du cadre,
     // bords + centre des autres box), seuil ∝ résolution du canvas, guides pointillés, même
     // bouton. ★ Le nudge clavier CONTOURNE le snap (c'est sa raison d'être : le pixel près).
@@ -95,7 +96,11 @@ window.MXLPlugins.split = (function () {
             for (const p of (await r.json())) {
                 if (!p.shm || seen.has(p.shm)) continue;
                 seen.add(p.shm);
-                out.push({ shm: p.shm, label: `${p.hostname || ('#' + p.vmid)} · ${p.label || p.shm}` });
+                const base = `${p.hostname || ('#' + p.vmid)} · ${p.label || p.shm}`;
+                // Libellé d'exploitation devant le nom technique (niveau choisi dans la barre de
+                // navigation, cf. window.SourceLabels).
+                out.push({ shm: p.shm,
+                           label: window.SourceLabels ? window.SourceLabels.display(p.shm, base) : base });
             }
             sources = out; sourcesErr = null;
         } catch (e) { sources = []; sourcesErr = String(e && e.message || e); }
@@ -1945,11 +1950,17 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         window.addEventListener('resize', onResize);
         document.addEventListener('keydown', onKeyDown);
         Promise.all([loadSources(), loadContainers()]).then(() => fetchState({ rebuild: true }));
+        // Bascule du niveau de libellé (sélecteur global de la barre de navigation) : les noms de
+        // sources sont construits au chargement, donc on les reconstruit — sinon la liste garderait
+        // l'ancien niveau jusqu'au prochain montage de la page.
+        onLabelLevel = () => loadSources().then(() => fetchState({ rebuild: true }));
+        document.addEventListener('source-labels:change', onLabelLevel);
         pollTimer = setInterval(() => fetchState({ rebuild: false }), 2000);
         metTimer = setInterval(fetchMetrics, 2000);
         fetchMetrics();
     }
     function unmount() {
+        if (onLabelLevel) { document.removeEventListener('source-labels:change', onLabelLevel); onLabelLevel = null; }
         [pollTimer, metTimer].forEach(t => t && clearInterval(t));
         [boxPostTimer, persistTimer].forEach(t => t && clearTimeout(t));
         pollTimer = metTimer = boxPostTimer = persistTimer = null;
