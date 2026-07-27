@@ -1438,12 +1438,15 @@ def _box_progress(p_raw, i, curve, stagger_ms, duration_ms):
 
 # ─── Output shm ─────────────────────────────────────────────
 def _ouvrir_sortie(name):
-    """Writer MXL de sortie (planar). Index explicite (frame_index, mode free) ; en cadence
-    « flow », index = grille TAI (_next_index). MODE TRANCHE : le flowDef porte slice_height →
+    """Writer MXL de sortie (planar). Index TOUJOURS explicite et TOUJOURS pris sur la grille TAI
+    (_prochain_index_sortie), quelle que soit la cadence : l'index d'un grain est une coordonnée de
+    TEMPS, pas un numéro de séquence (docs/Timing.md du SDK, normatif — GrainIndex = Timestamp /
+    GrainDurationNs). `index_mode="tai"` ne sert donc qu'à faire rendre la grille par _next_index().
+    MODE TRANCHE : le flowDef porte slice_height →
     libmxl publie le grain en N tranches égales (commit progressif). Writer forwarde **flow_kw
     à build_flow_def. Sans slice : inchangé (1 tranche, historique octet-identique)."""
     return bobimxl.Writer(inst, name, WIDTH, HEIGHT, CHROMA, BIT_DEPTH, FPS, 1,
-                          index_mode=("tai" if FLOW else "free"),
+                          index_mode="tai",
                           **({{"slice_height": SLICE_H}} if SLICE_ON else {{}}))
 
 def _ecrire_sortie(w, yuv, frame_index):
@@ -2948,6 +2951,25 @@ if _ac:
     _bake_art()
 
 out = _ouvrir_sortie(SHM_OUT)
+_out_index = 0       # index des grains de sortie : grille TAI, strictement croissant
+
+
+def _prochain_index_sortie():
+    """Index du prochain grain de sortie : la grille TAI, STRICTEMENT CROISSANTE.
+
+    Le max() avec le cran precedent couvre deux trames emises dans le meme creneau de grille, une
+    horloge qui recule sur un pas NTP, ou une horloge indisponible (index indefini) : on avance
+    d'un cran et on se recale des que la grille repasse devant. Un index qui se repete figerait la
+    tete du flux, qui passerait pour mort chez ses consommateurs. Survit a la REOUVERTURE du writer
+    (repli SIGBUS/GC) : `out` est relu a chaque appel et _out_index ne redescend jamais."""
+    global _out_index
+    g = int(out._next_index())
+    if not (0 < g < bobimxl.MXL_UNDEFINED_INDEX):
+        g = 0
+    _out_index = max(g, _out_index + 1)
+    return _out_index
+
+
 if SLICE_ON:
     metrics["slice_mode"] = True
     log(f"split: MODE TRANCHE actif — {{SLICE_H}} lignes/bande ({{HEIGHT // SLICE_H}} tranches)"
@@ -2997,7 +3019,7 @@ while True:
         now = time.time()
         wait = next_t - now
         if wait > 0: time.sleep(wait)
-        _fi_out = out._next_index()
+        _fi_out = _prochain_index_sortie()
     elif GENLOCK and bg_is_src:
         # ★ Le genlock se verrouille sur le FOND (slot 4) : c'est la référence de cadence. Un
         # fond UNI (none/color) n'est pas une source → aucune référence → cadence libre (else).
@@ -3009,7 +3031,8 @@ while True:
             # pas de fond câblé → noir continu cadencé (signal vivant)
             now = time.time()
             if now - last_black >= interval:
-                _ecrire_sortie(out, empty_frame, frame_index); frame_index += 1; last_black = now
+                _ecrire_sortie(out, empty_frame, _prochain_index_sortie())
+                frame_index += 1; last_black = now
             time.sleep(0.002); continue
         if ri == last_ref_idx:
             time.sleep(0.002); continue           # pas de nouvelle trame de fond → patiente
@@ -3075,7 +3098,7 @@ while True:
         # tranches sur leur grain, commit progressif de la sortie → l'aval démarre sur la 1ʳᵉ
         # bande). Le chemin historique ci-dessous reste octet-identique (slice_mode off).
         try:
-            _sl_waited = _slice_frame(_fi_out if FLOW else frame_index, _fi_out,
+            _sl_waited = _slice_frame(_fi_out if FLOW else _prochain_index_sortie(), _fi_out,
                                       tr, boxes, ts_in_per_slot,
                                       bg_fill=bg_fill, bg_is_src=bg_is_src)
         except Exception as _e:
@@ -3124,7 +3147,7 @@ while True:
         if _art_above():                      # ART AU-DESSUS des boxes (habillage à trous)
             _paint_art_rows(oy, ou, ovv, 0, HEIGHT)
 
-        _ecrire_sortie(out, buf, frame_index)
+        _ecrire_sortie(out, buf, _prochain_index_sortie())
         ts_out = time.time_ns()
 
     with state_lock:

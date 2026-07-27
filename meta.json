@@ -1,7 +1,12 @@
 {
-  "version": "0.15.1",
+  "version": "0.16.0",
   "date": "2026-07-27",
   "changes": {
+    "Index de sortie sur la grille TAI en toute cadence (0.16.0)": [
+      "Même mise en conformité que le mur : hors cadence « flow », le split estampillait ses grains avec un compteur parti de 0 — non conforme au modèle de temps MXL (docs/Timing.md, normatif), donc irréplicable entre nœuds et destructeur pour l'alignement inter-flux.",
+      "L'index de LECTURE des entrées (verrou-référence de la cadence « flow ») et l'index d'ÉCRITURE de nos grains restent distincts : on lit les entrées à leur coordonnée, on écrit à la nôtre.",
+      "Index strictement croissant garanti, y compris à travers la RÉOUVERTURE du writer après un repli SIGBUS/GC."
+    ],
     "Couleur de bordure en teinte/saturation/luminance (0.15.1)": [
       "Trois cadrans Teinte (0-359,9°) / Saturation (0-100 %) / Luminance (0-100 %) sur la couleur de bordure, comme un pupitre ATEM l'exprime. C'est une VUE de la couleur existante, pas une deuxième donnée : convertie à l'affichage, reconvertie à l'écriture (aller-retour vérifié exact sur 4000 couleurs, écart 0 LSB). Le sélecteur de couleur reste, les deux restent d'accord.",
       "Tourner un cadran ne remplace QUE sa composante : les deux autres restent celles de la couleur en place.",
