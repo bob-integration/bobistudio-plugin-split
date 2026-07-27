@@ -226,18 +226,21 @@
 /* Champs (mêmes valeurs que .mw-editor .field — référence des champs du projet) */
 .split-ui .field { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
 .split-ui .field label { font-size: 0.78em; color: var(--text-muted); font-weight: 500; margin-bottom: 0; }
-.split-ui .field input:not([type="checkbox"]),
-.split-ui .field select {
+/* NE PAS remettre `select` ici : le raccourci `background` réinitialise background-image et
+ * efface la flèche de .ctl-select — et ce sélecteur la bat en spécificité. L'apparence d'une
+ * liste appartient au catalogue ; ce qui reste ici est la largeur, propre à la mise en page. */
+.split-ui .field input:not([type="checkbox"]) {
     background: var(--bg-input); color: var(--text);
     border: 1px solid var(--border); border-radius: var(--radius-small);
     padding: 6px 9px; font-family: var(--font-mono); font-size: 0.88em;
     min-height: 32px; min-width: 0; width: 100%; box-sizing: border-box;
 }
-.split-ui .field input:focus-visible, .split-ui .field select:focus-visible {
+.split-ui .field .ctl-select { width: 100%; min-width: 0; box-sizing: border-box; }
+.split-ui .field input:focus-visible {
     outline: none; border-color: var(--accent); background: var(--bg);
 }
 .split-ui .field input[type="color"] { padding: 2px; cursor: pointer; }
-.split-ui .field input:disabled, .split-ui .field select:disabled { opacity: 0.5; cursor: not-allowed; }
+.split-ui .field input:disabled { opacity: 0.5; cursor: not-allowed; }
 .split-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
 .split-grid-narrow { max-width: 520px; }
 .split-toggles { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
