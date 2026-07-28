@@ -749,6 +749,16 @@ def _norm_box(b):
             "r": _f(crop.get("r", 0.0), 0.0, 0.9, 0.0),
         }},
         # ── bordure : socle (w/color) + étage 3D (ATEM : intérieur/extérieur, biseau, lumière) ──
+        # ★ BORDURE ARMÉE (0.16.0) : interrupteur séparé des épaisseurs, comme le bouton
+        # BORDER du pupitre ATEM. Désarmée, les épaisseurs sont CONSERVÉES et simplement mises
+        # en veille — les réarmer les restitue. Même patron que `crop_enabled` (0.15.0), et
+        # pour la même raison : mettre les épaisseurs à zéro pour « éteindre » détruirait les
+        # réglages de l'opérateur sans rien pour les rétablir.
+        # DÉFAUT rétrocompatible : absent → armé SI une épaisseur est déjà posée.
+        "border_enabled": bool(b.get("border_enabled",
+                                     bw > 0
+                                     or _f(bd.get("outer", 0), 0.0, 40.0, 0.0) > 0
+                                     or _f(bd.get("inner", 0), 0.0, 40.0, 0.0) > 0)),
         "border": {{
             "w":       bw,                                   # socle : trait plat (compat 0.8.0)
             "color":   str(bd.get("color") or "#ffffff"),
@@ -795,10 +805,23 @@ def _eff_crop(b):
     return b.get("crop") or _NO_CROP
 
 
+_NO_BORDER = {{"w": 0, "color": "#ffffff", "outer": 0.0, "inner": 0.0,
+              "bevel": 0.0, "bevel_soft": 0.3, "bevel_pos": 0.5}}
+
+
+def _eff_border(b):
+    """Bordure EFFECTIVE : celle de la box si elle est armée, aucune épaisseur sinon.
+    ★ Le rendu ne lit JAMAIS `b["border"]` en direct — sinon une bordure désarmée
+    continuerait de s'afficher. Les épaisseurs stockées ne sont jamais effacées."""
+    if not b.get("border_enabled", True):
+        return _NO_BORDER
+    return b.get("border") or _NO_BORDER
+
+
 def _is_adv(b):
     """La box demande-t-elle le compositing AVANCÉ ? Faux → chemin historique (octet-identique).
     Garde-fou de perf : un réglage neutre ne doit RIEN coûter."""
-    bd = b.get("border") or {{}}
+    bd = _eff_border(b)
     sh = b.get("shadow") or {{}}
     return bool(
         abs(b.get("rotation", 0.0)) > 1e-6
@@ -977,7 +1000,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                             "size_x": [0.0, 1.0, 0.0], "size_y": [0.0, 1.0, 0.0],
                             "z": [-99.0, 99.0, None],
                         }},
-                        "box_flags": ["enabled", "mirror_h", "mirror_v", "crop_enabled"],
+                        "box_flags": ["enabled", "mirror_h", "mirror_v", "crop_enabled", "border_enabled"],
                         "box_enums": {{"aspect": ["keep", "free"]}},
                         "crop": [0.0, 0.9, 0.0],
                         "border_fields": {{
@@ -1585,7 +1608,7 @@ def _box_slice_geom(b, alpha):
     ix_v  = ix[src_x_off:src_x_off + vis_w]
     iy2_v = iy2[src_y_off // _CH:(src_y_off + vis_h) // _CH]
     ix2_v = ix2[src_x_off // _CW:(src_x_off + vis_w) // _CW]
-    bd = b.get("border") or {{}}
+    bd = _eff_border(b)
     try: bw = int(bd.get("w") or 0)
     except Exception: bw = 0
     if bw > 0:   # même clamp qu'en 0.8.0 (vers l'intérieur du rect visible)
@@ -1835,7 +1858,7 @@ def _adv_key(b, alpha):
     """Clé de cache du stamp : TOUT ce dont dépend le précalcul. La position (x,y) n'en fait
     PAS partie — une box qui se contente de TRANSLATER réutilise son stamp tel quel (la carte
     d'échantillonnage ne dépend que de la taille, du crop, de la rotation et du miroir)."""
-    bd = b.get("border") or {{}}; sh = b.get("shadow") or {{}}
+    bd = _eff_border(b); sh = b.get("shadow") or {{}}
     cr = _eff_crop(b)
     return (
         round(b.get("size", 0.0), 5), b.get("aspect"),
@@ -1908,7 +1931,7 @@ def _build_stamp(b, alpha):
     fe = float(b.get("feather", 0.0))
     rad = int(round(min(float(b.get("radius", 0.0)), dst_w / 2.0 - 1, dst_h / 2.0 - 1)))
     op = float(b.get("opacity", 100.0)) / 100.0 * float(alpha)   # POURCENT → fraction
-    bd = b.get("border") or {{}}
+    bd = _eff_border(b)
     b_in = float(bd.get("inner", 0.0)); b_flat = float(bd.get("w", 0) or 0)
     bevel = float(bd.get("bevel", 0.0))
     bw_tot = b_in + b_flat

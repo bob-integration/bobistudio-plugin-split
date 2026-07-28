@@ -139,6 +139,7 @@ window.MXLPlugins.split = (function () {
             size_x: cv('box_fields', 'size_x', b.size_x), size_y: cv('box_fields', 'size_y', b.size_y),
             aspect: (b.aspect === 'free' ? 'free' : 'keep'),
             crop_enabled: !!b.crop_enabled,
+            border_enabled: !!b.border_enabled,
             mirror_h: !!b.mirror_h, mirror_v: !!b.mirror_v,
             z: (b.z == null ? null : cv('box_fields', 'z', b.z)),
             crop: { t: cc(crop.t), b: cc(crop.b), l: cc(crop.l), r: cc(crop.r) },
@@ -929,7 +930,8 @@ ${!advanced ? '' : `<div id="split_adv">
   </div>
 
   <div class="cc-section">
-    <h4>${esc(T('sec_border', 'Bordure'))}</h4>
+    <h4 class="split-crop-head">${toggleField('border_enabled', '', T('f_border', 'Bordure'))}</h4>
+    <p class="cc-hint split-crop-hint">${esc(T('border_arm_hint', 'Désactivée, les épaisseurs sont conservées mais ne s\'affichent plus : les réactiver les restitue telles quelles.'))}</p>
     <div class="split-grid">
       ${numField('sp_bw', T('f_border_w', 'Trait plat (px)'), 'border_fields', 'w', 'border', { step: 1 })}
       ${colorField('sp_bc', T('f_border_color', 'Couleur'), 'border', 'color')}
@@ -1033,6 +1035,23 @@ ${!advanced ? '' : `<div id="split_adv">
                 el.disabled = !armed;
                 if (el.classList.contains('cc-knob-dial')) el.setAttribute('aria-disabled', armed ? 'false' : 'true');
             });
+        });
+        const barmed = b.border_enabled !== false;
+        const btip = barmed ? '' : T('border_disarmed', 'Bordure désactivée : ces valeurs sont conservées mais ne s\'appliquent pas. Activez la bordure pour les régler.');
+        ['sp_bw', 'sp_bc', 'sp_bo', 'sp_bi'].forEach(id => {
+            const el = $('#' + id); if (!el) return;
+            el.disabled = !barmed; el.title = btip;
+            const f = el.closest('.field'), lab = f && f.querySelector('label');
+            if (lab) lab.title = btip;
+        });
+        // Les trois cadrans Teinte/Saturation/Luminance sont une VUE de la couleur de bordure :
+        // ils suivent donc le même sort que le reste de la section.
+        ['box:border.bevel', 'box:border.bevel_soft', 'box:border.bevel_pos',
+         'bcol:h', 'bcol:s', 'bcol:l'].forEach(k => {
+            const kn = EL.querySelector(`[data-target="${k}"]`); if (!kn) return;
+            kn.classList.toggle('is-inert', !barmed);
+            kn.title = btip;
+            kn.querySelectorAll('input, .cc-knob-dial').forEach(el => { el.disabled = !barmed; });
         });
         const sc = $('#sp_scol');
         if (sc) {

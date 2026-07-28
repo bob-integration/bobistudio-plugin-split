@@ -1,7 +1,13 @@
 {
-  "version": "0.17.0",
-  "date": "2026-07-27",
+  "version": "0.16.0",
+  "date": "2026-07-28",
   "changes": {
+    "★ Bordure armable, pilotée par le pupitre ATEM (0.16.0)": [
+      "Nouveau réglage `border_enabled` par box : la bordure s'active et se désactive SANS perdre ses épaisseurs — les réactiver les restitue. Le rendu ne lit plus jamais `border` en direct, tout passe par `_eff_border(box)`.",
+      "Défaut rétrocompatible : champ absent → armée SI une épaisseur est déjà posée. Les compositions existantes rendent à l'identique.",
+      "Motif : le bouton BORDER du pupitre ATEM ne pouvait qu'échouer, faute de cette notion. Mettre les épaisseurs à zéro pour « éteindre » aurait détruit les réglages de l'opérateur — c'est le piège déjà rencontré avec le rognage (0.15.0).",
+      "Exposé aux macros : `box_flags` + groupe param_tree « Bordure (armement) ». UI : interrupteur en tête de la section Bordure, réglages inertes mais lisibles quand c'est désarmé."
+    ],
     "Index de sortie : un seul point de calcul, dans bobimxl (0.17.0)": [
       "L'index des grains de sortie n'est plus calculé dans le plugin : il vient de bobimxl.Writer.next_index, LE point unique pour toute la flotte — grille TAI, strictement croissante, holdover. Chaque plugin réinventait sa version (compteur maison, appel direct à mxlGetCurrentIndex, convention de repli propre), avec les divergences que ça implique.",
       "Un index de grain est une COORDONNÉE DE TEMPS, pas un numéro de séquence : docs/Timing.md du SDK MXL est normatif (GrainIndex = Timestamp / GrainDurationNs, epoch SMPTE 2059-1). Un compteur parti de 0 casse l'alignement inter-flux et rend le flux irréplicable entre nœuds.",
