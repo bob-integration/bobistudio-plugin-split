@@ -1,7 +1,10 @@
 {
-  "version": "0.19.0",
+  "version": "0.20.0",
   "date": "2026-08-02",
   "changes": {
+    "Variante libmxl exposée dans /state (0.20.0)": [
+      "GET /state porte désormais `mxl_lib` : {path, variante} de la libmxl RÉELLEMENT chargée (x86-64-v3/glibc-hwcaps ou baseline), lu via bobimxl.lib_info(). Jusqu'ici cette information n'était constatable que PAR NŒUD (app/placement.py) — un conteneur retombé sur la baseline (~20 % de coût en régime consommateur) ne se voyait qu'indirectement. Protégé par try/except : une erreur de lecture ne casse jamais /state."
+    ],
     "★★ Le chemin NON TOURNÉ animé aussi : la pré-fusion passe en C (0.19.0)": [
       "L'ABI 6 avait porté la construction d'empreinte TOURNÉE. Le chemin NON tourné restait à 39 ms en régime animé — déjà le double du budget 50p — et sa nature est DIFFÉRENTE : là-bas le coût était de gros tableaux 2D non décomposables ; ici les masques sont séparables et bon marché, et le coût était ailleurs.",
       "★ Il était dans le bloc de PRÉ-FUSION ruban⊗alpha : neuf tableaux plein rect, ~20 passes mémoire, 17 ms sur 41 mesurées. Et ce bloc existe pour rendre la trame RAPIDE (il évite deux balayages par plan au compositing) — il ne se paie qu'au moment où la géométrie BOUGE, c'est-à-dire précisément là où le cache d'empreinte ne sert à rien. L'optimisation du chemin chaud était devenue le poste de coût du chemin froid.",

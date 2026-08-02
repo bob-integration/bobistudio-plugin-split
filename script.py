@@ -19,6 +19,15 @@ import time, threading, json, signal, math, base64, io, os
 from collections import deque, OrderedDict
 import numpy as np
 import bobimxl   # migration MXL Phase 1 : 5 entrées Reader + 1 sortie Writer (planar, genlock fond)
+
+
+def _mxl_lib_state():
+    """Variante libmxl réellement chargée (baseline / x86-64-v3) — diagnostic seul, ne doit
+    JAMAIS faire échouer /state."""
+    try:
+        return bobimxl.lib_info()
+    except Exception:
+        return None
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 inst = bobimxl.Instance()   # domaine MXL ($MXL_DOMAIN ou /dev/shm/mxl)
@@ -1009,6 +1018,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                     "height":     HEIGHT,
                     "fps":        FPS,
                     "plugin_version": PLUGIN_VERSION,
+                    "mxl_lib":    _mxl_lib_state(),
                     # ── CONTRAT UI (0.9.0) ────────────────────────────────────────────────
                     # Tout ce que l'UI doit connaître est publié ici : réglages courants ET
                     # domaine des valeurs (`caps`) → l'UI n'a RIEN à coder en dur.
