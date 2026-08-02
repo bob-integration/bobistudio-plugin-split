@@ -1,7 +1,11 @@
 {
-  "version": "0.20.0",
+  "version": "0.21.0",
   "date": "2026-08-02",
   "changes": {
+    "Régime de coût déclaré : rafale (0.21.0)": [
+      "`resources.regime = \"rafale\"` : le coût de ce plugin est BIMODAL — une composition figée ne coûte presque rien, une trame animée jusqu'à 12× plus sur CPU (le GPU, lui, ne fait pas la différence).",
+      "Sans cette déclaration, `app/cpu_profiles.py` mesurait des heures de repos et concluait au sur-dimensionnement du profil (3 cœurs déclarés contre 12,9 % mesurés) — un verdict qui aurait fait rogner un manifeste correct. Il rend maintenant `regime_non_observe` tant qu'une pointe n'a pas été observée."
+    ],
     "Variante libmxl exposée dans /state (0.20.0)": [
       "GET /state porte désormais `mxl_lib` : {path, variante} de la libmxl RÉELLEMENT chargée (x86-64-v3/glibc-hwcaps ou baseline), lu via bobimxl.lib_info(). Jusqu'ici cette information n'était constatable que PAR NŒUD (app/placement.py) — un conteneur retombé sur la baseline (~20 % de coût en régime consommateur) ne se voyait qu'indirectement. Protégé par try/except : une erreur de lecture ne casse jamais /state."
     ],
