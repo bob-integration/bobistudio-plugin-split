@@ -35,8 +35,12 @@ inst = bobimxl.Instance()   # domaine MXL ($MXL_DOMAIN ou /dev/shm/mxl)
 _MVK = bool(getattr(bobimxl, "mvk_available", lambda: False)()) \
     and bool(getattr(bobimxl, "mvk_spl_compose_into", None)) \
     and not os.environ.get("BOBI_SPLIT_NOMVK")
-_mvk_miss = {{"compose": 0, "fused": 0, "solid": 0, "gradient": 0, "calls": 0}}
+_mvk_miss = {{"compose": 0, "fused": 0, "solid": 0, "gradient": 0,
+              "blur2": 0, "rotmap": 0, "rotring": 0, "prefuse": 0, "outer": 0, "calls": 0}}
 _mvk_why = {{}}   # signature (forme/dtype) des replis — pour identifier la cause sans deviner
+# ABI 6 : kernels de CONSTRUCTION d'empreinte (régime animé). Drapeau SÉPARÉ de `_MVK` — une
+# image ≥ 0.15 sans ABI 6 garde tout le compositing C et ne perd que la construction.
+_MVK_STAMP = _MVK and bool(getattr(bobimxl, "mvk_spl_rotmap", None))
 
 
 def _mvk_try(kind, fn, *a, **kw):
@@ -50,6 +54,19 @@ def _mvk_try(kind, fn, *a, **kw):
         k = "%s %s %s" % (kind, getattr(d, "shape", "?"), getattr(d, "dtype", "?"))
         _mvk_why[k] = _mvk_why.get(k, 0) + 1
     return False
+
+
+def _mvk_try_r(kind, fn, *a, **kw):
+    """Variante de `_mvk_try` pour un kernel qui RENVOIE ses tableaux (et non un booléen) :
+    renvoie le résultat, ou None en comptant le repli."""
+    _mvk_miss["calls"] += 1
+    r = fn(*a, **kw) if _MVK_STAMP else None
+    if r is not None:
+        return r
+    if _MVK_STAMP:
+        _mvk_miss[kind] += 1
+        _mvk_why["%s %sx%s" % (kind, a[0], a[1])] = _mvk_why.get("%s %sx%s" % (kind, a[0], a[1]), 0) + 1
+    return None
 
 class RollingMs:
     def __init__(self, n=30):
@@ -209,6 +226,33 @@ V_TOTAL_SIZE  = V_HEADER_SIZE + V_RING_SIZE * V_FRAME_SIZE
 # son grain complet, zéro attente ensuite). Absent/False → chemin historique STRICTEMENT
 # octet-identique. slice_lines pilote la granularité CIBLE (36 lignes ≈ 1080/30 → ~30
 # tranches), adaptée à la hauteur réelle via _out_slice_h.
+# ── CHEMIN DE RENDU GPU (render=gpu|auto, cf. help.md « CPU ou GPU ? ») ────────────────────────
+# Le GPU ne rend PAS le CPU obsolète — il déplace un plafond précis, et un seul : celui de la
+# géométrie qui BOUGE. Sur GPU il n'y a pas d'empreinte à reconstruire (chaque pixel évalue sa
+# propre géométrie), donc le coût d'une trame animée est celui d'une trame fixe. Sur CPU, la même
+# trame animée coûte jusqu'à 12× la trame fixe. Une composition qui ne bouge pas n'a donc RIEN à
+# gagner à passer sur GPU — elle y perdrait même les transferts PCIe.
+#   render=cpu   (défaut) : chemin historique, strictement inchangé.
+#   render=gpu            : EXIGE le GPU — absence de carte/cupy = échec BRUYANT (on ne rend pas
+#                           en silence 10× plus lentement que ce que l'exploitant a demandé).
+#   render=auto           : GPU si disponible, sinon CPU EN LE DISANT.
+_RENDER = str(CONFIG.get("render") or "cpu").strip().lower()
+if _RENDER not in ("cpu", "gpu", "auto"):
+    _RENDER = "cpu"
+GPU = False
+_GPU_NAME = None
+_GPU_WHY = None            # pourquoi le GPU n'est PAS actif — exposé sur :8080, jamais muet
+cp = None
+if _RENDER in ("gpu", "auto"):
+    try:
+        import cupy as cp
+        cp.cuda.runtime.getDeviceCount()          # lève si aucun device (pas de --gpus)
+        _GPU_NAME = cp.cuda.runtime.getDeviceProperties(0)["name"].decode("utf-8", "replace")
+        GPU = True
+    except Exception as _e:
+        cp = None
+        _GPU_WHY = "cupy/GPU indisponible : %s" % _e
+
 _slm = CONFIG.get("slice_mode", False)
 SLICE_MODE  = _slm if isinstance(_slm, bool) else str(_slm).strip().lower() in ("1", "true", "yes", "on")
 SLICE_LINES = max(1, int(CONFIG.get("slice_lines") or 36))
@@ -234,6 +278,24 @@ SLICE_H = _out_slice_h(HEIGHT, _CH) if (SLICE_MODE and not _SCAN.startswith("i")
 SLICE_ON = SLICE_MODE and SLICE_H > 0
 if SLICE_MODE and not SLICE_ON:
     log(f"split: slice_mode demandé mais inéligible (scan={{_SCAN}} h={{HEIGHT}}) — whole-frame", "warning")
+
+# ★ MODE TRANCHE et GPU sont EXCLUSIFS, et ce n'est pas un détail d'implémentation : le mode
+# tranche existe pour publier la sortie bande par bande et retirer une image de latence de
+# traversée ; un aller-retour vers la carte se fait par TRAME et la réintroduit. Les tenir tous
+# les deux donnerait une latence de mode tranche avec le coût du GPU — le pire des deux. On
+# tranche ici, une fois, en le DISANT (un « GPU demandé, silencieusement ignoré » serait
+# exactement l'échec muet que ce plugin s'interdit).
+if GPU and SLICE_ON:
+    GPU = False
+    _GPU_WHY = "mode tranche actif (latence sous-trame) — exclusif du rendu GPU (aller-retour par trame)"
+    log("split: render=%s ignoré — %s" % (_RENDER, _GPU_WHY), "warning")
+if _RENDER == "gpu" and not GPU:
+    # `gpu` EXIGE la carte : on refuse de rendre en silence sur un chemin 10× plus lent que celui
+    # que l'exploitant a demandé. `auto` est là pour qui veut le repli.
+    raise SystemExit("split: render=gpu demandé mais GPU inutilisable — %s. "
+                     "Utiliser render=auto pour accepter le repli CPU." % (_GPU_WHY or "?"))
+if _RENDER == "auto" and not GPU:
+    log("split: render=auto — repli CPU (%s)" % (_GPU_WHY or "?"), "warning")
 
 # ── CADENCE « flow » (tissu en tranches, motif multiview) : pacing = GRILLE TAI — le
 # verrou-entrée sur le fond disparaît ; à chaque epoch, chaque couche (fond + boxes) CIBLE
@@ -1474,7 +1536,7 @@ def _ecrire_sortie(w, yuv, frame_index):
     try:
         _i, gi, vw = w.open_grain(index=frame_index)
         arr = yuv if isinstance(yuv, np.ndarray) else np.frombuffer(yuv, dtype=np.uint8)
-        vw[:len(arr)] = arr
+        bobimxl.blit(vw, arr)
         w.commit(gi)
     except Exception:
         pass
@@ -1759,8 +1821,17 @@ def _blur1(v, r):
 
 def _blur2(m, r):
     """Flou ~gaussien 2D d'un masque NON séparable (silhouette d'une box tournée) : 3 box-blurs
-    séparés en 2 passes 1D (lignes puis colonnes) via cumsum — jamais de convolution 2D."""
+    séparés en 2 passes 1D (lignes puis colonnes) via cumsum — jamais de convolution 2D.
+
+    ★ Poste de coût n°1 du régime ANIMÉ (mesuré : 76 ms/trame sur 230 en 1080p, 4 boxes) : le
+    repli numpy fait 6 × (pad + cumsum + slice + division), soit une allocation et plusieurs
+    passes mémoire par étage. Le kernel C fait les mêmes sommes préfixes float32, en place."""
     r = max(1, int(r))
+    if _MVK_STAMP and m.dtype == np.float32 and m.flags.c_contiguous:
+        out = m if m.base is None else m.copy()
+        if _mvk_try("blur2", bobimxl.mvk_spl_blur2, out, r, 3):
+            return out
+        m = out
     for _ in range(3):
         c = np.cumsum(np.pad(m, ((r, r), (0, 0))), axis=0, dtype=np.float32)
         m = (c[2 * r:] - c[:-2 * r]) / (2 * r)
@@ -1840,18 +1911,21 @@ def _build_alpha_rot(aw, ah, rot_loc, fe, rad, op, bw_tot):
         a *= op
     a16 = (a * 256.0).astype(np.uint16)
     a16_2 = a16[::_CH, ::_CW].copy()
-    # Marge opaque : le quad tourné contient son CERCLE INSCRIT (rayon min(bw,bh)/2 − marge de
-    # bord) ; le carré axis-aligned centré de demi-côté r/√2 tient dans ce cercle → on peut y
-    # COPIER directement (alpha=256, hors bordure). Marge conservatrice commune aux 2 axes.
+    return a16, a16_2, _rot_marg(aw, ah, bw, bh, fe, rad, op, bw_tot), None
+
+
+def _rot_marg(aw, ah, bw, bh, fe, rad, op, bw_tot):
+    """Marge opaque d'une box TOURNÉE (scalaire pur — commun au repli numpy et au kernel C).
+    Le quad tourné contient son CERCLE INSCRIT (rayon min(bw,bh)/2 − marge de bord) ; le carré
+    axis-aligned centré de demi-côté r/√2 tient dans ce cercle → on peut y COPIER directement
+    (alpha=256, hors bordure). Marge conservatrice commune aux 2 axes."""
     edge_m = math.ceil(fe) + rad + math.ceil(bw_tot) + 2
     r = min(bw, bh) / 2.0 - edge_m
     if op >= 0.999 and r > 8:
         hs = r / 1.4143
         m = int(math.ceil(max(aw / 2.0 - hs, ah / 2.0 - hs)))
-        marg = max(0, min(m, aw // 2, ah // 2))
-    else:
-        marg = max(aw, ah)                          # pas d'intérieur sûr → blend plein AABB
-    return a16, a16_2, marg, None
+        return max(0, min(m, aw // 2, ah // 2))
+    return max(aw, ah)                              # pas d'intérieur sûr → blend plein AABB
 
 
 def _adv_key(b, alpha):
@@ -1939,6 +2013,7 @@ def _build_stamp(b, alpha):
     flat = flat2 = None
     ix = iy = ix2 = iy2 = None
     row_need = None
+    _a16_rot = _a16_2_rot = None     # alpha déjà bâti par le kernel (chemin rapide tourné)
     rot_loc = None          # (dedge, sgn_x, sgn_y) en coordonnées LOCALES à la box (cas tourné)
 
     if abs(rot) > 1e-6:
@@ -1957,27 +2032,49 @@ def _build_stamp(b, alpha):
         X = (np.arange(aw, dtype=np.float32) - (aw - 1) / 2.0)
         Y = (np.arange(ah, dtype=np.float32) - (ah - 1) / 2.0)
         # rotation INVERSE : (X,Y) écran → (ul,vl) local box (centré, en px)
-        ul = np.add.outer(Y * s, X * c)
-        vl = np.add.outer(Y * c, -X * s)
+        # Rampes séparées : ul = ys[j] + xc[i], vl = yc[j] + nxs[i]. Le kernel C les prend telles
+        # quelles → mêmes valeurs float32 que le produit externe numpy, à l'ULP près (le repli
+        # ci-dessous EST le produit externe).
+        _ys = (Y * s).astype(np.float32); _yc = (Y * c).astype(np.float32)
+        _xc = (X * c).astype(np.float32); _nxs = (-X * s).astype(np.float32)
         hw = dst_w / 2.0; hh = dst_h / 2.0
-        # distance SIGNÉE aux bords de la box, en local (>0 dedans, <0 dehors)
-        dxl = hw - np.abs(ul); dyl = hh - np.abs(vl)
-        dedge = np.minimum(dxl, dyl)
-        # échantillonnage : local normalisé → région source croppée
-        fu = ul / dst_w + 0.5; fv = vl / dst_h + 0.5
-        if mh: fu = 1.0 - fu
-        if mv: fv = 1.0 - fv
-        mx = np.clip(sxr0 + fu * (sxr1 - sxr0), 0, WIDTH - 1)
-        my = np.clip(syr0 + fv * (syr1 - syr0), 0, HEIGHT - 1)
-        myi = my.astype(np.int32); mxi = mx.astype(np.int32)
-        flat = (myi.astype(np.int64) * WIDTH + mxi).ravel()
-        my2 = np.clip(myi[::_CH, ::_CW] // _CH, 0, UV_H - 1)
-        mx2 = np.clip(mxi[::_CH, ::_CW] // _CW, 0, UV_W - 1)
-        flat2 = (my2.astype(np.int64) * UV_W + mx2).ravel()
-        if SLICE_ON:
-            # MODE TRANCHE : la rotation échantillonne EN DIAGONALE → une bande de sortie peut
-            # réclamer des lignes source bien plus basses. Max par ligne, cumulé (conservateur).
-            row_need = np.maximum.accumulate(myi.max(axis=1)).astype(np.int32)
+        # ★ CHEMIN RAPIDE (kernel C, ABI 6) : carte d'échantillonnage + alpha + distance aux
+        # bords en UNE passe. Ce bloc n'est PAS une optimisation de confort — c'est le régime
+        # ANIMÉ (géométrie qui change à chaque trame) qui décroche sans lui : l'empreinte est
+        # alors rebâtie 50 fois par seconde et sa construction numpy pèse 90 % de la trame.
+        _rot = _mvk_try_r("rotmap", bobimxl.mvk_spl_rotmap,
+                          aw, ah, _ys, _yc, _xc, _nxs, hw, hh, float(dst_w), float(dst_h),
+                          mh, mv, sxr0, sxr1 - sxr0, syr0, syr1 - syr0,
+                          WIDTH, HEIGHT, UV_W, UV_H, _CW, _CH,
+                          fe > 0.0, fe, rad, (max(1.0, fe if fe > 0 else 1.0)),
+                          (0.0 if fe > 0 else 1.0), hw - rad, hh - rad,
+                          op < 0.999, op, want_dedge=True, want_rowmax=SLICE_ON)
+        if _rot is not None:
+            flat, flat2, _a16_rot, _a16_2_rot, dedge, _rowmax = _rot
+            ul = vl = None                      # jamais matérialisés : le kernel les recalcule
+            if SLICE_ON:
+                row_need = np.maximum.accumulate(_rowmax).astype(np.int32)
+        else:
+            ul = np.add.outer(Y * s, X * c)
+            vl = np.add.outer(Y * c, -X * s)
+            # distance SIGNÉE aux bords de la box, en local (>0 dedans, <0 dehors)
+            dxl = hw - np.abs(ul); dyl = hh - np.abs(vl)
+            dedge = np.minimum(dxl, dyl)
+            # échantillonnage : local normalisé → région source croppée
+            fu = ul / dst_w + 0.5; fv = vl / dst_h + 0.5
+            if mh: fu = 1.0 - fu
+            if mv: fv = 1.0 - fv
+            mx = np.clip(sxr0 + fu * (sxr1 - sxr0), 0, WIDTH - 1)
+            my = np.clip(syr0 + fv * (syr1 - syr0), 0, HEIGHT - 1)
+            myi = my.astype(np.int32); mxi = mx.astype(np.int32)
+            flat = (myi.astype(np.int64) * WIDTH + mxi).ravel()
+            my2 = np.clip(myi[::_CH, ::_CW] // _CH, 0, UV_H - 1)
+            mx2 = np.clip(mxi[::_CH, ::_CW] // _CW, 0, UV_W - 1)
+            flat2 = (my2.astype(np.int64) * UV_W + mx2).ravel()
+            if SLICE_ON:
+                # MODE TRANCHE : la rotation échantillonne EN DIAGONALE → une bande de sortie
+                # peut réclamer des lignes source bien plus basses. Max par ligne, cumulé.
+                row_need = np.maximum.accumulate(myi.max(axis=1)).astype(np.int32)
         # le stamp couvre l'AABB ; on recentre le rect de destination dessus
         x0 += (dst_w - aw) // 2
         y0 += (dst_h - ah) // 2
@@ -2002,7 +2099,14 @@ def _build_stamp(b, alpha):
 
     # ── Masque ALPHA : feather × coins arrondis × opacité × fondu de transition.
     if rot_loc is not None:
-        a16, a16_2, marg, a_scalar = _build_alpha_rot(dst_w, dst_h, rot_loc, fe, rad, op, bw_tot)
+        if _a16_rot is not None:
+            # alpha déjà produit par `mvk_spl_rotmap`, dans la même passe que la carte
+            # d'échantillonnage : il ne reste que la MARGE (calcul scalaire).
+            a16, a16_2, a_scalar = _a16_rot, _a16_2_rot, None
+            marg = _rot_marg(dst_w, dst_h, rot_loc[5], rot_loc[6], fe, rad, op, bw_tot)
+        else:
+            a16, a16_2, marg, a_scalar = _build_alpha_rot(dst_w, dst_h, rot_loc, fe, rad,
+                                                          op, bw_tot)
     else:
         a16, a16_2, marg, a_scalar = _build_alpha(dst_w, dst_h, fe, rad, op)
 
@@ -2031,23 +2135,36 @@ def _build_stamp(b, alpha):
             # biseau est TOURNÉE elle aussi — sinon le relief resterait éclairé comme si la box
             # était droite (cadre incohérent avec la lumière de la scène).
             dedge_l, ul, vl, s_, c_, _bw, _bh = rot_loc
-            dxl = _bw / 2.0 - np.abs(ul); dyl = _bh / 2.0 - np.abs(vl)
-            near_x_l = np.less(dyl, dxl)                  # bord le plus proche = haut/bas
-            nlx = np.where(near_x_l, 0.0, np.sign(ul)).astype(np.float32)
-            nly = np.where(near_x_l, np.sign(vl), 0.0).astype(np.float32)
-            gx = (nlx * c_ - nly * s_).astype(np.float32)   # normale locale → repère ÉCRAN
-            gy = (nlx * s_ + nly * c_).astype(np.float32)
-            de = dedge_l
-            ring = np.clip(inner_w - de, 0.0, 1.0) * (de > 0)
-            if abs(bevel) > 1e-6:
-                shade = np.clip((lx * gx + ly * gy) * sgn * abs(bevel) + lz, 0.0, 1.0)
-                t = np.clip((de - pos * inner_w) / (soft * max(1.0, inner_w)) + 0.5, 0.0, 1.0)
-                prof = 0.35 + 0.65 * (1.0 - np.abs(2.0 * t - 1.0))
-                lit = np.clip(shade * prof * 2.0, 0.0, 1.6)
-                ring_y[:] = np.clip(Yb * lit, 16 * _SCALE, _MAXV).astype(_NP_DT)
-            else:
-                ring_y[:] = Yb
-            ring_a[:] = (ring * 256.0).astype(np.uint16)
+            _ring_done = False
+            if ul is None:
+                # ★ CHEMIN RAPIDE : le ruban oblique est bâti par le kernel C, en une passe, à
+                # partir des mêmes rampes que la carte d'échantillonnage — au lieu d'une dizaine
+                # de tableaux 2D numpy (abs/where/sign/clip/sqrt) qui ne servent qu'ici.
+                _ring_done = _mvk_try(
+                    "rotring", bobimxl.mvk_spl_rotring, ring_a, ring_y, _ys, _yc, _xc, _nxs,
+                    _bw / 2.0, _bh / 2.0, s_, c_, inner_w, abs(bevel) > 1e-6, abs(bevel), sgn,
+                    pos * inner_w, soft * max(1.0, inner_w), lx, ly, lz,
+                    Yb, 16 * _SCALE, _MAXV)
+            if not _ring_done:
+                if ul is None:      # kernel refusé : reconstruire ce qu'il aurait produit
+                    ul = np.add.outer(_ys, _xc); vl = np.add.outer(_yc, _nxs)
+                dxl = _bw / 2.0 - np.abs(ul); dyl = _bh / 2.0 - np.abs(vl)
+                de = np.minimum(dxl, dyl) if dedge_l is None else dedge_l
+                near_x_l = np.less(dyl, dxl)              # bord le plus proche = haut/bas
+                nlx = np.where(near_x_l, 0.0, np.sign(ul)).astype(np.float32)
+                nly = np.where(near_x_l, np.sign(vl), 0.0).astype(np.float32)
+                gx = (nlx * c_ - nly * s_).astype(np.float32)   # normale locale → repère ÉCRAN
+                gy = (nlx * s_ + nly * c_).astype(np.float32)
+                ring = np.clip(inner_w - de, 0.0, 1.0) * (de > 0)
+                if abs(bevel) > 1e-6:
+                    shade = np.clip((lx * gx + ly * gy) * sgn * abs(bevel) + lz, 0.0, 1.0)
+                    t = np.clip((de - pos * inner_w) / (soft * max(1.0, inner_w)) + 0.5, 0.0, 1.0)
+                    prof = 0.35 + 0.65 * (1.0 - np.abs(2.0 * t - 1.0))
+                    lit = np.clip(shade * prof * 2.0, 0.0, 1.6)
+                    ring_y[:] = np.clip(Yb * lit, 16 * _SCALE, _MAXV).astype(_NP_DT)
+                else:
+                    ring_y[:] = Yb
+                ring_a[:] = (ring * 256.0).astype(np.uint16)
             m = max(dst_w, dst_h)     # ruban oblique → pas de bande axis-aligned exploitable
         else:
             ax = np.arange(dst_w, dtype=np.float32); ay = np.arange(dst_h, dtype=np.float32)
@@ -2130,8 +2247,11 @@ def _build_stamp(b, alpha):
             sm_y = _blur1(iy_, br) if br > 0 else iy_
             # L'échelle (opacité × fondu × 256) est repliée dans les VECTEURS 1D AVANT le produit
             # externe → le masque sort déjà à l'échelle : un balayage plein rect au lieu de trois.
-            sm_y = sm_y * amp
-            sa16 = np.multiply.outer(sm_y, sm_x).astype(np.uint16)
+            sm_y = (sm_y * amp).astype(np.float32)
+            sm_x = np.ascontiguousarray(sm_x, dtype=np.float32)
+            sa16 = np.empty((shh, sw), dtype=np.uint16)
+            if not _mvk_try("outer", bobimxl.mvk_spl_outer_u16, sa16, sm_y, sm_x):
+                sa16 = np.multiply.outer(sm_y, sm_x).astype(np.uint16)
         sYa, sUa, sVa = _hex_to_yuv(sh.get("color") or "#000000")
         _sx0 = x0 + int(round(float(sh.get("dx", 8.0)))) - pad
         _sy0 = y0 + int(round(float(sh.get("dy", 8.0)))) - pad
@@ -2174,18 +2294,37 @@ def _build_stamp(b, alpha):
     if (ring_a is not None) and marg >= min(dst_w, dst_h) // 2:
         _a = a16 if a16 is not None else np.full((dst_h, dst_w), 256, np.uint16)
         _a2 = a16_2 if a16_2 is not None else np.full((dst_h // _CH, dst_w // _CW), 256, np.uint16)
-        A1 = ((_a.astype(np.uint32) * (256 - ring_a)) >> 8).astype(np.uint16)
-        A1_2 = ((_a2.astype(np.uint32) * (256 - ring_a2)) >> 8).astype(np.uint16)
-        ar = ((_a.astype(np.uint32) * ring_a) >> 8).astype(np.uint16)
-        ar2 = ((_a2.astype(np.uint32) * ring_a2) >> 8).astype(np.uint16)
-        fused = {{
-            "inv_a": (256 - _a).astype(np.uint16),
-            "inv_a2": (256 - _a2).astype(np.uint16),
-            "A1": A1, "A1_2": A1_2,
-            "C2y": ((ring_y.astype(np.uint32) * ar) >> 8).astype(np.uint32),
-            "C2u": ((ring_u.astype(np.uint32) * ar2) >> 8).astype(np.uint32),
-            "C2v": ((ring_v.astype(np.uint32) * ar2) >> 8).astype(np.uint32),
-        }}
+        # ★ POSTE DE COÛT n°1 DU CHEMIN NON TOURNÉ (mesuré : 17 ms sur 41 en 1080p animé, 4 boxes).
+        # Neuf tableaux plein rect, ~20 passes mémoire en numpy — et l'ironie est que ce bloc
+        # existe pour rendre la trame RAPIDE : il ne se paie que quand la géométrie BOUGE, cas
+        # que le cache d'empreinte ne couvre pas. Le kernel fait les trois sorties d'un plan en
+        # une passe ; U et V partagent alpha et ne diffèrent que par la couleur du ruban.
+        _oy = np.empty((dst_h, dst_w), np.uint32)
+        _ou = np.empty((dst_h // _CH, dst_w // _CW), np.uint32)
+        _ov = np.empty((dst_h // _CH, dst_w // _CW), np.uint32)
+        _ia = np.empty((dst_h, dst_w), np.uint16); _a1 = np.empty((dst_h, dst_w), np.uint16)
+        _ia2 = np.empty((dst_h // _CH, dst_w // _CW), np.uint16)
+        _a12 = np.empty((dst_h // _CH, dst_w // _CW), np.uint16)
+        if (_mvk_try("prefuse", bobimxl.mvk_spl_prefuse, _a, ring_a, ring_y, _ia, _a1, _oy)
+                and _mvk_try("prefuse", bobimxl.mvk_spl_prefuse, _a2, ring_a2, ring_u,
+                             _ia2, _a12, _ou)
+                and _mvk_try("prefuse", bobimxl.mvk_spl_prefuse, _a2, ring_a2, ring_v,
+                             None, None, _ov)):
+            fused = {{"inv_a": _ia, "inv_a2": _ia2, "A1": _a1, "A1_2": _a12,
+                      "C2y": _oy, "C2u": _ou, "C2v": _ov}}
+        else:
+            A1 = ((_a.astype(np.uint32) * (256 - ring_a)) >> 8).astype(np.uint16)
+            A1_2 = ((_a2.astype(np.uint32) * (256 - ring_a2)) >> 8).astype(np.uint16)
+            ar = ((_a.astype(np.uint32) * ring_a) >> 8).astype(np.uint16)
+            ar2 = ((_a2.astype(np.uint32) * ring_a2) >> 8).astype(np.uint16)
+            fused = {{
+                "inv_a": (256 - _a).astype(np.uint16),
+                "inv_a2": (256 - _a2).astype(np.uint16),
+                "A1": A1, "A1_2": A1_2,
+                "C2y": ((ring_y.astype(np.uint32) * ar) >> 8).astype(np.uint32),
+                "C2u": ((ring_u.astype(np.uint32) * ar2) >> 8).astype(np.uint32),
+                "C2v": ((ring_v.astype(np.uint32) * ar2) >> 8).astype(np.uint32),
+            }}
 
     return {{
         "x0": x0, "y0": y0, "w": dst_w, "h": dst_h,
@@ -2198,6 +2337,211 @@ def _build_stamp(b, alpha):
         "ring_v": ring_v, "ring_marg": ring_marg,
         "shadow": shadow, "alpha": float(alpha),
     }}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════════════════
+#  CHEMIN GPU — compositing sans empreinte
+#
+#  Tout ce qui suit est le PENDANT de `_build_stamp` + `_place_adv_rows` + `_paint_shadow_rows`,
+#  mais SANS rien précalculer : la géométrie de chaque box se réduit à une poignée de scalaires
+#  passés au kernel, qui les évalue par pixel. Il n'y a donc ni empreinte, ni cache, ni clé de
+#  cache, ni « régime animé » — c'est exactement ce que le GPU achète, et la seule chose.
+#
+#  ⚠ CE N'EST PAS BIT-EXACT avec le chemin CPU (blend flottant vs entier 256e) : c'est un chemin
+#  de rendu DISTINCT, choisi explicitement. Cf. help.md « CPU ou GPU ? ».
+# ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+_gpu = {{"mod": None, "canvas": None, "src": {{}}, "sil": None, "tmp": None, "stream": None,
+         "pin_out": None, "pin_in": {{}}}}
+
+
+def _gpu_init():
+    """Charge les kernels (NVRTC) et alloue les tampons VRAM persistants. Une seule fois."""
+    if _gpu["mod"] is not None:
+        return _gpu["mod"]
+    path = os.path.join(os.path.dirname(os.path.abspath(bobimxl.__file__)), "split_gpu.cu")
+    with open(path) as f:
+        code = f.read()
+    mod = cp.RawModule(code=code, backend="nvrtc", options=("-std=c++11",))
+    _gpu["mod"] = mod
+    _gpu["box"] = mod.get_function("spl_box_u16" if _DEEP else "spl_box_u8")
+    _gpu["sha"] = mod.get_function("spl_shadow_u16" if _DEEP else "spl_shadow_u8")
+    _gpu["sil_k"] = mod.get_function("spl_silhouette")
+    _gpu["bh"] = mod.get_function("spl_blur_h")
+    _gpu["bv"] = mod.get_function("spl_blur_v")
+    _gpu["canvas"] = [cp.empty((HEIGHT, WIDTH), dtype=_NP_DT),
+                      cp.empty((UV_H, UV_W), dtype=_NP_DT),
+                      cp.empty((UV_H, UV_W), dtype=_NP_DT)]
+    # Tampons d'ombre : dimensionnés au pire cas (AABB d'une box plein cadre + marge de flou).
+    _n = (WIDTH + 256) * (HEIGHT + 256)
+    _gpu["sil"] = cp.zeros(_n, dtype=cp.float32)
+    _gpu["tmp"] = cp.zeros(_n, dtype=cp.float32)
+    _gpu["stream"] = cp.cuda.Stream(non_blocking=True)
+    # Mémoire ÉPINGLÉE pour les transferts : sans elle le driver recopie par un tampon
+    # intermédiaire à chaque sens, et le H2D coûte le double.
+    _gpu["pin_out"] = np.frombuffer(cp.cuda.alloc_pinned_memory(V_FRAME_SIZE),
+                                    dtype=np.uint8, count=V_FRAME_SIZE)
+    log("split: rendu GPU actif — %s (kernels %s)" % (_GPU_NAME, path))
+    return mod
+
+
+def _gpu_src(slot, frame_bytes):
+    """Monte une trame source en VRAM (tampon persistant par slot, épinglé côté hôte)."""
+    buf = _gpu["src"].get(slot)
+    if buf is None:
+        buf = [cp.empty((HEIGHT, WIDTH), dtype=_NP_DT),
+               cp.empty((UV_H, UV_W), dtype=_NP_DT),
+               cp.empty((UV_H, UV_W), dtype=_NP_DT)]
+        _gpu["src"][slot] = buf
+        _gpu["pin_in"][slot] = np.frombuffer(cp.cuda.alloc_pinned_memory(V_FRAME_SIZE),
+                                             dtype=np.uint8, count=V_FRAME_SIZE)
+    pin = _gpu["pin_in"][slot]
+    pin[:] = np.frombuffer(frame_bytes, dtype=np.uint8, count=V_FRAME_SIZE)
+    sy, su, sv = _plane_views(pin)
+    st = _gpu["stream"]
+    buf[0].set(sy, stream=st); buf[1].set(su, stream=st); buf[2].set(sv, stream=st)
+    return buf
+
+
+def _gpu_box_geom(b, alpha):
+    """Scalaires de géométrie d'une box — MÊMES formules que `_build_stamp`, sans rien allouer.
+    Renvoie None si la box est invisible. Tout ce que le CPU matérialisait (cartes, masques,
+    ruban, silhouette) tient ici dans des flottants passés au kernel."""
+    if alpha <= 0.001:
+        return None
+    crop = _eff_crop(b)
+    cl = _f(crop.get("l", 0.0), 0.0, 0.9, 0.0); cr_ = _f(crop.get("r", 0.0), 0.0, 0.9, 0.0)
+    ct = _f(crop.get("t", 0.0), 0.0, 0.9, 0.0); cb = _f(crop.get("b", 0.0), 0.0, 0.9, 0.0)
+    if cl + cr_ >= 0.95: cl = cr_ = 0.0
+    if ct + cb >= 0.95: ct = cb = 0.0
+    if b.get("aspect") == "free":
+        sx = b.get("size_x") or b.get("size", 0.45); sy_ = b.get("size_y") or b.get("size", 0.45)
+    else:
+        sx = sy_ = b.get("size", 0.45)
+    full_w = WIDTH * float(sx); full_h = HEIGHT * float(sy_)
+    dst_w = max(2, int(full_w * (1.0 - cl - cr_))) & ~1
+    dst_h = max(2, int(full_h * (1.0 - ct - cb))) & ~1
+    if dst_w < 2 or dst_h < 2:
+        return None
+    vis_cx = b["x"] * WIDTH + (cl - cr_) * 0.5 * full_w
+    vis_cy = b["y"] * HEIGHT + (ct - cb) * 0.5 * full_h
+    rot = float(b.get("rotation", 0.0))
+    th = math.radians(rot); s_, c_ = math.sin(th), math.cos(th)
+    aw = (int(math.ceil(abs(dst_w * c_) + abs(dst_h * s_))) + 2) & ~1
+    ah = (int(math.ceil(abs(dst_w * s_) + abs(dst_h * c_))) + 2) & ~1
+    x0 = int(vis_cx - aw / 2) & ~1
+    y0 = int(vis_cy - ah / 2) & ~1
+    fe = float(b.get("feather", 0.0))
+    rad = float(min(float(b.get("radius", 0.0)), dst_w / 2.0 - 1, dst_h / 2.0 - 1))
+    op = float(b.get("opacity", 100.0)) / 100.0 * float(alpha)
+    bd = _eff_border(b)
+    inner_w = max(0.0, float(bd.get("inner", 0.0)) + float(bd.get("w", 0) or 0))
+    bevel = float(bd.get("bevel", 0.0))
+    return {{
+        "x0": x0, "y0": y0, "aw": aw, "ah": ah,
+        "s": s_, "c": c_, "hw": dst_w / 2.0, "hh": dst_h / 2.0,
+        "fdw": float(dst_w), "fdh": float(dst_h),
+        "mh": 1 if b.get("mirror_h") else 0, "mv": 1 if b.get("mirror_v") else 0,
+        "sxr0": cl * WIDTH, "dsx": (1.0 - cr_ - cl) * WIDTH,
+        "syr0": ct * HEIGHT, "dsy": (1.0 - cb - ct) * HEIGHT,
+        "use_fe": 1 if fe > 0 else 0, "fe": max(fe, 1e-6), "rad": rad,
+        "cref_x": dst_w / 2.0 - rad, "cref_y": dst_h / 2.0 - rad,
+        "csoft": max(1.0, fe if fe > 0 else 1.0), "cadd": 0.0 if fe > 0 else 1.0,
+        "op": op, "inner_w": inner_w, "bevel": bevel,
+        "bd": bd, "shadow": b.get("shadow") or {{}}, "alpha": float(alpha),
+    }}
+
+
+def _gpu_compose(buf, layers):
+    """Compose la trame entière sur GPU. `buf` (bytes du canvas déjà rempli par le fond) est
+    monté, composé, puis rapatrié EN PLACE. `layers` = [(slot, box, alpha, frame_bytes)]."""
+    _gpu_init()
+    st = _gpu["stream"]
+    la = math.radians(LIGHT["angle"]); lalt = math.radians(LIGHT["altitude"])
+    lx = math.cos(la) * math.cos(lalt); ly = -math.sin(la) * math.cos(lalt)
+    lz = max(0.05, math.sin(lalt))
+    cvs = _gpu["canvas"]
+    with st:
+        oy, ou, ov = _plane_views(buf)
+        cvs[0].set(oy, stream=st); cvs[1].set(ou, stream=st); cvs[2].set(ov, stream=st)
+        for slot, b, alpha, fb in layers:
+            g = _gpu_box_geom(b, alpha)
+            if g is None:
+                _slot_skip(slot, "geom_none"); continue
+            src = _gpu_src(slot, fb)
+            sh = g["shadow"]
+            if sh.get("enabled") and float(sh.get("opacity", 0.0)) > 0.001:
+                _gpu_shadow(cvs, g, sh)
+            Yb, Ub, Vb = _hex_to_yuv(g["bd"].get("color"))
+            sgn = 1.0 if g["bevel"] > 0 else -1.0
+            pos = float(g["bd"].get("bevel_pos", 0.5))
+            soft = max(0.05, float(g["bd"].get("bevel_soft", 0.3)))
+            for p, (pcw, pch, ringc) in enumerate(((1, 1, Yb), (_CW, _CH, Ub), (_CW, _CH, Vb))):
+                paw, pah = g["aw"] // pcw, g["ah"] // pch
+                if paw < 1 or pah < 1:
+                    continue
+                grid = ((paw + 15) // 16, (pah + 15) // 16)
+                _gpu["box"](grid, (16, 16), (
+                    cvs[p], WIDTH // pcw, HEIGHT // pch, src[p], WIDTH // pcw, HEIGHT // pch,
+                    g["x0"] // pcw, g["y0"] // pch, paw, pah, pcw, pch,
+                    np.float32(g["s"]), np.float32(g["c"]),
+                    np.float32(g["hw"]), np.float32(g["hh"]),
+                    np.float32(g["fdw"]), np.float32(g["fdh"]), g["mh"], g["mv"],
+                    np.float32(g["sxr0"] / pcw), np.float32(g["dsx"] / pcw),
+                    np.float32(g["syr0"] / pch), np.float32(g["dsy"] / pch),
+                    g["use_fe"], np.float32(g["fe"]), np.float32(g["rad"]),
+                    np.float32(g["cref_x"]), np.float32(g["cref_y"]),
+                    np.float32(g["csoft"]), np.float32(g["cadd"]), np.float32(g["op"]),
+                    np.float32(g["inner_w"]), 1 if abs(g["bevel"]) > 1e-6 else 0,
+                    np.float32(abs(g["bevel"])), np.float32(sgn),
+                    np.float32(pos * g["inner_w"]),
+                    np.float32(soft * max(1.0, g["inner_w"])),
+                    np.float32(lx), np.float32(ly), np.float32(lz),
+                    np.float32(ringc), np.float32(16 * _SCALE), np.float32(_MAXV)))
+            _slot_ok(slot)
+        pin = _gpu["pin_out"]
+        py, pu, pv = _plane_views(pin)
+        cvs[0].get(stream=st, out=py); cvs[1].get(stream=st, out=pu); cvs[2].get(stream=st, out=pv)
+    st.synchronize()
+    buf[:] = pin
+
+
+def _gpu_shadow(cvs, g, sh):
+    """Ombre portée : silhouette INCLINÉE floutée, posée dans un rect élargi (le flou doit
+    s'épandre vers l'extérieur), puis mélangée SOUS la box. Rebâtie à chaque trame — sur GPU
+    c'est assez peu cher pour qu'aucun cache ne se justifie."""
+    br = int(round(float(sh.get("blur", 8.0))))
+    pad = (3 * br + 2) if br > 0 else 0
+    if pad % 2: pad += 1
+    aw, ah = g["aw"], g["ah"]
+    sw, shh = aw + 2 * pad, ah + 2 * pad
+    n = sw * shh
+    if n > _gpu["sil"].size:
+        return
+    sil = _gpu["sil"][:n].reshape(shh, sw)
+    tmp = _gpu["tmp"][:n].reshape(shh, sw)
+    sil.fill(0.0)
+    _gpu["sil_k"](((aw + 15) // 16, (ah + 15) // 16), (16, 16),
+                  (sil, sw, shh, pad, aw, ah, np.float32(g["s"]), np.float32(g["c"]),
+                   np.float32(g["hw"]), np.float32(g["hh"])))
+    if br > 0:
+        gh = (((sw + 127) // 128 + 7) // 8, (shh + 7) // 8)
+        gv = ((sw + 7) // 8, ((shh + 127) // 128 + 7) // 8)
+        for _ in range(3):
+            _gpu["bh"](gh, (8, 8), (sil, tmp, shh, sw, br))
+            _gpu["bv"](gv, (8, 8), (tmp, sil, shh, sw, br))
+    sYa, sUa, sVa = _hex_to_yuv(sh.get("color") or "#000000")
+    amp = (float(sh.get("opacity", 50.0)) / 100.0) * g["alpha"]
+    sx0 = g["x0"] + int(round(float(sh.get("dx", 8.0)))) - pad
+    sy0 = g["y0"] + int(round(float(sh.get("dy", 8.0)))) - pad
+    sx0 -= sx0 % _CW; sy0 -= sy0 % _CH
+    for p, (pcw, pch, col) in enumerate(((1, 1, sYa), (_CW, _CH, sUa), (_CW, _CH, sVa))):
+        pw, ph = sw // pcw, shh // pch
+        if pw < 1 or ph < 1:
+            continue
+        _gpu["sha"](((pw + 15) // 16, (ph + 15) // 16), (16, 16),
+                    (cvs[p], WIDTH // pcw, HEIGHT // pch, sil, sw, shh, sx0, sy0,
+                     pcw, pch, np.float32(amp), np.float32(col), np.float32(_MAXV)))
 
 
 def _stamp_for(idx, b, alpha):
@@ -2989,6 +3333,12 @@ half_ns = (interval / 2.0) * 1e9
 last_ref_idx = 0
 last_black = start
 empty_frame = _BLACK_B * (WIDTH * HEIGHT) + _NEUT_B * (2 * UV_W * UV_H)   # black yuv
+# ★ Le choix de cadence (genlock verrouillé sur le fond) LIT `bg_is_src` AVANT que la trame
+# courante ne le recalcule : c'est délibéré (valeur de la trame précédente — un changement de
+# mode de fond n'a pas à décaler la cadence dans la même trame). Mais il n'était jamais initialisé
+# → NameError à la PREMIÈRE itération, donc boucle de redémarrage, pour tout split en genlock.
+# Ne se voyait pas tant qu'aucun déploiement ne partait sans fond câblé.
+bg_is_src = (state["bg"]["mode"] == "source")
 
 while True:
     if bus_error.is_set():
@@ -3126,7 +3476,21 @@ while True:
         if _art_below():                      # ART SOUS les boxes (décor de fond)
             _paint_art_rows(oy, ou, ovv, 0, HEIGHT)
 
-        for slot, b, alpha in _plan_layers(tr, boxes):
+        if GPU:
+            # CHEMIN GPU : une seule montée du canvas, N kernels, une seule redescente. La
+            # géométrie peut changer à chaque trame sans surcoût — il n'y a rien à reconstruire.
+            _gl = []
+            for slot, b, alpha in _plan_layers(tr, boxes):
+                f, ts = _read_slot(slot)
+                if ts: ts_in_per_slot[slot] = ts
+                if not f:
+                    continue
+                _gl.append((slot, b, alpha, f))
+            if _gl:
+                _gpu_compose(buf, _gl)
+                oy, ou, ovv = _plane_views(buf)   # `buf` réécrit en place → revues
+        else:
+         for slot, b, alpha in _plan_layers(tr, boxes):
             f, ts = _read_slot(slot)          # (compte et NOMME les renoncements — cf. _slot_skip)
             if ts: ts_in_per_slot[slot] = ts
             if not f:
@@ -3198,6 +3562,13 @@ while True:
             # False et l'appelant retombe en numpy — 5 à 20× plus lent. Compté ET signé ici.
             metrics["mvk_miss"] = dict(_mvk_miss)
             metrics["mvk_why"] = dict(_mvk_why)
+            # Chemin de rendu EFFECTIF, et pourquoi. `render` dit ce qui a été DEMANDÉ, `gpu` ce
+            # qui tourne VRAIMENT, `gpu_why` la raison du repli — un « auto » retombé sur CPU ne
+            # doit pas se déduire d'un écart de fps.
+            metrics["render"] = _RENDER
+            metrics["gpu"] = GPU
+            metrics["gpu_name"] = _GPU_NAME
+            metrics["gpu_why"] = _GPU_WHY
             # ★ LE COMPTEUR QUI MANQUAIT (0.11.0) : combien de couches COMPOSÉES, et pour chaque
             # slot renoncé, POURQUOI. Un split qui ne compose rien ne peut plus passer pour sain :
             # `composed` tombe à 0 et `slots` nomme la cause (format / génération périmée / flux

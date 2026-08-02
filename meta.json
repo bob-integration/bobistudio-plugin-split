@@ -1,7 +1,32 @@
 {
-  "version": "0.16.0",
-  "date": "2026-07-28",
+  "version": "0.19.0",
+  "date": "2026-08-02",
   "changes": {
+    "★★ Le chemin NON TOURNÉ animé aussi : la pré-fusion passe en C (0.19.0)": [
+      "L'ABI 6 avait porté la construction d'empreinte TOURNÉE. Le chemin NON tourné restait à 39 ms en régime animé — déjà le double du budget 50p — et sa nature est DIFFÉRENTE : là-bas le coût était de gros tableaux 2D non décomposables ; ici les masques sont séparables et bon marché, et le coût était ailleurs.",
+      "★ Il était dans le bloc de PRÉ-FUSION ruban⊗alpha : neuf tableaux plein rect, ~20 passes mémoire, 17 ms sur 41 mesurées. Et ce bloc existe pour rendre la trame RAPIDE (il évite deux balayages par plan au compositing) — il ne se paie qu'au moment où la géométrie BOUGE, c'est-à-dire précisément là où le cache d'empreinte ne sert à rien. L'optimisation du chemin chaud était devenue le poste de coût du chemin froid.",
+      "Il ne s'active d'ailleurs que si une OPACITÉ GLOBALE est posée (sinon la box garde un intérieur opaque et le compositing copie au lieu de fondre) : c'est ce qui explique qu'aucun effet pris isolément ne le révélait, et que « tous les effets » coûtait bien plus que leur somme.",
+      "Kernels mvk ABI 7 (image bobi-compute ≥ 0.23) : mvk_spl_prefuse_u8/u16 (inv_a + A1 + C2 d'un plan en une passe ; U et V partagent leur alpha) et mvk_spl_outer_u16 (matérialisation du masque d'ombre séparable).",
+      "Mesuré (1080p, 4 boxes, 2 cœurs, ANIMÉ) : sans rotation 39,3 → 22,7 ms ; tous effets 125,5 → 58,3 ms. Depuis l'origine du chantier : 226,8 → 58,3 ms, ×3,9. Bit-exact : max|Δ| = 0 contre le repli numpy, md5 identiques sur 5 jeux d'effets."
+    ],
+    "★★ Chemin de rendu GPU, optionnel et explicite : `render` (0.18.0)": [
+      "Nouveau paramètre `render` = cpu (défaut, chemin historique STRICTEMENT inchangé) | gpu (exige la carte) | auto (GPU si dispo, repli CPU EN LE DISANT). Le GPU n'est jamais imposé ni deviné.",
+      "CE QU'IL APPORTE, et rien d'autre : sur GPU il n'y a pas d'empreinte à reconstruire (chaque pixel évalue sa propre géométrie), donc une trame ANIMÉE coûte exactement une trame fixe. Mesuré sur Quadro P5000, 1080p, 4 boxes, tous effets : fixe 7,2 ms / animée 7,4 ms (×1,03), contre ×6,8 sur CPU. Une composition qui ne bouge pas n'a RIEN à y gagner — help.md dit quand choisir l'un ou l'autre.",
+      "Le détail qui compte pour dimensionner : sur les 7,4 ms d'une trame GPU, 4,3 ms sont du PCIe et 3,1 ms du calcul. Le plafond est le TRANSPORT, pas la carte — environ 4 à 5 splits par P5000.",
+      "★ MODE TRANCHE ET GPU SONT EXCLUSIFS : le mode tranche retire une image de latence en publiant bande par bande, un aller-retour vers la carte la réintroduit. Le GPU est refusé quand slice_mode est actif, et la raison est publiée (`gpu_why` sur :8080) — jamais un « GPU demandé, silencieusement ignoré ».",
+      "⚠ Le rendu GPU N'EST PAS bit-exact avec le CPU (blend flottant vs entier 256e) : c'est un chemin de rendu DISTINCT, à valider visuellement une fois. Les kernels vivent dans script_templates/split_gpu.cu (image bobi-compute-gpu ≥ 0.7), pas dans le script : script.py est un template str.format où chaque accolade CUDA devrait être doublée.",
+      "Métriques :8080 : `render` (demandé), `gpu` (effectif), `gpu_name`, `gpu_why`. Un `auto` retombé sur CPU ne se déduit jamais d'un écart de fps.",
+      "CORRIGÉ (préexistant) : un split déployé SANS fond câblé redémarrait en boucle — `bg_is_src` était lu par le choix de cadence avant d'être initialisé. Ne pouvait se voir qu'en déployant le plugin nu."
+    ],
+    "★★ Construction d'empreinte en C : le régime ANIMÉ n'était jamais mesuré (0.17.0)": [
+      "Le cache d'empreinte rend la construction gratuite EN RÉGIME ÉTABLI. Il ne sert à rien quand la géométrie change à chaque trame — transition en cours, curseur qu'on glisse, rotation animée : l'empreinte est alors rebâtie 50 fois par seconde. Ce régime n'avait jamais été mesuré. Il pèse 90 % de la trame (208 ms sur 230, 1080p, 4 boxes, tous effets, budget 20 ms à 50p).",
+      "Les trois postes dominants passent sur les kernels C de l'ABI 6 (image bobi-compute ≥ 0.22) : mvk_spl_rotmap (carte d'échantillonnage + alpha + distance aux bords en UNE passe sur l'AABB, au lieu d'une quinzaine de tableaux numpy), mvk_spl_rotring (ruban de bordure 3D oblique) et mvk_spl_blur2 (flou de la silhouette inclinée). Sur le chemin rapide, ul/vl ne sont même plus matérialisés.",
+      "Mesuré (1080p, 4 boxes, 2 cœurs) : rotation animée 52,9 → 21,2 ms ; tous effets animés 226,8 → 125,5 ms. Avec 8 cœurs et BOBI_MVK_THREADS=16 : 11,2 et 65,4 ms.",
+      "BIT-EXACT : md5 de la trame composée IDENTIQUE entre le script d'avant, son repli numpy et le chemin kernel, sur 6 jeux d'effets en régime animé ; check_bitexact donne max|Δ| = 0 contre le repli. Le repli numpy reste la référence et n'a pas changé d'un octet.",
+      "★ CE QUI RESTE HORS BUDGET, dit explicitement : le chemin NON TOURNÉ (rampes séparables) n'est pas porté et coûte 39 ms en animé — déjà le double du budget 50p ; et la composition animée riche reste à 65 ms au mieux. help.md corrige au passage deux affirmations fausses : « seule la rotation décroche » et l'idée que les effets s'additionnent (la rotation fait sortir tous les autres du chemin séparable — c'est superlinéaire).",
+      "Drapeau _MVK_STAMP SÉPARÉ de _MVK : une image ≥ 0.15 sans ABI 6 garde tout le compositing C et ne perd que la construction. Compteurs blur2/rotmap/rotring exposés dans mvk_miss sur :8080 — ils doivent rester à zéro.",
+      "tools/check_bitexact.py n'agrège plus les compteurs sur une liste figée (un nouveau kernel le faisait planter sur un KeyError après avoir imprimé ses résultats)."
+    ],
     "★ Bordure armable, pilotée par le pupitre ATEM (0.16.0)": [
       "Nouveau réglage `border_enabled` par box : la bordure s'active et se désactive SANS perdre ses épaisseurs — les réactiver les restitue. Le rendu ne lit plus jamais `border` en direct, tout passe par `_eff_border(box)`.",
       "Défaut rétrocompatible : champ absent → armée SI une épaisseur est déjà posée. Les compositions existantes rendent à l'identique.",

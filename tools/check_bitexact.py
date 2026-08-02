@@ -173,15 +173,17 @@ def main():
                 bad += 1
                 print("  ÉCART MVK vs NUMPY it=%d chroma=%s : max|Δ|=%d" % (it, chroma, d))
         miss = getattr(mods["MVK"][chroma], "_mvk_miss", {})
-        if miss.get("compose", 0) or miss.get("fused", 0) or miss.get("solid", 0):
+        if any(v for k, v in miss.items() if k != "calls"):
             print("  ⚠ REPLI mvk it=%d : %s %s" % (it, json.dumps(miss),
                                                    json.dumps(mods["MVK"][chroma]._mvk_why)))
     print("max|Δ| MVK vs REF(0.9.x)  = %d" % worst["REF"])
     print("max|Δ| MVK vs repli numpy = %d" % worst["NUMPY"])
-    tot = {"compose": 0, "fused": 0, "solid": 0, "calls": 0}
+    # Compteurs AGRÉGÉS SANS liste figée : un nouveau kernel (ABI 6 : blur2/rotmap/rotring) ne
+    # doit pas faire planter le banc sur un KeyError — c'est arrivé.
+    tot = {}
     for chroma in ("422", "420", "444"):
         for k, v in getattr(mods["MVK"][chroma], "_mvk_miss", {}).items():
-            tot[k] += v
+            tot[k] = tot.get(k, 0) + v
     print("replis mvk : %s" % json.dumps(tot))
     return 1 if (worst["NUMPY"] or bad) else 0
 

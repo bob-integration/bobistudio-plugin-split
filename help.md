@@ -154,13 +154,61 @@ empreinte telle quelle. Tout l'habillage sauf la rotation étant fonction de la 
 bords*, il est construit **séparablement** (2 rampes 1D + 4 patchs de coins) au lieu de balayages
 2D. Par trame il ne reste qu'un *gather* et un blend — désormais fusionnés en C.
 
-**★ Le plafond a bougé : ce n'est plus la rotation, c'est la rotation qui BOUGE.** En position
-fixe, la rotation tient largement le 1080p50 (**8,4 ms** pour 20 ms de budget). Mais dès que
-l'angle (ou la taille/le crop) **change à chaque trame** — transition en cours, curseur qu'on
-glisse — l'empreinte est **reconstruite à chaque trame** : la carte d'index 2D et les masques
-obliques d'une box tournée coûtent ≈ **13 ms/box** en numpy → **53 ms/trame** en 1080p pour
-4 boxes. C'est le **prochain chantier** (porter la construction de l'empreinte tournée en C).
-Les autres effets, eux, se reconstruisent séparablement et passent (bordure animée : 12 ms).
+### ★★ Le vrai plafond : la géométrie qui BOUGE (mesuré, dell-1, 2 cœurs physiques)
+
+Le tableau ci-dessus est celui du **régime établi** : l'empreinte est en cache, la trame ne fait
+que composer. Dès que la géométrie **change à chaque trame** — transition en cours, curseur qu'on
+glisse, rotation animée — l'empreinte est **rebâtie 50 fois par seconde** et c'est ELLE qui fait
+la trame : mesuré, **90 % du temps** (208 ms sur 230).
+
+| 1080p, 4 boxes | statique | animé (numpy) | animé (ABI 6) | **animé (ABI 7)** |
+|----------------|----------|---------------|---------------|-------------------|
+| socle          |  7,0 ms  |   6,4 ms      |   6,4 ms      |   6,4 ms          |
+| sans rotation  |  9,0 ms  |  **39,3 ms**  |  39,3 ms      |  **22,7 ms**      |
+| rotation seule | 10,3 ms  |  **52,9 ms**  |  **21,2 ms**  |  19,8 ms          |
+| tous les effets| 18,4 ms  | **226,8 ms**  |  **125,5 ms** |  **58,3 ms**      |
+
+Avec 8 cœurs physiques et `BOBI_MVK_THREADS=16` : rotation animée **11,2 ms**, tous effets
+**65,4 ms**. (Le défaut est plafonné à 4 threads — cf. `_mvk_default_threads` : un conteneur sans
+cpuset verrait toute la machine.)
+
+**Deux corrections à ce que ce fichier affirmait auparavant** :
+
+1. « Seule la rotation décroche, les autres effets se reconstruisent séparablement et passent » —
+   **faux**. Sans rotation du tout, l'animation coûte déjà **39 ms**, soit le double du budget 50p.
+2. « tous les effets » animé ne vaut pas la somme des parties (39 + 53) mais **227 ms** : la
+   rotation fait **sortir tous les autres effets du chemin séparable**, chaque masque devenant un
+   balayage 2D plein sur l'AABB au lieu de deux rampes 1D. C'est superlinéaire, et ça ne se voyait
+   pas parce que ce régime n'avait jamais été mesuré.
+
+### Deux plafonds de NATURE différente (ABI 6 puis ABI 7)
+
+Le régime animé avait **deux** postes de coût, et ils ne se ressemblent pas :
+
+**Box TOURNÉE — de gros tableaux 2D non décomposables.** Un axe oblique rend chaque masque
+fonction de la position en 2D : plus de produit externe possible. Le CPU bâtissait donc une
+quinzaine de tableaux plein AABB par box (carte d'index, alpha, distance aux bords, ruban).
+`mvk_spl_rotmap` / `rotring` / `blur2` (ABI 6) les remplacent par une passe : rotation animée
+**52,9 → 21,2 ms**.
+
+**Box DROITE — ★ l'optimisation du chemin chaud devenue le coût du chemin froid.** Ici tout est
+séparable et bon marché : deux rampes 1D, quatre patchs de coins, quatre bandes de ruban. Le coût
+n'était donc pas dans la géométrie — il était dans le bloc de **pré-fusion ruban ⊗ alpha**, neuf
+tableaux plein rect et ~20 passes mémoire, **17 ms sur 41 mesurées**. Or ce bloc existe pour rendre
+la trame **rapide** : il pré-mâche les opérandes du compositing pour lui épargner deux balayages
+par plan. Il ne se paie qu'au moment où la géométrie **bouge** — précisément le cas que le cache
+d'empreinte ne couvre pas. `mvk_spl_prefuse` / `outer` (ABI 7) : **39,3 → 22,7 ms**.
+
+Détail qui explique pourquoi personne ne l'avait vu : la pré-fusion ne s'active que si une
+**opacité globale** est posée (sans elle, la box garde un intérieur opaque et le compositing
+**copie** au lieu de fondre). Aucun effet pris isolément ne la déclenchait — d'où un « tous les
+effets » très supérieur à la somme de ses parties.
+
+**Où on en est.** Trame animée riche : **226,8 → 58,3 ms** (×3,9). Ça tient le 25p, pas le 50p.
+Ce qui reste est de l'**arithmétique pure en C** sur ~2 M pixels d'AABB, sans lire un octet de
+vidéo : il n'y a plus de gras à retirer, c'est le coût du modèle « je précalcule des cartes parce
+que le CPU ne peut pas se permettre de les recalculer par pixel ». Pour aller plus loin il faut
+changer de modèle — c'est ce que fait `render=gpu` (cf. « CPU ou GPU ? »).
 
 Le plugin **ne décroche jamais en silence** : les métriques `:8080` exposent
 `adv.budget_pct`, `adv.over_budget`, `adv.rotated_boxes` et `adv.stamp_hit_rate` (un taux qui
@@ -172,6 +220,80 @@ numpy**. Un repli est 5 à 20× plus lent : `mvk_miss` **doit rester à zéro**,
 
 > **Vieille image** (`bobi-compute` < 0.15, sans ABI 4) : le plugin fonctionne à l'identique, en
 > repli numpy intégral (`mvk: false` sur `:8080`) — avec les coûts de la colonne « numpy ».
+> **Image < 0.22 (sans ABI 6)** : tout le compositing reste en C, seule la CONSTRUCTION
+> d'empreinte retombe en numpy (colonne « animé avant ABI 6 »). Les deux jeux de kernels ont des
+> drapeaux séparés — une image intermédiaire n'est pas un tout-ou-rien.
+
+## ★★ CPU ou GPU ? (`render`)
+
+**Réponse courte : laissez `cpu`.** Le GPU ne rend pas le CPU obsolète — il déplace **un seul**
+plafond, celui de la **géométrie qui bouge**. Si votre composition est posée et ne bouge pas, le
+CPU suffit largement, et le GPU vous ferait payer des transferts pour rien.
+
+### La seule mesure qui décide
+
+Tout tient dans le rapport entre une trame **fixe** et une trame **animée** (transition en cours,
+curseur qu'on glisse, rotation animée). 1080p, 4 boxes, tous les effets, budget 20 ms à 50 fps :
+
+| | trame fixe | trame **animée** | rapport |
+|---|---|---|---|
+| CPU (2 cœurs) | 18,4 ms | 58,3 ms | **× 3,2** |
+| CPU (8 cœurs, 16 threads) | ~15 ms | ~35 ms | × 2,3 |
+| **GPU** (Quadro P5000) | 7,2 ms | **7,4 ms** | **× 1,03** |
+
+Sur CPU, une composition qui bouge coûte plusieurs fois ce qu'elle coûte à l'arrêt : chaque
+changement de géométrie oblige à reconstruire l'« empreinte » de chaque box (cartes
+d'échantillonnage, masques, ruban de bordure, silhouette d'ombre) — cinquante fois par seconde.
+Les kernels C ont ramené ce surcoût de ×12 à ×3,2, ce qui fait tenir le 25p ; le 50p en
+composition riche animée reste hors d'atteinte du CPU.
+Sur GPU cette empreinte **n'existe pas** : chaque pixel évalue sa propre géométrie. D'où un coût
+identique à l'arrêt et en mouvement. **C'est tout ce que le GPU achète — c'est beaucoup, mais
+seulement si vous animez.**
+
+### Choisir en trois questions
+
+1. **Ma composition bouge-t-elle en direct ?** Rappels de mémoire avec transition, mouvements de
+   box à l'antenne, réglages manipulés pendant la diffusion. **Non → `cpu`, sans hésiter.** Et un
+   rappel de mémoire ponctuel (quelques transitions par émission) ne justifie pas une carte : la
+   trame décroche *pendant* la transition, pas après.
+2. **Ai-je besoin de la latence sous-trame ?** Le **mode tranche** et le GPU sont **exclusifs** :
+   le mode tranche publie la sortie bande par bande pour retirer une image de latence, un
+   aller-retour vers la carte se fait par trame et la réintroduit. Si `slice_mode` est actif, le
+   GPU est refusé — et le plugin le **dit** (`gpu_why` sur `:8080`), il ne l'ignore pas en silence.
+3. **Puis-je immobiliser une carte ?** Un split GPU réserve un GPU du nœud. Compté à 50 fps sur une
+   P5000 : ~16 % de la carte en calcul et ~21 % du temps en transferts PCIe, soit **4 à 5 splits
+   par carte** — et c'est le **PCIe** qui plafonne, pas le calcul. Sur un parc où le multiview
+   réclame déjà des cartes, c'est un arbitrage, pas un détail.
+
+### Ce que coûte le GPU, dit franchement
+
+- **Les transferts.** Sur les 7,4 ms d'une trame GPU, **4,3 ms sont du PCIe** (montée des entrées,
+  descente de la sortie) et 3,1 ms seulement du calcul. Le bus MXL vit en mémoire hôte : ces
+  transferts sont incompressibles. Une composition simple et fixe est donc **plus rapide sur CPU**.
+- **Le rendu n'est pas identique à l'octet près.** Le CPU mélange en entiers 256e, le GPU en
+  flottant : ce sont **deux chemins de rendu distincts**. Basculer une composition existante de
+  `cpu` à `gpu` change ses octets (pas son aspect) — à valider visuellement une fois, comme un
+  changement d'étage.
+- **Une carte, une image.** Le conteneur bascule sur l'image `bobi-compute-gpu`. Le chemin CPU y
+  est identique : un split `render=cpu` déployé sur l'image GPU rend exactement comme avant.
+
+### Les trois valeurs
+
+| `render` | Comportement |
+|----------|--------------|
+| `cpu` | **Défaut.** Chemin historique, strictement inchangé. Aucune carte réservée. |
+| `gpu` | **EXIGE** le GPU. Pas de carte, pas de cupy, ou mode tranche actif → le script **refuse de démarrer** en nommant la cause. On ne rend pas en silence dix fois plus lentement que ce qui a été demandé. |
+| `auto` | GPU si disponible, sinon CPU **en le disant** (log + `gpu_why` sur `:8080`). |
+
+Le chemin réellement actif est toujours lisible sur `:8080` : `render` (demandé), `gpu` (effectif),
+`gpu_name`, `gpu_why` (raison du repli). Un `auto` retombé sur CPU ne se déduit jamais d'un écart
+de fps.
+
+### En résumé
+
+> Composition posée, même complexe → **CPU**. Composition qui **bouge à l'antenne** en 1080p50,
+> avec rotations et habillage → **GPU**. Latence sous-trame requise → **CPU en mode tranche** ; le
+> GPU n'est alors pas une option.
 
 ## ★★ « Le split ne compose aucune box » — pourquoi, et comment il le dit (0.11.0)
 
