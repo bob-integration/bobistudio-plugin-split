@@ -1,7 +1,13 @@
 {
-  "version": "0.21.0",
+  "version": "0.22.0",
   "date": "2026-08-02",
   "changes": {
+    "Clés déterminantes du coût déclarées (0.22.0)": [
+      "Le manifeste déclare `resources.signature_keys` : la signature d'un profil d'étalonnage ne condense plus TOUS les paramètres, mais seulement ceux qui déterminent le coût. Même motif que sur 2110_io 0.79.0.",
+      "SANS cette déclaration, le CÂBLAGE entrait dans la signature — donc tout recâblage périmait l'étalonnage, alors que le coût n'avait pas bougé. Prouvé le 2026-08-02 sur un mixer : passer une entrée de « banc-avsync-dl-380 » à « avsync », à format stricitement identique (1920x1080@50p), faisait passer la signature de #c00ff50b240b à #d1f06635ee1d. Or un plugin hot-wire est recâblé en exploitation NORMALE : son profil n'aurait jamais servi.",
+      "Le niveau de log est volontairement EXCLU : il ne change pas le coût, et l'inclure périmerait un profil sur un simple diagnostic.",
+      "Manifeste seulement — le script n'est pas touché, aucun redéploiement n'est requis pour que le changement prenne effet."
+    ],
     "Régime de coût déclaré : rafale (0.21.0)": [
       "`resources.regime = \"rafale\"` : le coût de ce plugin est BIMODAL — une composition figée ne coûte presque rien, une trame animée jusqu'à 12× plus sur CPU (le GPU, lui, ne fait pas la différence).",
       "Sans cette déclaration, `app/cpu_profiles.py` mesurait des heures de repos et concluait au sur-dimensionnement du profil (3 cœurs déclarés contre 12,9 % mesurés) — un verdict qui aurait fait rogner un manifeste correct. Il rend maintenant `regime_non_observe` tant qu'une pointe n'a pas été observée."
