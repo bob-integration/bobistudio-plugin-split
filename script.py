@@ -218,12 +218,12 @@ PIX_FMT = ({{"420": "yuv420p", "422": "yuv422p", "444": "yuv444p"}}.get(CHROMA, 
            + (("12le" if BIT_DEPTH >= 12 else "10le") if _DEEP else ""))
 UV_W = WIDTH // _CW
 UV_H = HEIGHT // _CH
-V_HEADER_SIZE = 64
-V_RING_SIZE   = CONFIG.get("shm_video_ring", 10)
 Y_SIZE        = WIDTH * HEIGHT * _BPS
 UV_SIZE       = UV_W * UV_H * _BPS
 V_FRAME_SIZE  = Y_SIZE + 2 * UV_SIZE
-V_TOTAL_SIZE  = V_HEADER_SIZE + V_RING_SIZE * V_FRAME_SIZE
+# (ex-shm_video_ring/V_RING_SIZE/V_HEADER_SIZE/V_TOTAL_SIZE : dimensionnaient un ancien shm
+# maison ; la sortie vidéo passe par bobimxl (MXL) — profondeur gérée par domaine, cf.
+# réglage de nœud mxl_history_ms. Retiré 2026-08-09, constante morte.)
 
 # ── MODE TRANCHE (chantier latence sous-trame, cf. patch mxl-planar-slices) ─────────────────
 # slice_mode=true → composition BANDE PAR BANDE : le fond ET chaque box suivent LEUR grain via

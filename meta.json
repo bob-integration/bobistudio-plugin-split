@@ -1,7 +1,10 @@
 {
-  "version": "0.22.0",
-  "date": "2026-08-02",
+  "version": "0.22.1",
+  "date": "2026-08-09",
   "changes": {
+    "Audit shm_video_ring/shm_audio_ring : purge du legacy MXL (0.22.1)": [
+      "MORT — shm_video_ring ne dimensionnait plus rien (entrée via bobimxl/MXL) : constante retirée"
+    ],
     "Clés déterminantes du coût déclarées (0.22.0)": [
       "Le manifeste déclare `resources.signature_keys` : la signature d'un profil d'étalonnage ne condense plus TOUS les paramètres, mais seulement ceux qui déterminent le coût. Même motif que sur 2110_io 0.79.0.",
       "SANS cette déclaration, le CÂBLAGE entrait dans la signature — donc tout recâblage périmait l'étalonnage, alors que le coût n'avait pas bougé. Prouvé le 2026-08-02 sur un mixer : passer une entrée de « banc-avsync-dl-380 » à « avsync », à format stricitement identique (1920x1080@50p), faisait passer la signature de #c00ff50b240b à #d1f06635ee1d. Or un plugin hot-wire est recâblé en exploitation NORMALE : son profil n'aurait jamais servi.",
