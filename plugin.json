@@ -14,7 +14,7 @@
     "mode": "split",
     "desc_i18n": "settings.js.skh_desc_split"
   },
-  "version": "0.22.1",
+  "version": "0.23.0",
   "description": "Composite 4 incrustations (PiP) sur un fond → 1 sortie, + couche ART (habillage importé, incrustation luma/chroma/alpha, au-dessus ou en dessous). Mode avancé par box : rotation, opacité, adoucissement des bords, coins arrondis, ombre portée, miroir, ratio libre, z-ordre libre, bordure 3D (biseau + source de lumière). Transitions à courbes d'accélération, décalage inter-boxes, tous les paramètres interpolés. Réglages avancés neutres par défaut → chemin de composition historique inchangé.",
   "nav": {
     "section": "traitements",
@@ -95,25 +95,25 @@
       {
         "essence": "video",
         "slot": 0,
-        "state_field": "input_0",
+        "state_field": "input_1",
         "label": "Box 1"
       },
       {
         "essence": "video",
         "slot": 1,
-        "state_field": "input_1",
+        "state_field": "input_2",
         "label": "Box 2"
       },
       {
         "essence": "video",
         "slot": 2,
-        "state_field": "input_2",
+        "state_field": "input_3",
         "label": "Box 3"
       },
       {
         "essence": "video",
         "slot": 3,
-        "state_field": "input_3",
+        "state_field": "input_4",
         "label": "Box 4"
       },
       {

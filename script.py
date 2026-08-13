@@ -196,8 +196,8 @@ def _migrate_boxes_opacity(boxes):
 
 INITIAL_BOX_CONFIG = _migrate_boxes_opacity(CONFIG.get("box_config") or [])
 # Entrées persistées par slot (state_field input_0..3 + bg_input) → re-câblage au boot
-_INIT_SLOT_SHM = [CONFIG.get("input_0"), CONFIG.get("input_1"),
-                  CONFIG.get("input_2"), CONFIG.get("input_3"), CONFIG.get("bg_input")]
+_INIT_SLOT_SHM = [CONFIG.get("input_1"), CONFIG.get("input_2"),
+                  CONFIG.get("input_3"), CONFIG.get("input_4"), CONFIG.get("bg_input")]
 
 # ─── yuv420p/422p/444p format (selon CONFIG[chroma], défaut 4:2:2) ──
 CHROMA = str(CONFIG.get("chroma") or "422")
@@ -1091,7 +1091,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 }}
                 # state_field par slot (pour la topologie / câblage générique)
                 for i in range(N_BOXES):
-                    s["input_%d" % i] = state["inputs"][i]
+                    s["input_%d" % (i + 1)] = state["inputs"][i]
                 s["bg_input"] = state["inputs"][4]
                 s["log_level"] = LOG_LEVEL   # lisible en condition de macro
             self._reply(200, s)
