@@ -20,6 +20,26 @@ from collections import deque, OrderedDict
 import numpy as np
 import bobimxl   # migration MXL Phase 1 : 5 entrées Reader + 1 sortie Writer (planar, genlock fond)
 
+class _StageDelayNulle:
+    """Repli si le bobimxl de l'IMAGE est plus ancien que le script poussé.
+
+    `deploy.py` pousse `bobimxl.py` à côté du script (il SHADOWE celui de l'image), mais le fait
+    en BEST-EFFORT : un échec de ce push est journalisé et le déploiement continue avec le binding
+    de l'image. Sans ce repli, l'absence de `StageDelay` lèverait AttributeError à l'import et
+    tuerait le conteneur — pour une métrique manquante. Une mesure absente doit coûter la mesure,
+    pas le module. Cf. docs/reference/LATENCE_CHAINE.md.
+    """
+    def observe(self, *a, **k):
+        return False
+
+    def publish(self):
+        return None
+
+
+def _sd_new():
+    return bobimxl.StageDelay() if hasattr(bobimxl, "StageDelay") else _StageDelayNulle()
+
+
 
 def _mxl_lib_state():
     """Variante libmxl réellement chargée (baseline / x86-64-v3) — diagnostic seul, ne doit
@@ -89,6 +109,12 @@ class RollingMs:
 
 lat_in  = {{}}  # {{shm_name: RollingMs}} — TRANSIT par entrée (ts_read − ts_in producteur) = arrivée
 own_lat = RollingMs()  # traitement PROPRE du nœud (ts_out − ts_cycle_start) → own_latency_ms
+# DÉLAI D'ÉTAGE en TRAMES — grandeur DISTINCTE de own_lat, qui est un temps de CALCUL.
+# La sortie porte une coordonnée IMPOSÉE mais dérivée de la grille (open_grain(index=out_index)) :
+# c'est donc un étage qui RE-CADENCE, et l'écart mesuré est un vrai délai. Multi-couches : on
+# passe TOUTES les couches liées, StageDelay en retient les deux bornes.
+# Cf. docs/reference/LATENCE_CHAINE.md.
+delai_etage = _sd_new()
 
 # ─── Config injectée (contrat plugin) ───────────────────────
 CONFIG         = {config}
@@ -3262,6 +3288,11 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot, bg_fill=("solid",
     bg = next((L for L in layers if L["slot"] == 4), None)
     # 3) grain de sortie + publication PROGRESSIVE bande par bande.
     _gidx, gi_o, vw_o = out.open_grain(index=out_index)
+    # `layers` porte rd (reader) et fi (index réellement lu) par couche — les deux chemins de
+    # liaison (l.3216 et l.3250) renseignent ces deux clés.
+    delai_etage.observe(out, _gidx,
+                        [(L["rd"], L["fi"]) for L in layers
+                         if L.get("rd") is not None and L.get("fi") is not None])
     oy, ou, ovv = _plane_views(vw_o)
     nb = HEIGHT // SLICE_H
     deadl = time.monotonic() + (interval * 1.5)   # garde-fou GLOBAL (borne dure de la trame)
@@ -3523,7 +3554,14 @@ while True:
         if _art_above():                      # ART AU-DESSUS des boxes (habillage à trous)
             _paint_art_rows(oy, ou, ovv, 0, HEIGHT)
 
-        _ecrire_sortie(out, buf, out.next_index())
+        # ⚠ CHEMIN TRAME PLEINE : pas de délai d'étage publié ici. `_read_slot` ne rend que
+        # (octets, ts) — ni reader ni index de grain — donc rien à confronter à l'index de sortie.
+        # `delai_etage.publish()` renverra None, que l'interface affiche « délai non mesuré » :
+        # c'est la règle (absence de mesure ≠ zéro). L'instrumenter demanderait de faire remonter
+        # l'index par `_read_slot`, sur le chemin chaud. Le mode TRANCHE, lui, est mesuré.
+        _oi = out.next_index()
+        delai_etage.observe(out, _oi, [])   # compte le refus (cf. commentaire ci-dessus)
+        _ecrire_sortie(out, buf, _oi)
         ts_out = time.time_ns()
 
     with state_lock:
@@ -3568,6 +3606,7 @@ while True:
             metrics["frame_index"] = frame_index
             metrics["inputs_latency_ms"] = {{k: v.avg() for k, v in lat_in.items()}}
             metrics["own_latency_ms"] = own_lat.avg()
+            metrics["delai_etage_trames"] = delai_etage.publish()
             # ★ JAMAIS DE REPLI MUET : un kernel mvk qui refuse (forme/dtype inattendus) renvoie
             # False et l'appelant retombe en numpy — 5 à 20× plus lent. Compté ET signé ici.
             metrics["mvk_miss"] = dict(_mvk_miss)
