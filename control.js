@@ -1232,7 +1232,7 @@ ${stops.length < nmax ? `<button type="button" class="btn" id="split_grad_add">$
         const out = [];
         if (w.indexOf('no_alpha') >= 0) {
             out.push(`<div class="alert alert-warning">⚠ ${esc(T('art_w_noalpha',
-                'Cette image n\'a AUCUN canal de transparence (JPEG, ou PNG opaque). Avec la clé « alpha », elle est donc entièrement opaque et MASQUERA les box. Remèdes : importer un PNG à fond transparent, choisir la clé « luma » ou « chroma », ou placer l\'habillage EN DESSOUS des box.'))}</div>`);
+                'Cette image n\'a AUCUN canal de transparence (JPEG, ou PNG opaque). Avec l\'incrustation « alpha », elle est donc entièrement opaque et MASQUERA les box. Remèdes : importer un PNG à fond transparent, choisir l\'incrustation « luma » ou « chroma », ou placer l\'habillage EN DESSOUS des box.'))}</div>`);
         }
         if (w.indexOf('covers_all') >= 0) {
             const holes = (a.holes == null) ? null : Math.round(a.holes * 100);
@@ -1264,12 +1264,12 @@ ${stops.length < nmax ? `<button type="button" class="btn" id="split_grad_add">$
   <label class="toggle-inline"><input type="checkbox" class="ctl-switch" id="art_above" ${a.above ? 'checked' : ''}>
     <span>${esc(T('art_above', 'Au-dessus des box'))}</span></label>
   <label class="toggle-inline"><input type="checkbox" class="ctl-switch" id="art_inv" ${a.invert ? 'checked' : ''}>
-    <span>${esc(T('art_invert', 'Inverser la clé'))}</span></label>
+    <span>${esc(T('art_invert', 'Inverser la découpe'))}</span></label>
 </div>
 <div class="split-grid split-grid-narrow">
   <div class="field"><label for="art_key">${esc(T('art_key', 'Incrustation'))}</label>
     <select class="ctl-select" id="art_key">${keyOpts}</select></div>
-  <div class="field"><label for="art_chroma">${esc(T('art_chroma', 'Couleur de clé (chroma)'))}</label>
+  <div class="field"><label for="art_chroma">${esc(T('art_chroma', 'Couleur d\'incrustation (chroma)'))}</label>
     <input type="color" id="art_chroma" value="${esc(a.chroma_key || '#00b140')}"></div>
 </div>
 <div class="cc-knob-row ${noImg ? 'is-off' : ''}" id="art_knobs">
@@ -1282,7 +1282,7 @@ ${artWarnHtml(a)}
 ${noImg ? `<p class="meta">${esc(T('art_need_img', 'Importez d\'abord une image d\'habillage : sans image, l\'incrustation n\'a pas d\'objet.'))}</p>` : ''}
 <p class="meta">${esc(T('art_note', 'Image importée (PNG/JPEG), pas une 6ᵉ entrée vidéo : un habillage vidéo live coûterait 21,7 ms/trame en 1080p (108 % du budget 50 fps). Un PNG à fond transparent + clé « alpha » est le cas le plus propre. L\'image n\'est pas persistée : à réimporter après un redéploiement du conteneur.'))}</p>`;
         $('#art_state').textContent = noImg ? T('art_none', 'Aucune image importée.')
-            : (a.loaded ? T('art_loaded', 'Image chargée et clé précalculée.') : T('art_pending', 'Image importée — activez l\'habillage pour la cuire.'));
+            : (a.loaded ? T('art_loaded', 'Image chargée et signal de découpe précalculé.') : T('art_pending', 'Image importée — activez l\'habillage pour la cuire.'));
         $('#art_en').onchange = function () { postArt({ enabled: this.checked }); };
         $('#art_above').onchange = function () { postArt({ above: this.checked }); };
         $('#art_inv').onchange = function () { postArt({ invert: this.checked }); };
