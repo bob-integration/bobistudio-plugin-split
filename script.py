@@ -1641,12 +1641,17 @@ _sl_lasthead = {{}}   # slot → dernière tête vue (détection génération p�
 _sl_dbg = None        # [couches, valid0, attentes, replis, dormantes] de la dernière trame
 # Estampille de la sortie (mode tranche), cumuls publiés sur :8080 sous slice.stamp :
 #   propagated = sortie portant l'index de son contenu (src_index) ; grid = aucune couche source
-#   sur la grille (fond uni seul) → index de grille ; forced = index source PAS plus récent que la
-#   trame précédente → next_index a dû avancer d'un cran, la sortie porte alors un index plus
-#   récent que son contenu ; off_target = couche sur la grille qui n'a pas pu être lue à la cible
-#   commune (repli sur sa tête : cette couche est décalée dans la trame).
-_stamp = dict(propagated=0, grid=0, forced=0, off_target=0)
-_stamp_last_src = -1
+#   sur la grille (fond uni seul) → index de grille ; held = index source PAS plus récent que le
+#   dernier grain publié → trame RETENUE (non publiée, l'aval garde la précédente) ; off_target =
+#   couche sur la grille qui n'a pas pu être lue à la cible commune (repli sur sa tête : cette
+#   couche est décalée dans la trame).
+# ⚠ Une trame dont l'index source ne progresse pas est RETENUE, jamais publiée à « compteur+1 » :
+# `next_index(src_index=s)` rend max(s, compteur+1), et ce cran d'avance ne se résorbe JAMAIS
+# (chaque trame suivante refait max(s, compteur+1)) — on retomberait pour toujours dans le défaut
+# corrigé ici, une trame de retard du contenu sur son étiquette. Même cas après une trame publiée
+# sur la grille (fond uni), dont l'index est en avance sur toute source.
+_stamp = dict(propagated=0, grid=0, held=0, off_target=0)
+_stamp_last_out = -1     # dernier index PUBLIÉ (= compteur du writer : seuls ces appels le bougent)
 
 
 def _grid_now():
@@ -3186,7 +3191,7 @@ def _slice_frame(grid_ref, fi_out, tr, boxes, ts_in_per_slot, bg_fill=("solid", 
     entrées mortes + repli grain complet : la sortie n'est JAMAIS bloquée par une source.
     Commit final TOUJOURS (finally) : un grain laissé partiel ne serait jamais lisible.
     Renvoie le cumul des attentes get_slice (à EXCLURE de own_latency_ms)."""
-    global _sl_dbg, _stamp_last_src
+    global _sl_dbg, _stamp_last_out
     wait_ns = 0
     # 1) plan des couches à composer (fond, puis les boxes dans l'ordre de superposition `z`).
     # FOND : `source` → slot 4 lu comme une couche ; `none`/`color` → remplissage par bande
@@ -3337,17 +3342,19 @@ def _slice_frame(grid_ref, fi_out, tr, boxes, ts_in_per_slot, bg_fill=("solid", 
     # La sortie PORTE l'index de son contenu : le plus ancien des index réellement lus parmi les
     # couches sur la grille. Aucune (fond uni seul, ou sources hors grille) → grille.
     src = [int(L["fi"]) for L in layers if L.get("ongrid")]
-    if src:
-        src_idx = min(src)
-        if src_idx <= _stamp_last_src:
-            _stamp["forced"] += 1     # next_index avance d'un cran : étiquette > contenu
-        else:
-            _stamp["propagated"] += 1
-        _stamp_last_src = max(_stamp_last_src, src_idx)
-        _gidx, gi_o, vw_o = out.open_grain(src_index=src_idx)
+    if src and min(src) <= _stamp_last_out:
+        # RETENUE : index imposé ≤ dernier publié → open_grain rend un brouillon, commit ne publie
+        # rien (cf. bobimxl.Writer.open_grain). Surtout pas src_index= ici (cf. _stamp).
+        _stamp["held"] += 1
+        _gidx, gi_o, vw_o = out.open_grain(index=min(src))
+    elif src:
+        _stamp["propagated"] += 1
+        _gidx, gi_o, vw_o = out.open_grain(src_index=min(src))
+        _stamp_last_out = int(_gidx)
     else:
         _stamp["grid"] += 1
         _gidx, gi_o, vw_o = out.open_grain()
+        _stamp_last_out = int(_gidx)
     # `layers` porte rd (reader) et fi (index réellement lu) par couche — les deux chemins de
     # liaison renseignent ces deux clés.
     delai_etage.observe(out, _gidx,
