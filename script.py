@@ -1171,7 +1171,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 self._reply(400, {{"error": "mode attendu : " + " | ".join(LATENCY_MODES)}}); return
             with state_lock:
                 state["latency_mode"] = m
-            log("split: délai → %s" % m, "info")
+            log("split: delay -> %s" % m, "info")
             self._reply(200, {{"ok": True, "latency_mode": m}})
 
         elif self.path == "/log_level":
@@ -1689,6 +1689,21 @@ def _grid_now():
     if not hasattr(bobimxl, "current_index"):
         return out.next_index()
     return bobimxl.current_index(FPS, 1)
+
+
+# SAUT D'HORLOGE (cf. le mélangeur, vécu le 2026-10-25 sur dl360-1 : ~149 s en avant puis retour) :
+# un recul de la cible de plus de CLOCK_JUMP_SLOTS sous le dernier numéro publié n'est pas une
+# gigue. Retenir attendrait que l'horloge rattrape ce numéro « futur » — sortie figée. On rouvre la
+# sortie (nouvelle génération, les lecteurs la détectent) et on repart de l'heure présente.
+CLOCK_JUMP_SLOTS = 2 * FPS
+
+
+def _reopen_output():
+    global out
+    log("split: output reopened after a clock jump", "warning")
+    try: out.close()
+    except Exception: pass
+    out = _ouvrir_sortie(SHM_OUT)
 # Cumulatifs depuis le boot (suffixe _total sur :8080) — accumulés PAR ÉVÉNEMENT dans
 # _sl_ensure (robuste à une exception mi-trame). Leçon du banc mixer : un compteur cumulatif
 # AMBIGU se lit mal → le cumul est explicitement suffixé _total, l'état courant (dormant,
@@ -3367,6 +3382,10 @@ def _slice_frame(grid_ref, fi_out, tr, boxes, ts_in_per_slot, bg_fill=("solid", 
     # couche en retard (comptée `late`) y figure avec sa dernière image. Aucune couche sur la
     # grille (fond uni seul, ou sources hors grille) → grille.
     src = [target] if any(L.get("ongrid") for L in layers) else []
+    if _stamp_last_out - (min(src) if src else grid_ref) > CLOCK_JUMP_SLOTS:
+        _reopen_output()
+        _stamp["reanchored"] = _stamp.get("reanchored", 0) + 1
+        _stamp_last_out = -1
     if src and min(src) <= _stamp_last_out:
         # RETENUE : index imposé ≤ dernier publié → open_grain rend un brouillon, commit ne publie
         # rien (cf. bobimxl.Writer.open_grain). Surtout pas src_index= ici (cf. _stamp).
@@ -3504,6 +3523,10 @@ while True:
         # bandes noires cadencées (signal vivant). _next_index en tai = lecture pure de grille.
         now = time.time()
         wait = next_t - now
+        if wait > 2 * interval:
+            # L'horloge a RECULÉ (saut, cf. CLOCK_JUMP_SLOTS) : sans ce recalage on dormirait
+            # toute l'ampleur du recul — 149 s le 2026-10-25 sur dl360-1 — sortie figée.
+            next_t = _grid_next(now, interval); wait = next_t - now
         if wait > 0: time.sleep(wait)
         _fi_out = _grid_now()
     elif GENLOCK and bg_is_src:
