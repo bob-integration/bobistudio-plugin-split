@@ -1,7 +1,17 @@
 {
-  "version": "0.24.3",
+  "version": "0.24.5",
   "date": "2026-10-25",
   "changes": {
+    "Délai rangé dans ⚙, appliqué à chaud ; lumière morte retirée de ⚙ (0.24.5)": [
+      "Le réglage « Délai » est technique : il quitte le panneau d'exploitation pour le panneau ⚙ (Système), où il s'applique À CHAUD, sans redéploiement (champ `live` du config_schema, nouveau dans le cœur).",
+      "RETIRÉ de ⚙ : « Source de lumière — direction / hauteur ». Ces deux champs (light_angle, light_altitude) n'étaient lus par personne — le moteur lit `light`, réglé depuis le panneau du split — : « Appliquer » redéployait pour rien. La lumière se règle là où elle a toujours pris effet, dans Lumière & transitions."
+    ],
+    "Délai réglable : fixe d'une image (défaut) ou au plus rapide (0.24.4)": [
+      "CORRIGÉ (défaut de 0.24.2/0.24.3) — la cible était « la plus ancienne des têtes » au réveil. Face à une caméra 2110, qui livre la 1ʳᵉ tranche de l'image X à 1,4 ms, la plus ancienne tête valait toujours X−1 : une image de retard forcée (mesuré le 2026-10-25 sur dl360-1 : source publiée au créneau X, split au créneau X+1, 200/200). Et une source en panne, figée, retenait toutes les autres.",
+      "NOUVEAU réglage `latency_mode`, par split, réglable à chaud (/latency, action et param_tree pour les macros), persisté : « Fixe, 1 image » (défaut) lit l'image du créneau précédent, délai constant, toutes les sources à temps ; « Au plus rapide » lit l'image du créneau en cours, attend sa 1ʳᵉ tranche au plus une demi-période, une source en retard passe avec sa dernière image.",
+      "La cible vient de l'HORLOGE, jamais d'une source : une source en panne ne retient plus personne. Étiquette de sortie = la cible.",
+      "Témoin `slice.stamp` : `late` et `late_by_slot` (bg, box1…box4) comptent les couches arrivées après le budget ; `latency_mode` publié."
+    ],
     "Trame retenue plutôt qu'étiquetée trop tard (0.24.3)": [
       "CORRIGÉ (défaut de 0.24.2) — quand l'index source ne progressait pas d'une trame à l'autre (gigue de la source), la sortie était publiée à « compteur+1 » ; next_index refaisant max(source, compteur+1) à chaque trame, ce cran d'avance ne se résorbait JAMAIS : retour silencieux à une trame de retard du contenu sur son étiquette. La trame est désormais RETENUE (non publiée), compteur `slice.stamp.held`."
     ],

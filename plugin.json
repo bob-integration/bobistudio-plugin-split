@@ -14,7 +14,7 @@
     "mode": "split",
     "desc_i18n": "settings.js.skh_desc_split"
   },
-  "version": "0.24.3",
+  "version": "0.24.5",
   "description": "Composite 4 incrustations (PiP) sur un fond → 1 sortie, + couche ART (habillage importé, incrustation luma/chroma/alpha, au-dessus ou en dessous). Mode avancé par box : rotation, opacité, adoucissement des bords, coins arrondis, ombre portée, miroir, ratio libre, z-ordre libre, bordure 3D (biseau + source de lumière). Transitions à courbes d'accélération, décalage inter-boxes, tous les paramètres interpolés. Réglages avancés neutres par défaut → chemin de composition historique inchangé.",
   "nav": { "section": "composition", "label": "Composition", "route": "/composition", "order": 30 },
   "script_template": "script.py",
@@ -133,6 +133,7 @@
       "/transition",
       "/global",
       "/bg",
+      "/latency",
       "/log_level"
     ],
     "atem": {
@@ -167,6 +168,29 @@
           "label": "Transition (ms, 0 = cut)",
           "type": "number",
           "default": 0
+        }
+      ]
+    },
+    {
+      "id": "latency_mode",
+      "label": "Délai (à chaud)",
+      "endpoint": "/latency",
+      "params": [
+        {
+          "key": "mode",
+          "label": "Délai",
+          "type": "text",
+          "default": "fixed_1",
+          "options": [
+            {
+              "value": "fixed_1",
+              "label": "Fixe, 1 image (défaut)"
+            },
+            {
+              "value": "fastest",
+              "label": "Au plus rapide"
+            }
+          ]
         }
       ]
     },
@@ -410,6 +434,22 @@
         }
       },
       {
+        "label": "Délai",
+        "endpoint": "/latency",
+        "fields": {
+          "mode": {
+            "label": "Délai",
+            "type": "enum",
+            "options": [
+              "fixed_1",
+              "fastest"
+            ],
+            "default": "fixed_1",
+            "path": "latency_mode"
+          }
+        }
+      },
+      {
         "label": "Journal (diagnostic)",
         "endpoint": "/log_level",
         "fields": {
@@ -476,26 +516,6 @@
       ]
     },
     {
-      "key": "light_angle",
-      "type": "number",
-      "label_i18n": "split.cfg.light_angle",
-      "help_i18n": "split.cfg.light_angle_help",
-      "min": 0,
-      "max": 360,
-      "default": 36,
-      "scope": "system"
-    },
-    {
-      "key": "light_altitude",
-      "type": "number",
-      "label_i18n": "split.cfg.light_altitude",
-      "help_i18n": "split.cfg.light_altitude_help",
-      "min": 0,
-      "max": 90,
-      "default": 25,
-      "scope": "system"
-    },
-    {
       "key": "transition_curve",
       "type": "select",
       "label_i18n": "split.cfg.curve",
@@ -550,6 +570,28 @@
       "max": 2000,
       "default": 0,
       "scope": "user"
+    },
+    {
+      "key": "latency_mode",
+      "type": "select",
+      "label": "Délai",
+      "help": "Fixe, 1 image (défaut) : le split compose toujours l'image du créneau précédent. Le délai est constant, et toutes les sources arrivent à temps, même traitées ou en retard. Au plus rapide : il compose l'image du créneau en cours dès que ses premières lignes arrivent ; une source en retard passe avec sa dernière image, et c'est compté. Réglable à chaud.",
+      "options": [
+        {
+          "value": "fixed_1",
+          "label": "Fixe, 1 image (défaut)"
+        },
+        {
+          "value": "fastest",
+          "label": "Au plus rapide"
+        }
+      ],
+      "default": "fixed_1",
+      "scope": "system",
+      "live": {
+        "endpoint": "/latency",
+        "key": "mode"
+      }
     },
     {
       "key": "log_level",

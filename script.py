@@ -956,6 +956,14 @@ _init_bg = _norm_bg(CONFIG.get("bg"))
 # Rétro-compat : un fond CÂBLÉ (bg_input) sans mode explicite = mode `source` (comportement d'avant).
 if not CONFIG.get("bg") and _INIT_SLOT_SHM[4]:
     _init_bg["mode"] = "source"
+LATENCY_MODES = ("fixed_1", "fastest")
+
+
+def _latency_mode(v):
+    v = str(v or "").strip().lower()
+    return v if v in LATENCY_MODES else "fixed_1"
+
+
 state = {{
     "inputs":     _init_inputs,
     "boxes":      _init_boxes[:N_BOXES],
@@ -966,6 +974,11 @@ state = {{
     # transition : None or {{start, duration_ms, from:[boxes], to:[boxes], gfrom, gto, bgfrom,
     #                        bgto, curve, stagger_ms}}
     "transition": None,
+    # DÉLAI (0.24.4) : "fixed_1" (défaut) = lire l'image du créneau PRÉCÉDENT de la grille — délai
+    # constant d'une image, toutes les sources arrivent à temps ; "fastest" = lire l'image du
+    # créneau COURANT, attente bornée de sa 1ʳᵉ tranche, une source en retard passe avec sa
+    # dernière image (comptée). Réglable à chaud (/latency), persisté (hooks.sync_state).
+    "latency_mode": _latency_mode(CONFIG.get("latency_mode")),
 }}
 
 # ─── SOURCE DE LUMIÈRE (globale) : direction + hauteur. C'est elle qui donne le RELIEF aux
@@ -1065,9 +1078,11 @@ class ControlHandler(BaseHTTPRequestHandler):
                     # est en cours » — ne pas le repeupler avec les réglages, des consommateurs
                     # le testent comme un drapeau. Les réglages vivent sous `transition_defaults`.
                     "transition_defaults": dict(TRANS),
+                    "latency_mode": state["latency_mode"],
                     "art":        _art_public(),
                     "caps": {{
                         "easings": list(EASINGS),
+                        "latency_modes": list(LATENCY_MODES),
                         # Bornes des positions : le HORS CADRE est autorisé (entrées/sorties de
                         # champ). L'UI lit ces bornes — elle n'en code aucune.
                         "pos": [POS_MIN, POS_MAX],
@@ -1146,6 +1161,18 @@ class ControlHandler(BaseHTTPRequestHandler):
                 state["inputs"][idx] = shm_name
                 state["transition"] = None
             self._reply(200, {{"ok": True}})
+
+        elif self.path == "/latency":
+            # Délai À CHAUD : "fixed_1" | "fastest". Passer de fastest à fixed_1 recule la cible
+            # d'un cran → UNE trame retenue (l'aval garde l'image précédente) ; l'inverse saute
+            # une image. Aucune autre conséquence.
+            m = str(body.get("mode") or body.get("latency_mode") or "").strip().lower()
+            if m not in LATENCY_MODES:
+                self._reply(400, {{"error": "mode attendu : " + " | ".join(LATENCY_MODES)}}); return
+            with state_lock:
+                state["latency_mode"] = m
+            log("split: délai → %s" % m, "info")
+            self._reply(200, {{"ok": True, "latency_mode": m}})
 
         elif self.path == "/log_level":
             # Verbosité À CHAUD (pas de redéploiement) : instruction d'incident. Le niveau
@@ -1641,16 +1668,16 @@ _sl_lasthead = {{}}   # slot → dernière tête vue (détection génération p�
 _sl_dbg = None        # [couches, valid0, attentes, replis, dormantes] de la dernière trame
 # Estampille de la sortie (mode tranche), cumuls publiés sur :8080 sous slice.stamp :
 #   propagated = sortie portant l'index de son contenu (src_index) ; grid = aucune couche source
-#   sur la grille (fond uni seul) → index de grille ; held = index source PAS plus récent que le
-#   dernier grain publié → trame RETENUE (non publiée, l'aval garde la précédente) ; off_target =
-#   couche sur la grille qui n'a pas pu être lue à la cible commune (repli sur sa tête : cette
-#   couche est décalée dans la trame).
+#   sur la grille (fond uni seul) → index de grille ; held = cible PAS plus récente que le dernier
+#   grain publié → trame RETENUE (non publiée, l'aval garde la précédente) ; late = couche sur la
+#   grille dont l'image visée n'est pas arrivée dans le budget → elle passe avec sa dernière image
+#   (son contenu est plus vieux que l'étiquette) ; late_by_slot = le même, par entrée.
 # ⚠ Une trame dont l'index source ne progresse pas est RETENUE, jamais publiée à « compteur+1 » :
 # `next_index(src_index=s)` rend max(s, compteur+1), et ce cran d'avance ne se résorbe JAMAIS
 # (chaque trame suivante refait max(s, compteur+1)) — on retomberait pour toujours dans le défaut
 # corrigé ici, une trame de retard du contenu sur son étiquette. Même cas après une trame publiée
 # sur la grille (fond uni), dont l'index est en avance sur toute source.
-_stamp = dict(propagated=0, grid=0, held=0, off_target=0)
+_stamp = dict(propagated=0, grid=0, held=0, late=0, late_by_slot=dict())
 _stamp_last_out = -1     # dernier index PUBLIÉ (= compteur du writer : seuls ces appels le bougent)
 
 
@@ -3197,27 +3224,22 @@ def _slice_frame(grid_ref, fi_out, tr, boxes, ts_in_per_slot, bg_fill=("solid", 
     # FOND : `source` → slot 4 lu comme une couche ; `none`/`color` → remplissage par bande
     # (memset des 3 plans : la couleur est DÉJÀ convertie et cachée — jamais par trame).
     plan = ([(4, None, 1.0)] if bg_is_src else []) + _plan_layers(tr, boxes)
-    # 2a) CIBLE COMMUNE (0.24.2) : la plus ancienne des têtes SUR LA GRILLE (|tête − grille| ≤ 2).
-    #     Toutes ces couches sont lues à cet index, et la sortie le PORTE (src_index, cf. 3).
-    #     Jusqu'en 0.24.1 la cible était le créneau où le split travaille : aucune source n'avait
-    #     encore commencé cette image (la mire la commence ~13 ms plus tard), le split se repliait
-    #     sur la précédente et la publiait sous l'index du créneau — contenu en retard d'une trame
-    #     sur son étiquette (mesuré le 2026-10-25 : +1 trame, 250 sur 250). Un mélangeur aval qui
-    #     lit toutes ses entrées au même index décalait donc le split d'une image sur une source
-    #     directe, sans aucun témoin. Une source HORS GRILLE (index libre, ou plus de 2 trames de
-    #     retard) suit sa tête et ne retient pas la sortie.
-    heads = []
-    for slot, _b, _a in plan:
-        rd0 = ensure_input(slot)
-        if rd0 is None:
-            continue
-        try:
-            h0 = rd0.head_index()
-        except Exception:
-            continue
-        if h0 != bobimxl.MXL_UNDEFINED_INDEX and abs(int(h0) - grid_ref) <= 2:
-            heads.append(int(h0))
-    target = min(heads) if heads else grid_ref
+    # 2a) CIBLE (0.24.4) : définie par l'HORLOGE, jamais par une source. "fastest" = le créneau
+    #     courant (grid_ref) ; "fixed_1" = le créneau précédent. Toutes les couches sur la grille
+    #     sont lues à cette cible, et la sortie la PORTE (cf. 3).
+    #     ⛔ Plus jamais « la plus ancienne des têtes » (0.24.2/0.24.3) : au réveil, une caméra 2110
+    #     n'a pas encore commencé le créneau courant (1ʳᵉ tranche à 1,4 ms) → la plus ancienne tête
+    #     valait TOUJOURS créneau − 1, soit une image de retard forcée (mesuré le 2026-10-25 sur
+    #     dl360-1 : source publiée au créneau X, split au créneau X+1, 200/200). Et une source en
+    #     panne, figée dans la bande, retenait toutes les autres.
+    with state_lock:
+        _lmode = state["latency_mode"]
+    target = grid_ref if _lmode == "fastest" else grid_ref - 1
+    # Budget d'attente de la 1ʳᵉ tranche, ABSOLU et partagé par toutes les couches : une
+    # demi-période. Au-delà, la 1ʳᵉ bande de sortie partirait trop tard pour l'aval (l'émetteur
+    # 2110 réclame l'image ~3,6 ms avant l'époque suivante). En fixed_1 la cible est déjà là :
+    # le budget ne sert qu'aux sources de plus d'une image de retard.
+    _bind_deadl = time.monotonic() + 0.5 * interval
     # 2b) 1ʳᵉ tranche de chaque couche (le suivi des bandes suivantes se fait au fil du compose).
     layers = []
     dormant = 0
@@ -3270,7 +3292,8 @@ def _slice_frame(grid_ref, fi_out, tr, boxes, ts_in_per_slot, bg_fill=("solid", 
             # source HORS GRILLE → sa tête, comme avant.
             on_grid = (hi == bobimxl.MXL_UNDEFINED_INDEX or abs(hi - grid_ref) <= 2)
             tgt = target if on_grid else hi
-            got = rd.get_slice(tgt, 1, timeout_ns=3_000_000)
+            _left = max(1, int((_bind_deadl - time.monotonic()) * 1e9))
+            got = rd.get_slice(tgt, 1, timeout_ns=_left)
             if got is None and tgt != hi and hi != bobimxl.MXL_UNDEFINED_INDEX:
                 got = rd.get_slice(hi, 1, timeout_ns=1_000_000)   # cible absente → grain courant
             if got is None:
@@ -3323,8 +3346,9 @@ def _slice_frame(grid_ref, fi_out, tr, boxes, ts_in_per_slot, bg_fill=("solid", 
             # Sur la grille ET vivante : seule une telle couche fixe l'index de la sortie (une
             # dormante — producteur mort — ne doit pas la retenir).
             ongrid = on_grid and not is_dormant and abs(int(fi) - grid_ref) <= 2
-            if ongrid and int(fi) != target:
-                _stamp["off_target"] += 1
+            if on_grid and int(fi) != target:
+                _stamp["late"] += 1
+                _stamp["late_by_slot"][slot] = _stamp["late_by_slot"].get(slot, 0) + 1
             layers.append({{"slot": slot, "rd": rd, "fi": fi, "sy": sy, "su": su, "sv": sv,
                             "total": total, "valid": valid,
                             "islh": max(1, HEIGHT // total), "g": g, "st": st,
@@ -3339,9 +3363,10 @@ def _slice_frame(grid_ref, fi_out, tr, boxes, ts_in_per_slot, bg_fill=("solid", 
     _sl_dbg = [len(layers), -1, 0, 0, dormant]
     bg = next((L for L in layers if L["slot"] == 4), None)
     # 3) grain de sortie + publication PROGRESSIVE bande par bande.
-    # La sortie PORTE l'index de son contenu : le plus ancien des index réellement lus parmi les
-    # couches sur la grille. Aucune (fond uni seul, ou sources hors grille) → grille.
-    src = [int(L["fi"]) for L in layers if L.get("ongrid")]
+    # La sortie PORTE la cible : l'image qu'elle contient pour toute couche arrivée à temps. Une
+    # couche en retard (comptée `late`) y figure avec sa dernière image. Aucune couche sur la
+    # grille (fond uni seul, ou sources hors grille) → grille.
+    src = [target] if any(L.get("ongrid") for L in layers) else []
     if src and min(src) <= _stamp_last_out:
         # RETENUE : index imposé ≤ dernier publié → open_grain rend un brouillon, commit ne publie
         # rien (cf. bobimxl.Writer.open_grain). Surtout pas src_index= ici (cf. _stamp).
@@ -3754,7 +3779,10 @@ while True:
                 metrics["slice"] = {{"layers": _sl_dbg[0], "valid0": _sl_dbg[1],
                                     "waits": _sl_dbg[2], "fallbacks": _sl_dbg[3],
                                     "dormant": _sl_dbg[4], "backoff": len(_sl_backoff),
-                                    "stamp": dict(_stamp),
+                                    "stamp": dict(_stamp, latency_mode=state["latency_mode"],
+                                                  late_by_slot=dict(
+                                                      (("bg" if k == 4 else "box%d" % (k + 1)), v)
+                                                      for k, v in _stamp["late_by_slot"].items())),
                                     "bands": HEIGHT // SLICE_H,
                                     "waited_ms": round(_sl_waited / 1e6, 2),
                                     "waits_total": _sl_tot["waits"],

@@ -41,6 +41,10 @@ def sync_state(state, params, ctx):
     light = state.get("light")
     if isinstance(light, dict) and light:
         params["light"] = {k: light[k] for k in ("angle", "altitude") if k in light}
+    # Délai (fixed_1 | fastest) : réglable à chaud, donc persisté ici — sinon un redéploiement
+    # reviendrait en silence au défaut.
+    if state.get("latency_mode") in ("fixed_1", "fastest"):
+        params["latency_mode"] = state["latency_mode"]
     trans = state.get("transition_defaults")
     if isinstance(trans, dict) and trans:
         params["transition"] = {k: trans[k] for k in ("curve", "stagger_ms") if k in trans}
