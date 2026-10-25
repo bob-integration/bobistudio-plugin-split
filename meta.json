@@ -1,7 +1,10 @@
 {
-  "version": "0.24.7",
+  "version": "0.24.8",
   "date": "2026-10-25",
   "changes": {
+    "Saut d'horloge : nouvelle génération de flux (0.24.8)": [
+      "Après un saut d'horloge, la sortie repart en NOUVELLE GÉNÉRATION de flux (Writer.regenerate : flux purgé puis recréé). La « réouverture » précédente réattachait en fait le même flux, dont la tête redescendait en réécrivant des grains déjà publiés. Coût mesuré : un lecteur aval retrouve la nouvelle génération en ~5 s (sa garde de flux figé)."
+    ],
     "Cadence flow sur la grille MXL (0.24.7)": [
       "CORRIGÉ — la cadence flow dormait jusqu'à une frontière de time.time(), décalée de 10 ms sur le créneau MXL (mesuré le 2026-10-25) : chaque image démarrait 10 ms après le début de son créneau. Elle suit désormais la grille MXL, phase calibrée, avec le recalage des sauts d'horloge."
     ],

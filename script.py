@@ -1693,8 +1693,9 @@ def _grid_now():
 
 # SAUT D'HORLOGE (cf. le mélangeur, vécu le 2026-10-25 sur dl360-1 : ~149 s en avant puis retour) :
 # un recul de la cible de plus de CLOCK_JUMP_SLOTS sous le dernier numéro publié n'est pas une
-# gigue. Retenir attendrait que l'horloge rattrape ce numéro « futur » — sortie figée. On rouvre la
-# sortie (nouvelle génération, les lecteurs la détectent) et on repart de l'heure présente.
+# gigue. Retenir attendrait que l'horloge rattrape ce numéro « futur » — sortie figée. On repart
+# sur une NOUVELLE GÉNÉRATION de la sortie (Writer.regenerate : flux purgé puis recréé ; rouvrir
+# le writer réattacherait le même flux, tête qui redescend) et de l'heure présente.
 CLOCK_JUMP_SLOTS = 2 * FPS
 
 
@@ -1736,7 +1737,10 @@ def _wait_next_slot():
 
 def _reopen_output():
     global out
-    log("split: output reopened after a clock jump", "warning")
+    log("split: new generation of the output after a clock jump", "warning")
+    if hasattr(out, "regenerate"):
+        out.regenerate()
+        return
     try: out.close()
     except Exception: pass
     out = _ouvrir_sortie(SHM_OUT)
