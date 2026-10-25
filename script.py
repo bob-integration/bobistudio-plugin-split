@@ -1698,6 +1698,42 @@ def _grid_now():
 CLOCK_JUMP_SLOTS = 2 * FPS
 
 
+# CADENCE FLOW sur la GRILLE MXL (0.24.7) : un tour par créneau de `current_index()`. La cadence
+# dormait jusqu'à une frontière de `time.time()` — or le créneau MXL change à MI-créneau de
+# l'horloge (mesuré le 2026-10-25 : 10,00 ms, 50/50) : le split démarrait chaque image 10 ms
+# après le début de son créneau. Phase CALIBRÉE sur une frontière observée, comme le mélangeur.
+_SLOT_NS = int(round(1e9 / FPS))
+_flow_last_grid = 0
+_flow_phase = None
+
+
+def _calibrate_grid_phase():
+    g0 = int(bobimxl.current_index(FPS, 1))
+    t_end = time.monotonic() + 2.5 / FPS
+    while time.monotonic() < t_end:
+        if int(bobimxl.current_index(FPS, 1)) != g0:
+            return int(bobimxl.now_tai()) % _SLOT_NS
+    return 0
+
+
+def _wait_next_slot():
+    """Créneau SUIVANT de la grille MXL (dort jusqu'à lui). Recul > CLOCK_JUMP_SLOTS = saut
+    d'horloge → recalage immédiat au lieu d'attendre l'ampleur du recul."""
+    global _flow_last_grid, _flow_phase
+    if not hasattr(bobimxl, "current_index"):
+        time.sleep(1.0 / FPS)
+        return _grid_now()
+    if _flow_phase is None:
+        _flow_phase = _calibrate_grid_phase()
+    while True:
+        g = int(bobimxl.current_index(FPS, 1))
+        if g > _flow_last_grid or _flow_last_grid - g > CLOCK_JUMP_SLOTS:
+            _flow_last_grid = g
+            return g
+        left = _SLOT_NS - ((int(bobimxl.now_tai()) - _flow_phase) % _SLOT_NS)
+        time.sleep(max(0.0002, left / 1e9))
+
+
 def _reopen_output():
     global out
     log("split: output reopened after a clock jump", "warning")
@@ -3521,14 +3557,7 @@ while True:
         # fond disparaît ; chaque couche CIBLE l'index d'epoch _fi_out de SA source et la
         # sortie est écrite À CE MÊME INDEX (alignement inter-étages du tissu). Fond absent →
         # bandes noires cadencées (signal vivant). _next_index en tai = lecture pure de grille.
-        now = time.time()
-        wait = next_t - now
-        if wait > 2 * interval:
-            # L'horloge a RECULÉ (saut, cf. CLOCK_JUMP_SLOTS) : sans ce recalage on dormirait
-            # toute l'ampleur du recul — 149 s le 2026-10-25 sur dl360-1 — sortie figée.
-            next_t = _grid_next(now, interval); wait = next_t - now
-        if wait > 0: time.sleep(wait)
-        _fi_out = _grid_now()
+        _fi_out = _wait_next_slot()
     elif GENLOCK and bg_is_src:
         # ★ Le genlock se verrouille sur le FOND (slot 4) : c'est la référence de cadence. Un
         # fond UNI (none/color) n'est pas une source → aucune référence → cadence libre (else).

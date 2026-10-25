@@ -1,7 +1,10 @@
 {
-  "version": "0.24.6",
+  "version": "0.24.7",
   "date": "2026-10-25",
   "changes": {
+    "Cadence flow sur la grille MXL (0.24.7)": [
+      "CORRIGÉ — la cadence flow dormait jusqu'à une frontière de time.time(), décalée de 10 ms sur le créneau MXL (mesuré le 2026-10-25) : chaque image démarrait 10 ms après le début de son créneau. Elle suit désormais la grille MXL, phase calibrée, avec le recalage des sauts d'horloge."
+    ],
     "Saut d'horloge : le split repart au lieu de se figer (0.24.6)": [
       "CORRIGÉ — après un saut de l'horloge système (vécu le 2026-10-25 sur dl360-1 : environ 149 s en avant puis retour), le split retenait toute image d'un numéro inférieur au dernier publié, et sa cadence pouvait dormir toute l'ampleur du recul : sortie figée jusqu'à ce que l'horloge rattrape. Un recul de plus de 2 s est désormais traité comme un saut : la sortie est rouverte et repart de l'heure présente (compteur slice.stamp.reanchored, alerte au journal). Un petit recul (recalage PTP de quelques ms) reste une simple retenue.",
       "Journal du changement de délai en anglais (« split: delay -> … »), comme tout nouveau journal."
