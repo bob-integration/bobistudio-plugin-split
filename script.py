@@ -110,9 +110,11 @@ class RollingMs:
 lat_in  = {{}}  # {{shm_name: RollingMs}} — TRANSIT par entrée (ts_read − ts_in producteur) = arrivée
 own_lat = RollingMs()  # traitement PROPRE du nœud (ts_out − ts_cycle_start) → own_latency_ms
 # DÉLAI D'ÉTAGE en TRAMES — grandeur DISTINCTE de own_lat, qui est un temps de CALCUL.
-# La sortie porte une coordonnée IMPOSÉE mais dérivée de la grille (open_grain(index=out_index)) :
-# c'est donc un étage qui RE-CADENCE, et l'écart mesuré est un vrai délai. Multi-couches : on
-# passe TOUTES les couches liées, StageDelay en retient les deux bornes.
+# MODE TRANCHE (0.24.2) : la sortie PROPAGE l'index de son contenu (open_grain(src_index=…), le
+# plus ancien des index lus sur la grille) → étage « propage », écart d'index nul par construction
+# (StageDelay observe avec propage=True). Fond uni seul → grille. TRAME PLEINE : coordonnée de
+# grille, délai non mesuré (cf. le commentaire du chemin trame pleine). Multi-couches : on passe
+# TOUTES les couches liées, StageDelay en retient les deux bornes.
 # Cf. docs/reference/LATENCE_CHAINE.md.
 delai_etage = _sd_new()
 
@@ -1637,6 +1639,24 @@ def _art_below():
 _sl_backoff = {{}}
 _sl_lasthead = {{}}   # slot → dernière tête vue (détection génération périmée, cadence flow)
 _sl_dbg = None        # [couches, valid0, attentes, replis, dormantes] de la dernière trame
+# Estampille de la sortie (mode tranche), cumuls publiés sur :8080 sous slice.stamp :
+#   propagated = sortie portant l'index de son contenu (src_index) ; grid = aucune couche source
+#   sur la grille (fond uni seul) → index de grille ; forced = index source PAS plus récent que la
+#   trame précédente → next_index a dû avancer d'un cran, la sortie porte alors un index plus
+#   récent que son contenu ; off_target = couche sur la grille qui n'a pas pu être lue à la cible
+#   commune (repli sur sa tête : cette couche est décalée dans la trame).
+_stamp = dict(propagated=0, grid=0, forced=0, off_target=0)
+_stamp_last_src = -1
+
+
+def _grid_now():
+    """Créneau COURANT de la grille TAI, SANS consommer le compteur du writer : `out.next_index()`
+    le ferait avancer jusqu'à la grille, et la propagation `src_index` (qui ne recule jamais) ne
+    pourrait plus rendre l'index, plus ancien, du contenu réellement lu.
+    Binding d'image trop ancien (cf. _StageDelayNulle) → `next_index()`, le comportement de 0.24.1."""
+    if not hasattr(bobimxl, "current_index"):
+        return out.next_index()
+    return bobimxl.current_index(FPS, 1)
 # Cumulatifs depuis le boot (suffixe _total sur :8080) — accumulés PAR ÉVÉNEMENT dans
 # _sl_ensure (robuste à une exception mi-trame). Leçon du banc mixer : un compteur cumulatif
 # AMBIGU se lit mal → le cumul est explicitement suffixé _total, l'état courant (dormant,
@@ -3159,21 +3179,41 @@ def _sl_ensure(L, need_k, deadl):
     return dw
 
 
-def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot, bg_fill=("solid", None), bg_is_src=True):
+def _slice_frame(grid_ref, fi_out, tr, boxes, ts_in_per_slot, bg_fill=("solid", None), bg_is_src=True):
     """MODE TRANCHE — compose et PUBLIE la trame BANDE PAR BANDE (SLICE_H lignes/bande) :
     fond + boxes suivis CHACUN sur SON grain via get_slice, sortie committée progressivement
     (validSlices=k+1 → l'aval démarre sur la 1ʳᵉ bande). Budget par couche + backoff des
     entrées mortes + repli grain complet : la sortie n'est JAMAIS bloquée par une source.
     Commit final TOUJOURS (finally) : un grain laissé partiel ne serait jamais lisible.
     Renvoie le cumul des attentes get_slice (à EXCLURE de own_latency_ms)."""
-    global _sl_dbg
+    global _sl_dbg, _stamp_last_src
     wait_ns = 0
     # 1) plan des couches à composer (fond, puis les boxes dans l'ordre de superposition `z`).
     # FOND : `source` → slot 4 lu comme une couche ; `none`/`color` → remplissage par bande
     # (memset des 3 plans : la couleur est DÉJÀ convertie et cachée — jamais par trame).
     plan = ([(4, None, 1.0)] if bg_is_src else []) + _plan_layers(tr, boxes)
-    # 2) cible + 1ʳᵉ tranche de chaque couche (le suivi des bandes suivantes se fait au fil
-    #    du compose). Cible = tête (peut être EN COURS d'écriture) ; en flow = index d'epoch.
+    # 2a) CIBLE COMMUNE (0.24.2) : la plus ancienne des têtes SUR LA GRILLE (|tête − grille| ≤ 2).
+    #     Toutes ces couches sont lues à cet index, et la sortie le PORTE (src_index, cf. 3).
+    #     Jusqu'en 0.24.1 la cible était le créneau où le split travaille : aucune source n'avait
+    #     encore commencé cette image (la mire la commence ~13 ms plus tard), le split se repliait
+    #     sur la précédente et la publiait sous l'index du créneau — contenu en retard d'une trame
+    #     sur son étiquette (mesuré le 2026-10-25 : +1 trame, 250 sur 250). Un mélangeur aval qui
+    #     lit toutes ses entrées au même index décalait donc le split d'une image sur une source
+    #     directe, sans aucun témoin. Une source HORS GRILLE (index libre, ou plus de 2 trames de
+    #     retard) suit sa tête et ne retient pas la sortie.
+    heads = []
+    for slot, _b, _a in plan:
+        rd0 = ensure_input(slot)
+        if rd0 is None:
+            continue
+        try:
+            h0 = rd0.head_index()
+        except Exception:
+            continue
+        if h0 != bobimxl.MXL_UNDEFINED_INDEX and abs(int(h0) - grid_ref) <= 2:
+            heads.append(int(h0))
+    target = min(heads) if heads else grid_ref
+    # 2b) 1ʳᵉ tranche de chaque couche (le suivi des bandes suivantes se fait au fil du compose).
     layers = []
     dormant = 0
     for slot, b_, alpha in plan:
@@ -3221,16 +3261,13 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot, bg_fill=("solid",
                     _sl_lasthead.pop(slot, None)
                     continue
                 _sl_lasthead[slot] = hi
-                # Cibler L'INDEX D'EPOCH fi_out (alignement du tissu) si la source est sur la
-                # même grille (|tête−fi_out| ≤ 2) ou pas encore ouverte ; source HORS-GRILLE
-                # (index libre) → suivre sa tête comme avant.
-                tgt = (fi_out if (hi == bobimxl.MXL_UNDEFINED_INDEX or abs(hi - fi_out) <= 2)
-                       else hi)
-                got = rd.get_slice(tgt, 1, timeout_ns=3_000_000)
-                if got is None and tgt != hi and hi != bobimxl.MXL_UNDEFINED_INDEX:
-                    got = rd.get_slice(hi, 1, timeout_ns=1_000_000)   # retard → grain courant
-            elif hi != bobimxl.MXL_UNDEFINED_INDEX:
-                got = rd.get_slice(hi, 1, timeout_ns=2_000_000)
+            # Cible : l'index COMMUN (2a) pour une source sur la grille ou pas encore ouverte ;
+            # source HORS GRILLE → sa tête, comme avant.
+            on_grid = (hi == bobimxl.MXL_UNDEFINED_INDEX or abs(hi - grid_ref) <= 2)
+            tgt = target if on_grid else hi
+            got = rd.get_slice(tgt, 1, timeout_ns=3_000_000)
+            if got is None and tgt != hi and hi != bobimxl.MXL_UNDEFINED_INDEX:
+                got = rd.get_slice(hi, 1, timeout_ns=1_000_000)   # cible absente → grain courant
             if got is None:
                 got = rd.get_latest()      # flux whole-frame / tête pas prête → grain complet
             if (got is not None and len(got[2]) == V_FRAME_SIZE // 2
@@ -3245,7 +3282,7 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot, bg_fill=("solid",
                 sy, su, sv = _plane_views(np.frombuffer(fr, dtype=np.uint8))
                 layers.append({{"slot": slot, "rd": rd, "fi": int(got[0]), "sy": sy, "su": su,
                                 "sv": sv, "total": 1, "valid": 1, "islh": HEIGHT, "g": g, "st": st,
-                                "budget": int(interval * 1e9)}})
+                                "budget": int(interval * 1e9), "ongrid": False}})
                 _slot_ok(slot)
                 continue
             if got is None:
@@ -3268,7 +3305,8 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot, bg_fill=("solid",
             bk = _sl_backoff.get(slot)
             if bk is not None and fi > bk[0]:       # la tête a avancé → réarme la couche
                 _sl_backoff.pop(slot, None); bk = None
-            if bk is not None and bk[1] >= 2:
+            is_dormant = bk is not None and bk[1] >= 2
+            if is_dormant:
                 # DORMANTE : 2 timeouts consécutifs sur le MÊME grain (producteur mort
                 # mi-grain) → bascule immédiate sur le dernier grain complet, ZÉRO sonde tant
                 # que la tête n'avance pas.
@@ -3277,10 +3315,15 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot, bg_fill=("solid",
                 if gp is not None and len(gp[2]) == V_FRAME_SIZE:
                     sy, su, sv = _plane_views(gp[2])
                 valid = total
+            # Sur la grille ET vivante : seule une telle couche fixe l'index de la sortie (une
+            # dormante — producteur mort — ne doit pas la retenir).
+            ongrid = on_grid and not is_dormant and abs(int(fi) - grid_ref) <= 2
+            if ongrid and int(fi) != target:
+                _stamp["off_target"] += 1
             layers.append({{"slot": slot, "rd": rd, "fi": fi, "sy": sy, "su": su, "sv": sv,
                             "total": total, "valid": valid,
                             "islh": max(1, HEIGHT // total), "g": g, "st": st,
-                            "budget": int(interval * 1e9)}})
+                            "budget": int(interval * 1e9), "ongrid": ongrid}})
             _slot_ok(slot)
         except Exception as _e:
             # ★ PLUS D'EXCEPTION AVALÉE : une exception dans la boucle de rendu était jusqu'ici
@@ -3291,12 +3334,26 @@ def _slice_frame(out_index, fi_out, tr, boxes, ts_in_per_slot, bg_fill=("solid",
     _sl_dbg = [len(layers), -1, 0, 0, dormant]
     bg = next((L for L in layers if L["slot"] == 4), None)
     # 3) grain de sortie + publication PROGRESSIVE bande par bande.
-    _gidx, gi_o, vw_o = out.open_grain(index=out_index)
+    # La sortie PORTE l'index de son contenu : le plus ancien des index réellement lus parmi les
+    # couches sur la grille. Aucune (fond uni seul, ou sources hors grille) → grille.
+    src = [int(L["fi"]) for L in layers if L.get("ongrid")]
+    if src:
+        src_idx = min(src)
+        if src_idx <= _stamp_last_src:
+            _stamp["forced"] += 1     # next_index avance d'un cran : étiquette > contenu
+        else:
+            _stamp["propagated"] += 1
+        _stamp_last_src = max(_stamp_last_src, src_idx)
+        _gidx, gi_o, vw_o = out.open_grain(src_index=src_idx)
+    else:
+        _stamp["grid"] += 1
+        _gidx, gi_o, vw_o = out.open_grain()
     # `layers` porte rd (reader) et fi (index réellement lu) par couche — les deux chemins de
-    # liaison (l.3216 et l.3250) renseignent ces deux clés.
+    # liaison renseignent ces deux clés.
     delai_etage.observe(out, _gidx,
                         [(L["rd"], L["fi"]) for L in layers
-                         if L.get("rd") is not None and L.get("fi") is not None])
+                         if L.get("rd") is not None and L.get("fi") is not None],
+                        propage=bool(src))
     oy, ou, ovv = _plane_views(vw_o)
     nb = HEIGHT // SLICE_H
     deadl = time.monotonic() + (interval * 1.5)   # garde-fou GLOBAL (borne dure de la trame)
@@ -3416,7 +3473,7 @@ while True:
         now = time.time()
         wait = next_t - now
         if wait > 0: time.sleep(wait)
-        _fi_out = out.next_index()
+        _fi_out = _grid_now()
     elif GENLOCK and bg_is_src:
         # ★ Le genlock se verrouille sur le FOND (slot 4) : c'est la référence de cadence. Un
         # fond UNI (none/color) n'est pas une source → aucune référence → cadence libre (else).
@@ -3495,7 +3552,7 @@ while True:
         # tranches sur leur grain, commit progressif de la sortie → l'aval démarre sur la 1ʳᵉ
         # bande). Le chemin historique ci-dessous reste octet-identique (slice_mode off).
         try:
-            _sl_waited = _slice_frame(_fi_out if FLOW else out.next_index(), _fi_out,
+            _sl_waited = _slice_frame(_fi_out if FLOW else _grid_now(), _fi_out,
                                       tr, boxes, ts_in_per_slot,
                                       bg_fill=bg_fill, bg_is_src=bg_is_src)
         except Exception as _e:
@@ -3690,6 +3747,7 @@ while True:
                 metrics["slice"] = {{"layers": _sl_dbg[0], "valid0": _sl_dbg[1],
                                     "waits": _sl_dbg[2], "fallbacks": _sl_dbg[3],
                                     "dormant": _sl_dbg[4], "backoff": len(_sl_backoff),
+                                    "stamp": dict(_stamp),
                                     "bands": HEIGHT // SLICE_H,
                                     "waited_ms": round(_sl_waited / 1e6, 2),
                                     "waits_total": _sl_tot["waits"],
