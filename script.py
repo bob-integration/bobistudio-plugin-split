@@ -1144,6 +1144,8 @@ class ControlHandler(BaseHTTPRequestHandler):
                     s["input_%d" % (i + 1)] = state["inputs"][i]
                 s["bg_input"] = state["inputs"][4]
                 s["log_level"] = LOG_LEVEL   # lisible en condition de macro
+                # Entrées À L'IMAGE (0.24.10, cf. _tally_inputs) : index de slot (4 = fond).
+                s["tally"] = dict(_tally_now)
             self._reply(200, s)
         else:
             self._reply(404, {{"error": "not found"}})
@@ -1651,6 +1653,35 @@ def _plan_layers(tr, boxes, glob=None):
     global _n_rot
     _n_rot = sum(1 for _, b_, _a in out_plan if abs(b_.get("rotation", 0.0)) > 1e-6)
     return out_plan
+
+
+# TALLY (0.24.10) : les entrées RÉELLEMENT À L'IMAGE, calculées par la boucle à chaque trame sur le
+# plan qu'elle compose (`_plan_layers` : transition, stagger et calque global compris). Règle de
+# l'utilisateur (28/10) : « tout ce qui est utilisé à un instant t pour le PGM doit avoir un tally » —
+# le fond s'il est une SOURCE (slot 4), et chaque box d'opacité > 0 dont l'image touche le cadre.
+# Box à géométrie libre ou TOURNÉE : test PRUDENT sur son étendue maximale autour de son centre (un
+# tally de trop sur une box au bord vaut mieux qu'un rouge manquant) ; sinon, la géométrie exacte
+# du placement (`_box_slice_geom`). Publié dans /state (`tally.pgm`), lu par l'orchestrateur.
+_tally_now = dict(pgm=[])
+
+
+def _box_on_screen(b, alpha):
+    if alpha * float(b.get("opacity", 100.0)) / 100.0 <= 0.001:
+        return False
+    if abs(b.get("rotation", 0.0)) > 1e-6 or b.get("aspect") == "free":
+        r = max(WIDTH, HEIGHT) * max(float(b.get("size") or 0.0), float(b.get("size_x") or 0.0),
+                                     float(b.get("size_y") or 0.0))
+        cx, cy = b["x"] * WIDTH, b["y"] * HEIGHT
+        return cx + r > 0 and cx - r < WIDTH and cy + r > 0 and cy - r < HEIGHT
+    return _box_slice_geom(b, alpha) is not None
+
+
+def _tally_inputs(tr, boxes, bg_is_src):
+    on = set([4]) if bg_is_src else set()
+    for slot, b, alpha in _plan_layers(tr, boxes):
+        if _box_on_screen(b, alpha):
+            on.add(int(slot))
+    return dict(pgm=sorted(on))
 
 
 def _art_above():
@@ -3628,6 +3659,7 @@ while True:
         bg_cur = _norm_bg(_interp_bg(tr.get("bgfrom") or bg_cur, tr["bgto"],
                                      _ease(tr["_p_raw"], tr.get("curve") or "linear")))
     bg_is_src = (bg_cur["mode"] == "source")
+    _tally_now = _tally_inputs(tr, boxes, bg_is_src)
     # FOND UNI (3 memset, octet-identique) ou DÉGRADÉ (empreinte cachée → passe pixel, kernel C).
     if bg_cur["mode"] == "gradient":
         bg_fill = ("grad", _grad_prep(bg_cur))

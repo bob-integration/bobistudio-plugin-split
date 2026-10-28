@@ -1,7 +1,12 @@
 {
-  "version": "0.24.8",
-  "date": "2026-10-25",
+  "version": "0.24.10",
+  "date": "2026-10-28",
   "changes": {
+    "Tally : les sources à l'image sont publiées (0.24.10)": [
+      "Le split publie dans /state (`tally.pgm`) les entrées réellement à l'image à chaque trame : chaque box activée, d'opacité > 0, dont l'image touche le cadre (transition, décalage et calque global compris), et le fond s'il est une source. L'orchestrateur les remonte : un split à l'antenne allume désormais les sources de ses boxes.",
+      "Box tournée ou à géométrie libre : test prudent sur son étendue maximale (un tally de trop au bord plutôt qu'un rouge manquant).",
+      "Redéploiement nécessaire."
+    ],
     "Saut d'horloge : nouvelle génération de flux (0.24.8)": [
       "Après un saut d'horloge, la sortie repart en NOUVELLE GÉNÉRATION de flux (Writer.regenerate : flux purgé puis recréé). La « réouverture » précédente réattachait en fait le même flux, dont la tête redescendait en réécrivant des grains déjà publiés. Coût mesuré : un lecteur aval retrouve la nouvelle génération en ~5 s (sa garde de flux figé)."
     ],
