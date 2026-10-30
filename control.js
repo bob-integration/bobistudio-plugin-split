@@ -484,22 +484,23 @@ window.MXLPlugins.split = (function () {
     const toolGroup = window.MXLControls.toolGroup;
 
     // ─── Outils de disposition (même sémantique que le composer multiview / PiP) ─────
+    // Géométrie : base commune des éditeurs (BobiEditor.layout, static/js/editor.js), branchée
+    // le 2026-10-30 (chantier « un seul moteur d'édition »). Restent LOCAUX, parce que propres au
+    // modèle du Split (box = centre + `size` + format, hors-cadre permis) : égaliser (`size`,
+    // pas un rectangle), le déplacement de groupe (bornes caps.pos, pas le cadre) et le
+    // redimensionnement de groupe (chaque box AUTOUR DE SON CENTRE, contrairement au mur).
+    const LAY = () => window.BobiEditor.layout;
+    const rectsN = () => boxes.map(b => { const r = rectN(b); return { x: r.x0, y: r.y0, w: r.w, h: r.h }; });
     function alignBoxes(mode) {
         if (!boxes || !sel.length) return;
-        const p = boxes[primary()];
-        const ref = (sel.length >= 2 && p) ? rectN(p) : { x0: 0, y0: 0, w: 1, h: 1 };
+        // Référence : le primaire si ≥2 sélectionnés, sinon le cadre. `libre` : une box peut
+        // sortir du cadre — c'est setRectPos qui borne (caps) et arrondit, comme avant.
+        const out = LAY().aligner(rectsN(), sel, primary(), mode, null, { libre: true });
+        const horiz = mode === 'left' || mode === 'right' || mode === 'hcenter';
         sel.forEach(i => {
             if (sel.length >= 2 && i === primary()) return;
-            const b = boxes[i]; if (!b) return;
-            const r = rectN(b);
-            switch (mode) {
-                case 'left': setRectPos(b, ref.x0, null); break;
-                case 'right': setRectPos(b, ref.x0 + ref.w - r.w, null); break;
-                case 'hcenter': setRectPos(b, ref.x0 + (ref.w - r.w) / 2, null); break;
-                case 'top': setRectPos(b, null, ref.y0); break;
-                case 'bottom': setRectPos(b, null, ref.y0 + ref.h - r.h); break;
-                case 'vcenter': setRectPos(b, null, ref.y0 + (ref.h - r.h) / 2); break;
-            }
+            const b = boxes[i]; if (!b || !out[i]) return;
+            setRectPos(b, horiz ? out[i].x : null, horiz ? null : out[i].y);
             postBox(i, { x: b.x, y: b.y });
         });
         syncAll();
@@ -523,17 +524,14 @@ window.MXLPlugins.split = (function () {
     }
     function distributeBoxes(axis) {
         if (!boxes || sel.length < 3) { TOAST(T('flash_select3', 'Sélectionnez au moins 3 box (Maj+clic).'), 'warning'); return; }
-        const items = sel.map(i => ({ i, b: boxes[i] })).filter(o => o.b);
-        const k = (axis === 'h') ? 'cx' : 'cy';
-        items.sort((a, b_) => rectN(a.b)[k] - rectN(b_.b)[k]);
-        const v0 = rectN(items[0].b)[k], vN = rectN(items[items.length - 1].b)[k];
-        const step = (vN - v0) / (items.length - 1);
-        items.forEach((o, n) => {
-            if (n === 0 || n === items.length - 1) return;
-            const target = v0 + step * n, r = rectN(o.b);
-            if (axis === 'h') o.b.x = r3(clamp(o.b.x + (target - r.cx), 0, 1));
-            else o.b.y = r3(clamp(o.b.y + (target - r.cy), 0, 1));
-            postBox(o.i, { x: o.b.x, y: o.b.y });
+        // Répartit les CENTRES (extrêmes fixes) ; arrondi et bornage restent ceux du Split.
+        const avant = rectsN();
+        const out = LAY().distribuer(avant, sel.filter(i => boxes[i]), axis, { ancre: 'centre', arrondi: v => v });
+        const k = (axis === 'h') ? 'x' : 'y';
+        sel.forEach(i => {
+            const b = boxes[i]; if (!b || !out[i] || out[i][k] === avant[i][k]) return;
+            b[k] = r3(clamp(b[k] + (out[i][k] - avant[i][k]), 0, 1));
+            postBox(i, { x: b.x, y: b.y });
         });
         syncAll();
     }
@@ -1427,56 +1425,26 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
     //     • box ENTIÈREMENT DEHORS, juste au-delà : arête DROITE ≡ bord GAUCHE (position de
     //       départ/arrivée naturelle d'une entrée/sortie de champ).
     // Idem en haut/bas. C'est la combinatoire {arêtes} × {bords} qui donne les deux, gratuitement.
-    function snapTargets(excludeIdx, CW, CH) {
+    // Cibles : bords et centre du CADRE (marges du canvas comprises) + bords et centres des
+    // AUTRES box actives — calculés par la base, en px canvas.
+    function snapArgs(excludeIdx, CW, CH) {
         const V = view(CW, CH);
-        const xT = [V.MX, V.MX + V.FW, V.MX + V.FW / 2];   // bord GAUCHE, bord DROIT, centre
-        const yT = [V.MY, V.MY + V.FH, V.MY + V.FH / 2];   // bord HAUT, bord BAS, centre
-        boxes.forEach((b, i) => {
-            if (i === excludeIdx || !b.enabled) return;
-            const r = rectPx(i, CW, CH);
-            xT.push(r.x0, r.x0 + r.w, r.x0 + r.w / 2);
-            yT.push(r.y0, r.y0 + r.h, r.y0 + r.h / 2);
-        });
-        return { xT, yT };
+        const exclus = boxes.map((b, i) => i).filter(i => i === excludeIdx || !boxes[i].enabled);
+        const rects = boxes.map((b, i) => { const r = rectPx(i, CW, CH); return { x: r.x0, y: r.y0, w: r.w, h: r.h }; });
+        return { rects, exclus, opts: { cadre: { x: V.MX, y: V.MY, w: V.FW, h: V.FH }, arrondi: v => v } };
     }
+    const guidesT = gs => gs.map(g => ({ type: g.axe, pos: g.pos }));
     function computeSnap(excludeIdx, x, y, w, h, CW, CH) {
-        const { xT, yT } = snapTargets(excludeIdx, CW, CH), guides = [], SP = SNAP_PX();
-        let bestDx = SP + 1, snapX = x;
-        [{ e: 'l', v: x }, { e: 'r', v: x + w }, { e: 'c', v: x + w / 2 }].forEach(({ e, v }) => {
-            xT.forEach(t => {
-                const d = Math.abs(v - t);
-                if (d <= SP && d < bestDx) {
-                    bestDx = d; snapX = e === 'l' ? t : e === 'r' ? t - w : t - w / 2;
-                    guides[0] = { type: 'v', pos: t };
-                }
-            });
-        });
-        let bestDy = SP + 1, snapY = y;
-        [{ e: 't', v: y }, { e: 'b', v: y + h }, { e: 'c', v: y + h / 2 }].forEach(({ e, v }) => {
-            yT.forEach(t => {
-                const d = Math.abs(v - t);
-                if (d <= SP && d < bestDy) {
-                    bestDy = d; snapY = e === 't' ? t : e === 'b' ? t - h : t - h / 2;
-                    guides[1] = { type: 'h', pos: t };
-                }
-            });
-        });
-        return { x: snapX, y: snapY, guides: guides.filter(Boolean) };
+        const a = snapArgs(excludeIdx, CW, CH);
+        const s = LAY().aimanter(a.rects, a.exclus, x, y, w, h, SNAP_PX(), a.opts);
+        return { x: s.x, y: s.y, guides: guidesT(s.guides) };
     }
     // Resize : le Split garde le RATIO (contrairement au PiP, W/H indépendants) → on retient le
     // facteur d'échelle de l'arête la plus proche.
     function computeSnapResize(excludeIdx, r, CW, CH) {
-        const { xT, yT } = snapTargets(excludeIdx, CW, CH), SP = SNAP_PX();
-        let best = SP + 1, factor = 1, guides = [];
-        xT.forEach(t => {
-            const d = Math.abs((r.x0 + r.w) - t);
-            if (d <= SP && d < best && t > r.x0 && r.w > 0) { best = d; factor = (t - r.x0) / r.w; guides = [{ type: 'v', pos: t }]; }
-        });
-        yT.forEach(t => {
-            const d = Math.abs((r.y0 + r.h) - t);
-            if (d <= SP && d < best && t > r.y0 && r.h > 0) { best = d; factor = (t - r.y0) / r.h; guides = [{ type: 'h', pos: t }]; }
-        });
-        return { factor, guides };
+        const a = snapArgs(excludeIdx, CW, CH);
+        const s = LAY().aimanterCoinAuFormat(a.rects, a.exclus, r.x0, r.y0, r.w, r.h, SNAP_PX(), a.opts);
+        return { factor: s.facteur, guides: guidesT(s.guides) };
     }
     function drawGuides(ctx, CW, CH, css) {
         if (!drag || !snapGuides.length) return;
