@@ -49,6 +49,8 @@ window.MXLPlugins.split = (function () {
     const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const $ = q => (EL ? EL.querySelector(q) : null);
     const T = (k, fb) => { const v = window.t ? window.t('plugin.split.' + k) : ''; return (v && v !== 'plugin.split.' + k) ? v : fb; };
+    // Libellés COMMUNS aux éditeurs (i18n/*.json, clés editor.*) : pas de préfixe de plugin.
+    const TE = (k, fb) => { const v = window.t ? window.t(k) : ''; return (v && v !== k) ? v : fb; };
     const clamp = (v, lo, hi) => { v = parseFloat(v); if (isNaN(v)) return lo; return Math.max(lo, Math.min(hi, v)); };
     const r3 = v => Math.round(v * 1000) / 1000;
     const decimals = step => { const s = String(step); return s.includes('.') ? s.split('.')[1].length : 0; };
@@ -204,7 +206,8 @@ window.MXLPlugins.split = (function () {
         if (x0 != null) b.x = r3(clamp(b.x + (x0 - r.x0), 0, 1));
         if (y0 != null) b.y = r3(clamp(b.y + (y0 - r.y0), 0, 1));
     }
-    const primary = () => (sel.length ? sel[0] : -1);
+    // Référence = DERNIER cliqué (arbitrage du 30/10, comme tous les éditeurs ; c'était le premier).
+    const primary = () => (sel.length ? sel[sel.length - 1] : -1);
 
     // ═══ ÉDITION MULTI-BOX ══════════════════════════════════════════════════════════
     // La multi-sélection valait pour le canvas et la barre d'outils, mais le panneau
@@ -484,57 +487,88 @@ window.MXLPlugins.split = (function () {
     const toolGroup = window.MXLControls.toolGroup;
 
     // ─── Outils de disposition (même sémantique que le composer multiview / PiP) ─────
-    // Géométrie : base commune des éditeurs (BobiEditor.layout, static/js/editor.js), branchée
-    // le 2026-10-30 (chantier « un seul moteur d'édition »). Restent LOCAUX, parce que propres au
-    // modèle du Split (box = centre + `size` + format, hors-cadre permis) : égaliser (`size`,
-    // pas un rectangle), le déplacement de groupe (bornes caps.pos, pas le cadre) et le
-    // redimensionnement de groupe (chaque box AUTOUR DE SON CENTRE, contrairement au mur).
-    const LAY = () => window.BobiEditor.layout;
-    const rectsN = () => boxes.map(b => { const r = rectN(b); return { x: r.x0, y: r.y0, w: r.w, h: r.h }; });
-    function alignBoxes(mode) {
+    // ═══ ÉDITION : la SURFACE commune des éditeurs (BobiEditor.surface, static/js/editor.js) ══════
+    // Sélection, glisser, poignée, aimant, flèches, outils, annuler/rétablir, copier/coller :
+    // écrits une fois pour tous les éditeurs (étape 3, arbitrages de Cyril du 30/10). Ce qui reste
+    // ICI est propre au Split : une box = centre + taille (+ rognage), le HORS-CADRE permis
+    // (bornes de centre = caps.pos), le canal Global (geste ramené dans l'espace des box, aimant
+    // coupé tant qu'il n'est pas neutre), les poignées de ROGNAGE, et ce qu'on copie d'une box (ses
+    // réglages, jamais sa source : une box ne se duplique pas, c'est un canal du moteur).
+    let _surf = null;
+    function cadrePx() {
+        const cv = $('#split_canvas');
+        const V = view(cv ? cv.width : 640, cv ? cv.height : 360);
+        return { x: V.MX, y: V.MY, w: V.FW, h: V.FH };
+    }
+    // Rectangle VISIBLE d'une box (rognage déduit), en px du canevas, HORS transformation Global.
+    function boxPx(b) {
+        const c = cadrePx(), r = rectN(b);
+        return { x: c.x + r.x0 * c.w, y: c.y + r.y0 * c.h, w: r.w * c.w, h: r.h * c.h };
+    }
+    function surf() {
+        if (_surf || !window.BobiEditor) return _surf;
+        _surf = window.BobiEditor.surface({
+            objets: () => (boxes || []).map(b => {
+                if (!b) return null;
+                const r = boxPx(b);
+                return Object.assign(r, { format: b.aspect === 'free' ? 0 : (r.h > 0 ? r.w / r.h : 0) });
+            }),
+            cibles: () => { const cv = $('#split_canvas');
+                            return (boxes || []).map((b, i) => b && b.enabled ? (() => { const r = rectPx(i, cv.width, cv.height);
+                                return { x: r.x0, y: r.y0, w: r.w, h: r.h }; })() : null); },
+            cadre: cadrePx,
+            ecrire: (i, r) => {
+                const b = boxes && boxes[i]; if (!b) return;
+                const c = cadrePx(), cr = b.crop || { l: 0, r: 0, t: 0, b: 0 };
+                const kx = Math.max(0.08, 1 - cr.l - cr.r), ky = Math.max(0.08, 1 - cr.t - cr.b);
+                const [smin, smax] = cap('box_fields', 'size');
+                const [pmin, pmax] = posCap();
+                const fw = (r.w / c.w) / kx, fh = (r.h / c.h) / ky;
+                if (b.aspect === 'free') { b.size_x = r3(clamp(fw, smin, smax)); b.size_y = r3(clamp(fh, smin, smax)); }
+                else b.size = r3(clamp(fw, smin, smax));
+                const W = wOf(b), H = hOf(b);
+                const cx = (r.x + r.w / 2 - c.x) / c.w, cy = (r.y + r.h / 2 - c.y) / c.h;
+                b.x = r3(clamp(cx - (cr.l - cr.r) * 0.5 * W, pmin, pmax));
+                b.y = r3(clamp(cy - (cr.t - cr.b) * 0.5 * H, pmin, pmax));
+            },
+            rendu: () => { snapGuides = (_surf ? _surf.guides : []).map(g => ({ type: g.axe, pos: g.pos })); drawCanvas(); },
+            valider: idx => {
+                idx.forEach(i => { const b = boxes[i];
+                    postBox(i, { x: b.x, y: b.y, size: b.size, size_x: b.size_x, size_y: b.size_y, crop: b.crop }); });
+                syncAll();
+                if (_surf) _surf.memoriser();
+            },
+        }, {
+            horsCadre: true,
+            bornesCentre: () => { const c = cadrePx(), [pmin, pmax] = posCap();
+                                  return { x0: c.x + pmin * c.w, x1: c.x + pmax * c.w, y0: c.y + pmin * c.h, y1: c.y + pmax * c.h }; },
+            tol: () => SNAP_PX(), aimant: () => snapEnabled && gNeutral(gGet()), min: 4,
+            // Flèches : UN pixel de la SORTIE (Maj = 10), ramené en px du canevas.
+            pas: { get fleche() { return cadrePx().w / ((st && st.width) || 1920); },
+                   get maj() { return 10 * cadrePx().w / ((st && st.width) || 1920); } },
+        });
+        return _surf;
+    }
+    function surfIn() { const S = surf(); S.sel = sel.slice(); S.primaire = sel.length ? primary() : null; return S; }
+    function surfOut() {
+        const S = surf(), p = S.primaire;
+        sel = (p == null || !S.sel.includes(p)) ? S.sel.slice() : S.sel.filter(i => i !== p).concat([p]);
+        selGlobal = false;
+    }
+    function outilSurface(nom, arg, msgMin) {
         if (!boxes || !sel.length) return;
-        // Référence : le primaire si ≥2 sélectionnés, sinon le cadre. `libre` : une box peut
-        // sortir du cadre — c'est setRectPos qui borne (caps) et arrondit, comme avant.
-        const out = LAY().aligner(rectsN(), sel, primary(), mode, null, { libre: true });
-        const horiz = mode === 'left' || mode === 'right' || mode === 'hcenter';
-        sel.forEach(i => {
-            if (sel.length >= 2 && i === primary()) return;
-            const b = boxes[i]; if (!b || !out[i]) return;
-            setRectPos(b, horiz ? out[i].x : null, horiz ? null : out[i].y);
-            postBox(i, { x: b.x, y: b.y });
-        });
+        const r = surfIn().outil(nom, arg);
+        surfOut();
+        if (r === null && msgMin) TOAST(msgMin, 'warning');
         syncAll();
     }
-    function matchSize(mode) {
-        if (!boxes || sel.length < 2) { TOAST(T('flash_select2', 'Sélectionnez au moins 2 box (Maj+clic).'), 'warning'); return; }
-        const ref = boxes[primary()]; if (!ref) return;
-        sel.forEach(i => {
-            if (i === primary()) return;
-            const b = boxes[i]; if (!b) return;
-            const patch = { size: ref.size };
-            b.size = ref.size;
-            if (ref.aspect === 'free') {
-                b.aspect = 'free'; patch.aspect = 'free';
-                if (mode === 'w' || mode === 'both') { b.size_x = ref.size_x; patch.size_x = ref.size_x; }
-                if (mode === 'h' || mode === 'both') { b.size_y = ref.size_y; patch.size_y = ref.size_y; }
-            }
-            postBox(i, patch);
-        });
-        syncAll();
-    }
-    function distributeBoxes(axis) {
-        if (!boxes || sel.length < 3) { TOAST(T('flash_select3', 'Sélectionnez au moins 3 box (Maj+clic).'), 'warning'); return; }
-        // Répartit les CENTRES (extrêmes fixes) ; arrondi et bornage restent ceux du Split.
-        const avant = rectsN();
-        const out = LAY().distribuer(avant, sel.filter(i => boxes[i]), axis, { ancre: 'centre', arrondi: v => v });
-        const k = (axis === 'h') ? 'x' : 'y';
-        sel.forEach(i => {
-            const b = boxes[i]; if (!b || !out[i] || out[i][k] === avant[i][k]) return;
-            b[k] = r3(clamp(b[k] + (out[i][k] - avant[i][k]), 0, 1));
-            postBox(i, { x: b.x, y: b.y });
-        });
-        syncAll();
-    }
+    function alignBoxes(mode) { outilSurface('aligner', mode); }
+    // « Même taille » : la base, avec le format VERROUILLÉ d'une box (format conservé ; une box au
+    // format libre égalise largeur et hauteur séparément) — arbitrage du 30/10.
+    function matchSize(mode) { outilSurface('egaliser', mode, T('flash_select2', 'Sélectionnez au moins 2 box (Maj+clic).')); }
+    function distributeBoxes(axis) { outilSurface('distribuer', axis, T('flash_select3', 'Sélectionnez au moins 3 box (Maj+clic).')); }
+    function spaceBoxes(axis) { outilSurface('espaces', axis, T('flash_select3', 'Sélectionnez au moins 3 box (Maj+clic).')); }
+    function fillBoxes(axis) { outilSurface('remplir', axis); }
     const CLIP_KEYS = ['size', 'size_x', 'size_y', 'aspect', 'rotation', 'opacity', 'feather', 'radius', 'mirror_h', 'mirror_v', 'crop_enabled'];
     function copySettings() {
         const i = primary(); if (i < 0 || !boxes) return;
@@ -581,32 +615,39 @@ window.MXLPlugins.split = (function () {
             : T('reset_done', 'Fenêtre réinitialisée : plein cadre, centrée, sans rognage.'), 'info');
     }
 
-    // ─── Déplacement clavier PIXEL PAR PIXEL — CONTOURNE le snap (comme l'éditeur de PiP) ──
-    const NUDGE = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
-    function onKeyDown(e) {
-        if (!EL || !boxes || !sel.length) return;
-        const dir = NUDGE[e.key]; if (!dir) return;
-        const ae = document.activeElement;
-        if (ae && /INPUT|SELECT|TEXTAREA/.test(ae.tagName)) return;
-        if (ae && ae.classList && ae.classList.contains('cc-knob-dial')) return;   // rotatif focalisé
-        if (!EL.contains(ae) && ae !== document.body) return;
-        e.preventDefault();
-        const W = (st && st.width) || 1920, H = (st && st.height) || 1080;
-        const mult = e.shiftKey ? 10 : 1;
-        let dx = (dir[0] * mult) / W, dy = (dir[1] * mult) / H;
-        sel.forEach(i => {
-            const b = boxes[i];
-            dx = Math.max(-b.x, Math.min(1 - b.x, dx));
-            dy = Math.max(-b.y, Math.min(1 - b.y, dy));
+    // ─── Clavier : les raccourcis COMMUNS (surface.clavier) ────────────────────────────────
+    // Flèches (1 px de la sortie, Maj = 10, sans aimant, groupe borné aux caps), annuler/rétablir,
+    // copier/coller (les RÉGLAGES d'une box — une box ne se duplique pas), tout sélectionner, Échap.
+    // Actif quand le focus est dans le Split (ou nulle part) et hors d'un rotatif focalisé.
+    let _unbindClavier = null;
+    function lierClavier() {
+        const S = surf();
+        if (!S) return;
+        _unbindClavier = S.clavier({
+            // Actif ⇒ la surface reprend la sélection COURANTE du Split (elle a pu changer ailleurs :
+            // liste des box, panneau) avant que la touche n'agisse.
+            actif: () => {
+                if (!EL || !boxes) return false;
+                const ae = document.activeElement;
+                if (ae && ae.classList && ae.classList.contains('cc-knob-dial')) return false;
+                const ok = !ae || ae === document.body || EL.contains(ae);
+                if (ok) surfIn();
+                return ok;
+            },
+            kind: 'split-box-settings', profondeur: 100,
+            etat: () => JSON.parse(JSON.stringify(boxes || [])),
+            restaurer: st => {
+                (st || []).forEach((b, i) => {
+                    if (!boxes[i] || JSON.stringify(boxes[i]) === JSON.stringify(b)) return;
+                    boxes[i] = b;
+                    postBox(i, JSON.parse(JSON.stringify(b)));
+                });
+            },
+            fragment: () => { if (primary() < 0) return null; copySettings(); return clipboard; },
+            poser: frag => { if (!sel.length) return false; clipboard = frag; pasteSettings(); return true; },
+            tout: () => { surf().sel = (boxes || []).map((b, i) => i); surf().primaire = surf().sel.length - 1; },
+            apres: () => { surfOut(); syncAll(); },
         });
-        if (!dx && !dy) return;
-        sel.forEach(i => {
-            const b = boxes[i];
-            b.x = r3(b.x + dx); b.y = r3(b.y + dy);   // ★ aucun snap : le nudge sert à en sortir
-            postBox(i, { x: b.x, y: b.y });
-        });
-        snapGuides = [];
-        syncAll();
     }
 
     // ─── Shell ──────────────────────────────────────────────────────────────────────
@@ -700,6 +741,14 @@ window.MXLPlugins.split = (function () {
         tb.appendChild(toolGroup(T('group_distribute', 'Distribuer'), [
             [SVG.distribute_h, T('distribute_h', 'Distribuer horizontalement'), () => distributeBoxes('h'), 'split_dist_h'],
             [SVG.distribute_v, T('distribute_v', 'Distribuer verticalement'), () => distributeBoxes('v'), 'split_dist_v'],
+        ]));
+        tb.appendChild(toolGroup(TE('editor.group_space', 'Espacer'), [
+            [SVG.space_h, TE('editor.space_h', 'Répartir les espaces horizontalement (3 minimum)'), () => spaceBoxes('h'), 'split_space_h'],
+            [SVG.space_v, TE('editor.space_v', 'Répartir les espaces verticalement (3 minimum)'), () => spaceBoxes('v'), 'split_space_v'],
+        ]));
+        tb.appendChild(toolGroup(TE('editor.group_fill', 'Remplir'), [
+            [SVG.fill_h, TE('editor.fill_h', 'Remplir la largeur (tuiler la sélection)'), () => fillBoxes('h'), 'split_fill_h'],
+            [SVG.fill_v, TE('editor.fill_v', 'Remplir la hauteur (tuiler la sélection)'), () => fillBoxes('v'), 'split_fill_v'],
         ]));
         tb.appendChild(toolGroup(T('group_settings', 'Réglages'), [
             [SVG.copy_settings, T('copy_settings', 'Copier les réglages de la box (hors position)'), copySettings, 'split_copy'],
@@ -1407,45 +1456,7 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         }
     }
 
-    // ─── Snap magnétique (miroir de computeSnap/computeSnapResize du composer) ───────
-    // ★ CIBLES DE MAGNÉTISME (corrigé 0.12.2) — LE BORD DU CADRE EST LA CIBLE N°1.
-    //
-    // BUG INTRODUIT EN 0.12.0 (hors-cadre) : ces cibles étaient `0` et `CW` — c'est-à-dire les
-    // bords du CANVAS. Or depuis que le canvas entoure le cadre d'une MARGE, les bords du canvas
-    // ne sont plus le cadre : ils tombent DANS le hors-cadre. Le bord de l'image avait donc PERDU
-    // tout magnétisme, et se caler pile contre l'arête était devenu impossible (« on ne peut pas
-    // se positionner facilement contre un bord »). Les cibles sont désormais les arêtes du CADRE
-    // DE SORTIE (rectangle intérieur), avec le MÊME seuil que les autres (SNAP_PX) : la cible la
-    // plus utile n'est pas la plus dure à attraper.
-    //
-    // ★ ET LES DEUX GESTES SONT SERVIS D'UN COUP, sans cible supplémentaire : les arêtes de la
-    // box testées sont {gauche, droite, centre} contre les cibles {bord gauche, bord droit,
-    // centre du cadre} — donc
-    //     • box AFFLEURANTE À L'INTÉRIEUR : arête gauche ≡ bord gauche (entièrement visible) ;
-    //     • box ENTIÈREMENT DEHORS, juste au-delà : arête DROITE ≡ bord GAUCHE (position de
-    //       départ/arrivée naturelle d'une entrée/sortie de champ).
-    // Idem en haut/bas. C'est la combinatoire {arêtes} × {bords} qui donne les deux, gratuitement.
-    // Cibles : bords et centre du CADRE (marges du canvas comprises) + bords et centres des
-    // AUTRES box actives — calculés par la base, en px canvas.
-    function snapArgs(excludeIdx, CW, CH) {
-        const V = view(CW, CH);
-        const exclus = boxes.map((b, i) => i).filter(i => i === excludeIdx || !boxes[i].enabled);
-        const rects = boxes.map((b, i) => { const r = rectPx(i, CW, CH); return { x: r.x0, y: r.y0, w: r.w, h: r.h }; });
-        return { rects, exclus, opts: { cadre: { x: V.MX, y: V.MY, w: V.FW, h: V.FH }, arrondi: v => v } };
-    }
-    const guidesT = gs => gs.map(g => ({ type: g.axe, pos: g.pos }));
-    function computeSnap(excludeIdx, x, y, w, h, CW, CH) {
-        const a = snapArgs(excludeIdx, CW, CH);
-        const s = LAY().aimanter(a.rects, a.exclus, x, y, w, h, SNAP_PX(), a.opts);
-        return { x: s.x, y: s.y, guides: guidesT(s.guides) };
-    }
-    // Resize : le Split garde le RATIO (contrairement au PiP, W/H indépendants) → on retient le
-    // facteur d'échelle de l'arête la plus proche.
-    function computeSnapResize(excludeIdx, r, CW, CH) {
-        const a = snapArgs(excludeIdx, CW, CH);
-        const s = LAY().aimanterCoinAuFormat(a.rects, a.exclus, r.x0, r.y0, r.w, r.h, SNAP_PX(), a.opts);
-        return { factor: s.facteur, guides: guidesT(s.guides) };
-    }
+    // ─── Repères de l'aimant (calculés par la surface commune, dessinés ici) ──────────────
     function drawGuides(ctx, CW, CH, css) {
         if (!drag || !snapGuides.length) return;
         ctx.save();
@@ -1707,17 +1718,25 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         const { px, py, CW, CH } = canvasPos(e);
         const h = hitTest(px, py, CW, CH);
         $('#split_canvas').focus();
-        if (!h) return;
-        selectBox(h.idx, e.shiftKey);
-        const b = boxes[h.idx];
-        // ★ MULTI-DÉPLACEMENT (0.12.0) : glisser une box SÉLECTIONNÉE entraîne TOUTE la
-        // sélection, en DELTA — chaque box garde sa position RELATIVE (même logique que les
-        // champs de géométrie en multi). On mémorise donc la position de départ de CHACUNE.
-        // Le REDIMENSIONNEMENT, lui, s'applique à chaque box AUTOUR DE SON PROPRE CENTRE
-        // (chacune grandit sur place) : c'est le geste attendu, et il ne déplace personne.
-        drag = { idx: h.idx, mode: h.mode, sx: px, sy: py, bx: b.x, by: b.y, bsize: b.size,
-                 group: sel.slice(), start: sel.map(i => ({ i, x: boxes[i].x, y: boxes[i].y,
-                                                            size: boxes[i].size })) };
+        const S = surfIn();
+        // Rognage : geste PROPRE au Split (une box à la fois), hors surface.
+        if (h && h.mode.startsWith('crop-')) {
+            if (!sel.includes(h.idx)) S.selectionner(h.idx, e);
+            surfOut(); selGlobal = false; syncAll();
+            drag = { idx: h.idx, mode: h.mode, sx: px, sy: py, group: [h.idx] };
+            e.target.setPointerCapture(e.pointerId);
+            return;
+        }
+        // Poignée d'une box qui n'est pas la référence : elle le devient (comme un clic).
+        if (h && h.mode === 'resize' && S.primaire !== h.idx) {
+            S.selectionner(h.idx, sel.includes(h.idx) ? { shiftKey: false } : e);
+            if (S.primaire !== h.idx) S.selectionner(h.idx, {});
+        }
+        const geste = S.appui({ x: px, y: py }, h ? { i: h.idx, poignee: h.mode === 'resize' } : null, e);
+        surfOut();
+        syncAll();
+        if (!geste) return;
+        drag = { idx: h.idx, mode: h.mode, sx: px, sy: py, surface: true };
         e.target.setPointerCapture(e.pointerId);
     }
     function canvasMove(e) {
@@ -1735,53 +1754,16 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         const capT = v => clamp(v, cmin, Math.min(cmax, 0.92 - b.crop.b)), capB = v => clamp(v, cmin, Math.min(cmax, 0.92 - b.crop.t));
         const [smin, smax] = cap('box_fields', 'size');
         snapGuides = [];
+        if (drag.surface) {
+            // Le geste se fait dans l'espace TRANSFORMÉ par le Global ; la surface travaille dans
+            // celui des box : on y ramène le DÉPLACEMENT (gInvDelta), pas la position.
+            const dn = gInvDelta((px - drag.sx) / V.FW, (py - drag.sy) / V.FH);
+            surf().glisse({ x: drag.sx + dn.dx * V.FW, y: drag.sy + dn.dy * V.FH }, e);
+            drag.group = surf().sel.slice();
+            drag.group.forEach(i => throttledPostBox(i));    // toute la sélection suit, en direct
+            return;
+        }
         switch (drag.mode) {
-            case 'move': {
-                // Déplacement de la box TIRÉE (bornes = caps.pos : le hors-cadre est permis)…
-                const dn = gInvDelta((px - drag.sx) / V.FW, (py - drag.sy) / V.FH);
-                b.x = clamp(drag.bx + dn.dx, pmin, pmax);
-                b.y = clamp(drag.by + dn.dy, pmin, pmax);
-                // Snap DÉSACTIVÉ tant que le Global n'est pas neutre : aimanter dans un repère
-                // tourné/échelonné donnerait des guides qui mentent (on le DIT dans l'UI).
-                if (snapEnabled && gNeutral(gGet())) {   // aimantation aux bords/centre du cadre et des autres box
-                    const r = rectPx(drag.idx, CW, CH);
-                    const s = computeSnap(drag.idx, r.x0, r.y0, r.w, r.h, CW, CH);
-                    b.x = clamp(b.x + (s.x - r.x0) / V.FW, pmin, pmax);
-                    b.y = clamp(b.y + (s.y - r.y0) / V.FH, pmin, pmax);
-                    snapGuides = s.guides;
-                }
-                // … puis REPORT DU MÊME DÉCALAGE sur le reste de la sélection (écarts relatifs
-                // conservés). Le décalage est celui RÉELLEMENT appliqué (snap compris).
-                if (drag.group.length > 1) {
-                    const dx = b.x - drag.bx, dy = b.y - drag.by;
-                    drag.start.forEach(s0 => {
-                        if (s0.i === drag.idx) return;
-                        const o = boxes[s0.i];
-                        o.x = clamp(s0.x + dx, pmin, pmax);
-                        o.y = clamp(s0.y + dy, pmin, pmax);
-                    });
-                }
-                break;
-            }
-            case 'resize': {
-                const f0 = b.size, gsc = gGet().scale || 1;
-                b.size = clamp(Math.abs(px - (V.MX + gTransform(b).x * V.FW)) * 2 / V.FW / gsc, smin, smax);
-                if (snapEnabled && gNeutral(gGet())) {
-                    const r = rectPx(drag.idx, CW, CH);
-                    const s = computeSnapResize(drag.idx, r, CW, CH);
-                    if (s.guides.length) { b.size = clamp(b.size * s.factor, smin, smax); snapGuides = s.guides; }
-                }
-                // MULTI : même FACTEUR d'échelle pour toutes, chacune AUTOUR DE SON CENTRE (elles
-                // grandissent sur place — aucune ne se déplace, la disposition est préservée).
-                if (drag.group.length > 1 && f0 > 0) {
-                    const k = b.size / (drag.bsize || f0);
-                    drag.start.forEach(s0 => {
-                        if (s0.i === drag.idx) return;
-                        boxes[s0.i].size = clamp(s0.size * k, smin, smax);
-                    });
-                }
-                break;
-            }
             case 'crop-l': b.crop.l = capL((px - (V.MX + b.x * V.FW)) / fw + 0.5); break;
             case 'crop-r': b.crop.r = capR(0.5 - (px - (V.MX + b.x * V.FW)) / fw); break;
             case 'crop-t': b.crop.t = capT((py - (V.MY + b.y * V.FH)) / fh + 0.5); break;
@@ -1796,12 +1778,12 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
     }
     function canvasUp() {
         if (!drag) return;
-        const grp = (drag.mode === 'move' || drag.mode === 'resize') ? drag.group : [drag.idx];
+        const d = drag;
         drag = null; snapGuides = [];
-        grp.forEach(i => {
-            const b = boxes[i];
-            postBox(i, { x: b.x, y: b.y, size: b.size, crop: b.crop });   // commit de CHAQUE box
-        });
+        if (d.surface) { surf().relache(); drawCanvas(); return; }   // la surface valide (POST + historique)
+        const b = boxes[d.idx];
+        postBox(d.idx, { x: b.x, y: b.y, size: b.size, crop: b.crop });   // rognage : commit de la box
+        if (surf()) surf().memoriser();
         syncAll();
     }
 
@@ -1971,7 +1953,7 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         const need2 = T('flash_select2', 'Sélectionnez au moins 2 box (Maj+clic).');
         const need3 = T('flash_select3', 'Sélectionnez au moins 3 box (Maj+clic).');
         ['split_size_w', 'split_size_h', 'split_size_both'].forEach(id => set(id, sel.length < 2, need2));
-        ['split_dist_h', 'split_dist_v'].forEach(id => set(id, sel.length < 3, need3));
+        ['split_dist_h', 'split_dist_v', 'split_space_h', 'split_space_v'].forEach(id => set(id, sel.length < 3, need3));
         set('split_copy', sel.length !== 1, T('copy_need1', 'Sélectionnez UNE box à copier.'));
         set('split_paste', !clipboard || !sel.length, T('paste_need_clip', 'Copiez d\'abord les réglages d\'une box.'));
         if (sel.length >= 2) { const b = $('#split_size_w'); if (b) b.title = T('size_w', 'Même largeur que la référence'); }
@@ -2034,7 +2016,7 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         sources = []; containers = []; memCache = []; sel = [0]; clipboard = null;
         adv = null; metricsErr = false; errorMsg = null; advanced = false;
         window.addEventListener('resize', onResize);
-        document.addEventListener('keydown', onKeyDown);
+        _surf = null; lierClavier();
         Promise.all([loadSources(), loadContainers()]).then(() => fetchState({ rebuild: true }));
         // Bascule du niveau de libellé (sélecteur global de la barre de navigation) : les noms de
         // sources sont construits au chargement, donc on les reconstruit — sinon la liste garderait
@@ -2051,7 +2033,7 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         [boxPostTimer, persistTimer].forEach(t => t && clearTimeout(t));
         pollTimer = metTimer = boxPostTimer = persistTimer = null;
         window.removeEventListener('resize', onResize);
-        document.removeEventListener('keydown', onKeyDown);
+        if (_unbindClavier) { _unbindClavier(); _unbindClavier = null; }
         EL = null; VMID = null; drag = null; knobDrag = null;
     }
 
