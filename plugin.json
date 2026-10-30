@@ -14,7 +14,7 @@
     "mode": "split",
     "desc_i18n": "settings.js.skh_desc_split"
   },
-  "version": "0.24.13",
+  "version": "0.24.14",
   "description": "Composite 4 incrustations (PiP) sur un fond → 1 sortie, + couche ART (habillage importé, incrustation luma/chroma/alpha, au-dessus ou en dessous). Mode avancé par box : rotation, opacité, adoucissement des bords, coins arrondis, ombre portée, miroir, ratio libre, z-ordre libre, bordure 3D (biseau + source de lumière). Transitions à courbes d'accélération, décalage inter-boxes, tous les paramètres interpolés. Réglages avancés neutres par défaut → chemin de composition historique inchangé.",
   "nav": { "section": "composition", "label": "Composition", "route": "/composition", "order": 30 },
   "script_template": "script.py",
@@ -620,6 +620,7 @@
       "scope": "user"
     }
   ],
+  "_resources_mesure": "MÉMOIRE (relevée le 2026-10-30, dell-1 #1276, 4 boîtes, rendu cpu, 1080p50, habillage coupé) : 99-100 Mio pour une limite déclarée de 2048 (5 %). dell-1 #1282 (même configuration) : 92-93 Mio. Rendu GPU non relevé. Méthode : `memory.current` du cgroup, tel que l'orchestrateur le relève à chaque tour sur l'agent (:8081/stats → champ `mem_used`), lu en lecture seule par GET /api/containers : 21 relevés à 10 s d'écart entre 13:17 et 13:21. La part shmem (bus MXL mappé, ≈ 1/5 sur decklink_io) n'est PAS disponible par cette voie ; la limite effectivement posée au conteneur (memory.max) non plus — le rapport est donc pris sur le chiffre DÉCLARÉ. ⚠ CONFIGURATION LÉGÈRE : ce relevé dit que CETTE configuration tient, pas que 2048 Mio paie une configuration pleine ; la limite n'a été ni baissée ni montée (chantier de documentation, 2026-10-30). À REMESURER sur une configuration pleine, en lisant memory.stat (anon / shmem / pgscan_direct) du cgroup, avant de toucher au chiffre.",
   "resources": {
     "cores": 3,
     "memory": 2048,

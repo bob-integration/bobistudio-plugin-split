@@ -539,7 +539,7 @@ window.MXLPlugins.split = (function () {
                 if (_surf) _surf.memoriser();
             },
         }, {
-            horsCadre: true,
+            horsCadre: true, rectangle: true,
             bornesCentre: () => { const c = cadrePx(), [pmin, pmax] = posCap();
                                   return { x0: c.x + pmin * c.w, x1: c.x + pmax * c.w, y0: c.y + pmin * c.h, y1: c.y + pmax * c.h }; },
             tol: () => SNAP_PX(), aimant: () => snapEnabled && gNeutral(gGet()), min: 4,
@@ -759,6 +759,14 @@ window.MXLPlugins.split = (function () {
         // clavier, et le seul chemin au doigt (iPad).
         tb.appendChild(toolGroup(TE('editor.group_edit', 'Édition'), window.BobiEditor.actionsEdition().map(a =>
             [SVG[a.ico], a.label, () => { surfIn(); surf().agir(a.action); syncAll(); }])));
+        // Verrous AU DOIGT (communs) : « Sélection multiple » = Maj, « Depuis le centre » = Alt.
+        {
+            const v = document.createElement('div');
+            v.innerHTML = window.BobiEditor.verrousHtml(surf());
+            const el = v.firstChild;
+            tb.appendChild(el);
+            window.BobiEditor.lierVerrous(el, surf());
+        }
         // Magnétisme : même contrôle que l'éditeur de PiP (label + switch .ctl-switch).
         const snapLbl = document.createElement('label');
         snapLbl.className = 'toggle-inline split-snap';
@@ -1462,6 +1470,14 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
 
     // ─── Repères de l'aimant (calculés par la surface commune, dessinés ici) ──────────────
     function drawGuides(ctx, CW, CH, css) {
+        const rs = _surf && _surf.rectSel;               // rectangle de sélection en cours
+        if (rs) {
+            ctx.save();
+            ctx.strokeStyle = (css.getPropertyValue('--accent') || '#6aa0ff').trim();
+            ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+            ctx.strokeRect(rs.x + 0.5, rs.y + 0.5, rs.w, rs.h);
+            ctx.restore();
+        }
         if (!drag || !snapGuides.length) return;
         ctx.save();
         ctx.strokeStyle = (css.getPropertyValue('--status-warning-fg') || '#c4a667').trim();
@@ -1740,7 +1756,8 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         surfOut();
         syncAll();
         if (!geste) return;
-        drag = { idx: h.idx, mode: h.mode, sx: px, sy: py, surface: true };
+        // `h` nul : rectangle de sélection (Maj, ou « Sélection multiple » au doigt, dans le vide).
+        drag = { idx: h ? h.idx : -1, mode: h ? h.mode : 'rect', sx: px, sy: py, surface: true };
         e.target.setPointerCapture(e.pointerId);
     }
     function canvasMove(e) {
@@ -1751,6 +1768,16 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
             return;
         }
         const V = view(CW, CH);
+        if (drag.surface) {
+            // Le geste se fait dans l'espace TRANSFORMÉ par le Global ; la surface travaille dans
+            // celui des box : on y ramène le DÉPLACEMENT (gInvDelta), pas la position.
+            const dn = gInvDelta((px - drag.sx) / V.FW, (py - drag.sy) / V.FH);
+            surf().glisse({ x: drag.sx + dn.dx * V.FW, y: drag.sy + dn.dy * V.FH }, e);
+            if (surf().rectSel) { surfOut(); drawCanvas(); return; }   // rectangle : sélection en direct
+            drag.group = surf().sel.slice();
+            drag.group.forEach(i => throttledPostBox(i));    // toute la sélection suit, en direct
+            return;
+        }
         const b = boxes[drag.idx], fw = wOf(b) * V.FW, fh = hOf(b) * V.FH;
         const [pmin, pmax] = posCap();
         const [cmin, cmax] = cap('crop');
@@ -1758,15 +1785,6 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         const capT = v => clamp(v, cmin, Math.min(cmax, 0.92 - b.crop.b)), capB = v => clamp(v, cmin, Math.min(cmax, 0.92 - b.crop.t));
         const [smin, smax] = cap('box_fields', 'size');
         snapGuides = [];
-        if (drag.surface) {
-            // Le geste se fait dans l'espace TRANSFORMÉ par le Global ; la surface travaille dans
-            // celui des box : on y ramène le DÉPLACEMENT (gInvDelta), pas la position.
-            const dn = gInvDelta((px - drag.sx) / V.FW, (py - drag.sy) / V.FH);
-            surf().glisse({ x: drag.sx + dn.dx * V.FW, y: drag.sy + dn.dy * V.FH }, e);
-            drag.group = surf().sel.slice();
-            drag.group.forEach(i => throttledPostBox(i));    // toute la sélection suit, en direct
-            return;
-        }
         switch (drag.mode) {
             case 'crop-l': b.crop.l = capL((px - (V.MX + b.x * V.FW)) / fw + 0.5); break;
             case 'crop-r': b.crop.r = capR(0.5 - (px - (V.MX + b.x * V.FW)) / fw); break;
@@ -1784,7 +1802,7 @@ ${stale ? `<div class="alert alert-warning">${esc(T('stale_engine', 'Le moteur d
         if (!drag) return;
         const d = drag;
         drag = null; snapGuides = [];
-        if (d.surface) { surf().relache(); drawCanvas(); return; }   // la surface valide (POST + historique)
+        if (d.surface) { surf().relache(); surfOut(); syncAll(); return; }   // la surface valide (POST + historique)
         const b = boxes[d.idx];
         postBox(d.idx, { x: b.x, y: b.y, size: b.size, crop: b.crop });   // rognage : commit de la box
         if (surf()) surf().memoriser();
