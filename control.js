@@ -755,6 +755,10 @@ window.MXLPlugins.split = (function () {
             [SVG.paste_settings, T('paste_settings', 'Coller les réglages dans les box sélectionnées'), pasteSettings, 'split_paste'],
             [SVG.reset_box, T('reset_box', 'Réinitialiser la fenêtre : plein cadre, centrée, sans rognage. N\'efface ni la source, ni la bordure, ni l\'ombre, ni les effets.'), resetBoxes, 'split_reset'],
         ]));
+        // Édition : les actions COMMUNES (annuler, couper, copier, coller…) — les mêmes que le
+        // clavier, et le seul chemin au doigt (iPad).
+        tb.appendChild(toolGroup(TE('editor.group_edit', 'Édition'), window.BobiEditor.actionsEdition().map(a =>
+            [SVG[a.ico], a.label, () => { surfIn(); surf().agir(a.action); syncAll(); }])));
         // Magnétisme : même contrôle que l'éditeur de PiP (label + switch .ctl-switch).
         const snapLbl = document.createElement('label');
         snapLbl.className = 'toggle-inline split-snap';
