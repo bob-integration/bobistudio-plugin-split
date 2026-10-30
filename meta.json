@@ -2,6 +2,10 @@
   "version": "0.24.14",
   "date": "2026-10-30",
   "changes": {
+    "Éditeur commun et verrous au doigt (0.24.11 → 0.24.14)": [
+      "Un seul éditeur pour tous les éditeurs de disposition (BobiEditor.surface, base commune, arbitrages de Cyril du 30/10) : sélection Maj OU Ctrl/⌘ (la référence est le dernier cliqué), glisser seul ou en groupe (le groupe s'arrête en entier au bord), poignée selon le format (coin opposé fixe, Alt = autour du centre), poignée d'une sélection = mise à l'échelle depuis le coin du groupe, aimant selon le format, outils Aligner / Même taille / Distribuer / Espacer / Remplir, barre « Édition » et clavier communs (annuler, rétablir, couper, copier, coller, dupliquer, supprimer, flèches, aide). Changements propres au Split : référence = dernier cliqué (c'était le premier), poignée coin fixe (c'était autour du centre ; Alt le rend), groupe hors cadre arrêté ensemble aux limites, Distribuer par positions + Espacer ; restent au Split : hors-cadre, canal Global, rognage (0.24.11 → 0.24.13).",
+      "Au doigt : boutons communs « Sélection multiple » (= Maj ; un glisser dans le vide trace le rectangle de sélection) et « Depuis le centre » (= Alt) ; rectangle de sélection dessiné. (0.24.14)"
+    ],
     "Mesure mémoire datée au manifeste (0.24.14)": [
       "Ressources : la limite mémoire déclarée porte désormais sa MESURE datée (relevé du 2026-10-30, conteneur et configuration nommés) — garde générique tests/verif_resources_mesurees.py. La limite elle-même ne change pas ; rien à redéployer."
     ],
