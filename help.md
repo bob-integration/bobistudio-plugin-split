@@ -10,7 +10,7 @@ Câbler depuis la page **Câbles** :
 
 ## Composer
 
-Dans **Traitements → DVE** :
+Dans la rubrique **Composition** :
 - **Cliquer** une box pour la sélectionner ; **Maj+clic** pour en sélectionner plusieurs (la
   première sélectionnée sert de **référence** aux outils).
 - **Glisser** une box pour la déplacer · **tirer le coin** bas-droit pour redimensionner ·
